@@ -527,6 +527,8 @@ Send a voice command (text) to the FSM. This is the primary way to control the r
 
 **Available commands:**
 
+#### Autonomous Commands (Object Search)
+
 | Command (Russian) | Action | FSM Transition |
 |---|---|---|
 | `найди [цвет] мяч` | Find and grab ball | IDLE -> SEARCHING |
@@ -535,11 +537,29 @@ Send a voice command (text) to the FSM. This is the primary way to control the r
 | `сожги [цвет] мяч` | Find and burn ball with laser | IDLE -> SEARCHING (action=burn) |
 | `прожги [цвет] мяч` | Find and burn ball with laser | IDLE -> SEARCHING (action=burn) |
 | `лазер [цвет]` | Burn with laser | IDLE -> SEARCHING (action=burn) |
+
+#### Control Commands
+
+| Command (Russian) | Action | FSM Transition |
+|---|---|---|
 | `стоп` | Emergency stop | Any -> IDLE |
 | `остановись` | Emergency stop | Any -> IDLE |
 | `домой` | Return to home position | Any -> RETURNING |
 | `вернись` | Return to home position | Any -> RETURNING |
 | `вызови вторую машину` | Call second robot | Any -> CALLING -> IDLE |
+
+#### Manual Control Commands (New! 🆕)
+
+| Command (Russian) | Action | Example |
+|---|---|---|
+| `развернись` | Rotate 180° | `развернись` |
+| `разворот` | Rotate 180° (alias) | `разворот` |
+| `повернись N градусов` | Rotate N degrees (CCW if +, CW if -) | `повернись 90 градусов` |
+| `поверни N` | Short form of rotation | `поверни 45` |
+| `иди вперёд на N см` | Move forward N cm | `иди вперёд на 50 см` |
+| `иди назад на N см` | Move backward N cm | `иди назад на 30 см` |
+| `иди влево на N см` | Move left N cm (with rotation) | `иди влево на 20 см` |
+| `иди вправо на N см` | Move right N cm (with rotation) | `иди вправо на 40 см` |
 
 **Colour words (Russian -> English):**
 

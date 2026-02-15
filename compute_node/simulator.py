@@ -410,10 +410,47 @@ class SimFSM:
         self._prev_theta = 0.0            # previous theta for tracking rotation
         self.log = []  # for logging transitions
 
+        # Manual control commands
+        self._manual_mode = False
+        self._manual_target_theta = None  # target angle for rotation
+        self._manual_distance = 0.0       # remaining distance to travel
+        self._manual_direction = None     # 'forward', 'backward', 'left', 'right'
+
     def voice_command(self, text: str):
         text = text.lower().strip()
         self._log(f'Команда: "{text}"')
 
+        # Manual rotation commands
+        if 'развернись' in text or 'разворот' in text:
+            self._manual_rotate(180)
+            return
+
+        # Turn N degrees
+        if 'повернись' in text or 'поверни' in text:
+            degrees = self._extract_number(text)
+            if degrees is not None:
+                self._manual_rotate(degrees)
+                return
+
+        # Move commands: иди вперед/назад/влево/вправо на N см
+        if 'иди' in text or 'двигайся' in text:
+            distance_cm = self._extract_number(text)
+            if distance_cm is not None:
+                distance_m = distance_cm / 100.0
+                if 'вперед' in text or 'вперёд' in text:
+                    self._manual_move('forward', distance_m)
+                    return
+                elif 'назад' in text:
+                    self._manual_move('backward', distance_m)
+                    return
+                elif 'влево' in text:
+                    self._manual_move('left', distance_m)
+                    return
+                elif 'вправо' in text:
+                    self._manual_move('right', distance_m)
+                    return
+
+        # Autonomous commands
         if 'вызови' in text and 'машин' in text:
             self._transition(State.CALLING)
             return
@@ -430,6 +467,7 @@ class SimFSM:
             self._transition(State.SEARCHING)
             return
         if 'стоп' in text or 'остановись' in text:
+            self._manual_mode = False
             self._transition(State.IDLE)
             return
         if 'домой' in text or 'вернись' in text:
@@ -446,6 +484,33 @@ class SimFSM:
             if rus in text:
                 return eng
         return ''
+
+    def _extract_number(self, text: str) -> float:
+        """Extract first number from text."""
+        import re
+        numbers = re.findall(r'\d+\.?\d*', text)
+        if numbers:
+            return float(numbers[0])
+        return None
+
+    def _manual_rotate(self, degrees: float):
+        """Rotate robot by N degrees (positive = counter-clockwise)."""
+        self._manual_mode = True
+        target_rad = math.radians(degrees)
+        self._manual_target_theta = self.robot.theta + target_rad
+        # Normalize to [-pi, pi]
+        self._manual_target_theta = math.atan2(
+            math.sin(self._manual_target_theta),
+            math.cos(self._manual_target_theta)
+        )
+        self._log(f'Поворот на {degrees}°')
+
+    def _manual_move(self, direction: str, distance: float):
+        """Move robot in direction for distance meters."""
+        self._manual_mode = True
+        self._manual_direction = direction
+        self._manual_distance = distance
+        self._log(f'Движение {direction} на {distance*100:.0f} см')
 
     def _transition(self, new_state: str):
         old = self.state
@@ -468,6 +533,11 @@ class SimFSM:
     def tick(self, sensors: SimSensors, detector: SimDetector, dt: float):
         self._last_detection = detector.get_closest_detection(self.target_colour)
 
+        # Manual control mode has priority
+        if self._manual_mode:
+            self._do_manual_control(dt)
+            return
+
         if self.state == State.IDLE:
             pass
         elif self.state == State.SEARCHING:
@@ -482,6 +552,64 @@ class SimFSM:
             self._do_burn(dt)
         elif self.state == State.RETURNING:
             self._do_return(dt)
+
+    # ── MANUAL CONTROL: direct movement commands ──────────────
+    def _do_manual_control(self, dt: float):
+        """Execute manual rotation or movement commands."""
+        # Handle rotation command
+        if self._manual_target_theta is not None:
+            current = self.robot.theta
+            target = self._manual_target_theta
+
+            # Calculate shortest angle difference
+            error = target - current
+            error = math.atan2(math.sin(error), math.cos(error))
+
+            # If close enough, stop
+            if abs(error) < math.radians(2):  # 2 degree tolerance
+                self.robot.stop()
+                self._manual_mode = False
+                self._manual_target_theta = None
+                self._log('Поворот завершён')
+                return
+
+            # Rotate towards target (smooth PID-like control)
+            angular = max(-1.0, min(1.0, error * 2.0))
+            self.robot.set_velocity(0.0, angular)
+            return
+
+        # Handle movement command
+        if self._manual_direction and self._manual_distance > 0:
+            speed = 0.15  # m/s
+            distance_step = speed * dt
+
+            if distance_step >= self._manual_distance:
+                # Reached target
+                self.robot.stop()
+                self._manual_mode = False
+                self._manual_distance = 0.0
+                self._manual_direction = None
+                self._log('Движение завершено')
+                return
+
+            # Calculate velocities based on direction
+            if self._manual_direction == 'forward':
+                self.robot.set_velocity(speed, 0.0)
+            elif self._manual_direction == 'backward':
+                self.robot.set_velocity(-speed, 0.0)
+            elif self._manual_direction == 'left':
+                # Strafe left (rotate + move)
+                self.robot.set_velocity(speed * 0.5, 0.8)
+            elif self._manual_direction == 'right':
+                # Strafe right (rotate + move)
+                self.robot.set_velocity(speed * 0.5, -0.8)
+
+            self._manual_distance -= distance_step
+            return
+
+        # No active manual command
+        self._manual_mode = False
+        self.robot.stop()
 
     # ── SEARCHING: clockwise rotation, 360° check ─────────────
     def _do_search(self):
@@ -501,14 +629,17 @@ class SimFSM:
 
         det = self._last_detection
         if det:
-            # Ball entered camera view → stop and go to TARGETING
+            # Ball entered camera view → stop smoothly and go to TARGETING
             self._log(f'Обнаружен {det["colour"]} мяч — наведение')
             self.robot.stop()
+            # Initialize steering for smooth transition
+            self._last_steer = 0.0
             self._transition(State.TARGETING)
             return
 
-        # Rotate clockwise (negative angular.z in ROS convention)
-        self.robot.set_velocity(0.0, -0.4)
+        # Rotate clockwise (slower for more stable detection)
+        # Reduced from -0.4 to -0.3 for better stability
+        self.robot.set_velocity(0.0, -0.3)
 
     # ── TARGETING: rotate to centre ball, then approach ────────
     def _do_targeting(self, dt: float):
@@ -516,33 +647,59 @@ class SimFSM:
         det = self._last_detection
 
         if det is None:
-            # Lost ball during targeting — return to search
+            # Lost ball during targeting — keep turning gently
             self._lost_frames += 1
-            # Keep turning gently in last direction
-            self.robot.set_velocity(0.0, self._last_steer * 0.3)
-            if self._lost_frames > 30:  # ~1.5 sec
+            # Reduce turning speed significantly when lost
+            self.robot.set_velocity(0.0, self._last_steer * 0.2)
+            if self._lost_frames > 50:  # ~2.5 sec (more patience)
                 self._log('Потерял мяч при наведении — поиск')
                 self._transition(State.SEARCHING)
             return
 
         self._lost_frames = 0
 
-        # How far is ball from centre
-        ball_cx = det['x'] + det['w'] / 2.0
-        error_x = (ball_cx - CAM_W / 2) / (CAM_W / 2)  # [-1, 1]
-        abs_error = abs(error_x)
+        # Calculate how far ball is from vertical center line
+        ball_center_x = det['x'] + det['w'] / 2.0  # Ball center in pixels
+        screen_center_x = CAM_W / 2.0  # Screen center (320 pixels)
 
-        if abs_error < 0.15:
-            # Ball centred → go approach
+        # Distance from center in pixels
+        pixel_offset = ball_center_x - screen_center_x
+
+        # Normalize to [-1, 1]: negative = left of center, positive = right of center
+        normalized_offset = pixel_offset / screen_center_x
+        abs_offset = abs(normalized_offset)
+
+        # Log for debugging
+        direction = "справа" if pixel_offset > 0 else "слева"
+        self._log(f'Объект {direction} (offset={pixel_offset:.0f}px, norm={normalized_offset:.2f})')
+
+        # Check if ball is centered enough
+        if abs_offset < 0.25:  # Within 25% of screen width from center
+            # Ball is centered → proceed to approach
             self.robot.stop()
-            self._log(f'Цель по центру — приближение к {det["colour"]}')
+            self._log(f'✓ Объект в центре — приближаюсь к {det["colour"]}')
             self._transition(State.APPROACHING)
             return
 
-        # Turn in place to centre the ball (smooth)
-        target_angular = -error_x * 0.8
-        angular = self._last_steer * 0.4 + target_angular * 0.6
+        # Calculate turning direction:
+        # If ball is RIGHT of center (pixel_offset > 0) → turn RIGHT (positive angular)
+        # If ball is LEFT of center (pixel_offset < 0) → turn LEFT (negative angular)
+        # NOTE: Positive angular velocity → counter-clockwise (left turn)
+        #       Negative angular velocity → clockwise (right turn)
+        # So we need to INVERT the sign: turn right when ball is right
+        target_angular = normalized_offset * 0.6  # Turn TOWARDS the ball (no minus!)
+
+        # Smooth the angular velocity using exponential moving average
+        if abs(self._last_steer) < 0.01:
+            # First time targeting, start fresh
+            angular = target_angular
+        else:
+            # Smooth with previous value
+            angular = self._last_steer * 0.5 + target_angular * 0.5
+
         self._last_steer = angular
+
+        # Apply rotation (only angular, no linear movement)
         self.robot.set_velocity(0.0, angular)
 
     # ── APPROACHING: drive straight to centred ball ────────────
@@ -558,41 +715,48 @@ class SimFSM:
         if det is None:
             self._lost_frames += 1
             # Slow creep + gentle last-direction turn
-            self.robot.set_velocity(0.02, self._last_steer * 0.3)
-            if self._lost_frames > 40:
+            self.robot.set_velocity(0.02, self._last_steer * 0.2)
+            if self._lost_frames > 60:  # More patience
                 self._log('Мяч потерян — возврат к поиску')
                 self._transition(State.SEARCHING)
             return
 
         self._lost_frames = 0
 
-        ball_cx = det['x'] + det['w'] / 2.0
-        error_x = (ball_cx - CAM_W / 2) / (CAM_W / 2)
-        abs_error = abs(error_x)
+        # Calculate ball offset from center
+        ball_center_x = det['x'] + det['w'] / 2.0
+        pixel_offset = ball_center_x - CAM_W / 2.0
+        normalized_offset = pixel_offset / (CAM_W / 2.0)
+        abs_offset = abs(normalized_offset)
 
-        # If ball drifted too far off centre → back to TARGETING
-        if abs_error > 0.5:
+        # If ball drifted too far off center → back to TARGETING
+        if abs_offset > 0.65:  # Very lenient threshold
             self.robot.stop()
+            self._log('Объект ушёл из центра — повторное наведение')
             self._transition(State.TARGETING)
             return
 
-        # Small correction + forward drive
-        target_angular = -error_x * 0.8
-        angular = self._last_steer * 0.3 + target_angular * 0.7
+        # Small correction while driving forward
+        # Same logic as TARGETING: turn TOWARDS the ball
+        target_angular = normalized_offset * 0.4  # Gentler correction while moving
+        angular = self._last_steer * 0.5 + target_angular * 0.5
         self._last_steer = angular
 
-        # Drive forward (slower if slightly off-centre)
-        linear = 0.12 if abs_error < 0.15 else 0.06
+        # Drive forward (slower if off-center for better control)
+        linear = 0.10 if abs_offset < 0.20 else 0.05
 
-        # Close enough?
+        # Check if we're close enough to grab/burn
         if sensors.range_m < 0.10:
             self.robot.stop()
             if self.target_action == 'burn':
+                self._log(f'Достиг цели — жгу {det["colour"]} мяч')
                 self._transition(State.BURNING)
             else:
+                self._log(f'Достиг цели — захватываю {det["colour"]} мяч')
                 self._transition(State.GRABBING)
             return
 
+        # Move forward with slight corrections
         self.robot.set_velocity(linear, angular)
 
     def _do_grab(self, dt: float):
