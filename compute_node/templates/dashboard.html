@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAMURAI — Панель управления</title>
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0f1117;
+  --card: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e0e0e0;
+  --text-dim: #8890a0;
+  --accent: #4fc3f7;
+  --green: #66bb6a;
+  --red: #ef5350;
+  --orange: #ffa726;
+  --yellow: #ffee58;
+}
+
+body {
+  font-family: 'Segoe UI', 'Ubuntu', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.status-dot.connected { background: var(--green); }
+
+/* ── Grid Layout ── */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 12px;
+  padding: 12px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.card-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Camera Panel ── */
+.camera-panel { grid-column: 1; grid-row: 1; }
+
+.camera-panel img {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #000;
+  min-height: 200px;
+}
+
+/* ── Map Panel ── */
+.map-panel { grid-column: 2; grid-row: 1; }
+
+.map-container {
+  position: relative;
+  width: 100%;
+  padding-top: 75%;
+  background: #1e2130;
+}
+
+.map-container canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── FSM State Panel ── */
+.state-panel { grid-column: 1; grid-row: 2; }
+
+.state-content { padding: 14px; }
+
+.fsm-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.fsm-badge {
+  font-size: 16px;
+  font-weight: 700;
+  padding: 6px 16px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.fsm-badge.IDLE       { background: #37474f; color: #b0bec5; }
+.fsm-badge.SEARCHING  { background: #1b5e20; color: #a5d6a7; }
+.fsm-badge.APPROACHING{ background: #e65100; color: #ffcc80; }
+.fsm-badge.GRABBING   { background: #4a148c; color: #ce93d8; }
+.fsm-badge.BURNING    { background: #b71c1c; color: #ef9a9a; }
+.fsm-badge.TARGETING  { background: #f57f17; color: #fff9c4; }
+.fsm-badge.CALLING    { background: #01579b; color: #81d4fa; }
+.fsm-badge.RETURNING  { background: #33691e; color: #c5e1a5; }
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.info-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.info-value {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+/* ── Sensors Panel ── */
+.sensors-panel { grid-column: 2; grid-row: 2; }
+
+.sensors-content { padding: 14px; }
+
+.sensor-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sensor-row:last-child { border-bottom: none; }
+
+.sensor-name {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.sensor-value {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.range-bar {
+  width: 80px;
+  height: 6px;
+  background: #2a2d3a;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-left: 10px;
+}
+
+.range-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+/* ── Detection Panel ── */
+.detection-bar {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: none;
+}
+
+.detection-bar.active { display: block; }
+
+.detection-content {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.det-colour-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── Voice Log ── */
+.voice-panel {
+  grid-column: 1 / -1;
+  grid-row: 4;
+}
+
+.voice-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 14px;
+}
+
+.voice-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.voice-entry:last-child { border-bottom: none; }
+
+.voice-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.voice-text { color: var(--text); }
+
+.empty-log {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Command Panel ── */
+.command-panel {
+  grid-column: 1 / -1;
+  grid-row: 5;
+}
+
+.command-content { padding: 14px; }
+
+.command-input-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.command-input {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+
+.command-input:focus {
+  border-color: var(--accent);
+}
+
+.command-input::placeholder {
+  color: var(--text-dim);
+}
+
+.btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  background: var(--border);
+  border-color: var(--accent);
+}
+
+.btn-primary {
+  background: #1565c0;
+  border-color: #1976d2;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #1976d2;
+}
+
+.btn-danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 83, 80, 0.15);
+}
+
+.btn-reset {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
+.btn-reset:hover {
+  background: rgba(255, 167, 38, 0.15);
+}
+
+.quick-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>SAMURAI</h1>
+  <div class="connection-status">
+    <div class="status-dot" id="connDot"></div>
+    <span id="connText">Подключение...</span>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- Camera -->
+  <div class="card camera-panel">
+    <div class="card-title">Камера + YOLO</div>
+    <img id="cameraFeed" src="/video_feed" alt="Camera Feed">
+  </div>
+
+  <!-- Map -->
+  <div class="card map-panel">
+    <div class="card-title">Карта SLAM</div>
+    <div class="map-container">
+      <canvas id="mapCanvas"></canvas>
+    </div>
+  </div>
+
+  <!-- FSM State -->
+  <div class="card state-panel">
+    <div class="card-title">Состояние робота</div>
+    <div class="state-content">
+      <div class="fsm-state">
+        <div class="fsm-badge IDLE" id="fsmBadge">IDLE</div>
+      </div>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">Цель</span>
+          <span class="info-value" id="targetColour">—</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Действие</span>
+          <span class="info-value" id="targetAction">—</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Позиция X</span>
+          <span class="info-value" id="poseX">0.000</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Позиция Y</span>
+          <span class="info-value" id="poseY">0.000</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sensors -->
+  <div class="card sensors-panel">
+    <div class="card-title">Сенсоры</div>
+    <div class="sensors-content">
+      <div class="sensor-row">
+        <span class="sensor-name">Ультразвук</span>
+        <div style="display:flex;align-items:center;">
+          <span class="sensor-value" id="rangeVal">— м</span>
+          <div class="range-bar"><div class="range-fill" id="rangeFill"></div></div>
+        </div>
+      </div>
+      <div class="sensor-row">
+        <span class="sensor-name">IMU Yaw</span>
+        <span class="sensor-value" id="imuYaw">0.0°</span>
+      </div>
+      <div class="sensor-row">
+        <span class="sensor-name">IMU Pitch</span>
+        <span class="sensor-value" id="imuPitch">0.0°</span>
+      </div>
+      <div class="sensor-row">
+        <span class="sensor-name">IMU Roll</span>
+        <span class="sensor-value" id="imuRoll">0.0°</span>
+      </div>
+      <div class="sensor-row">
+        <span class="sensor-name">Мяч</span>
+        <span class="sensor-value" id="ballInfo">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detection Banner -->
+  <div class="card detection-bar" id="detectionBar">
+    <div class="detection-content">
+      <div class="det-colour-dot" id="detDot"></div>
+      <span id="detText">—</span>
+    </div>
+  </div>
+
+  <!-- Voice Log -->
+  <div class="card voice-panel">
+    <div class="card-title">Лог событий</div>
+    <div class="voice-list" id="voiceList">
+      <div class="empty-log">Событий пока нет</div>
+    </div>
+  </div>
+
+  <!-- Command Panel -->
+  <div class="card command-panel">
+    <div class="card-title">Управление</div>
+    <div class="command-content">
+      <div class="command-input-row">
+        <input type="text" class="command-input" id="cmdInput"
+               placeholder="Введите команду (напр. найди красный мяч)..."
+               autocomplete="off">
+        <button class="btn btn-primary" id="cmdSend">Отправить</button>
+      </div>
+      <div class="quick-buttons">
+        <button class="btn" onclick="sendQuick('найди красный мяч')">Красный</button>
+        <button class="btn" onclick="sendQuick('найди синий мяч')">Синий</button>
+        <button class="btn" onclick="sendQuick('найди зелёный мяч')">Зелёный</button>
+        <button class="btn" onclick="sendQuick('найди жёлтый мяч')">Жёлтый</button>
+        <button class="btn" onclick="sendQuick('найди оранжевый мяч')">Оранжевый</button>
+        <button class="btn btn-danger" onclick="sendQuick('стоп')">Стоп</button>
+        <button class="btn" onclick="sendQuick('домой')">Домой</button>
+        <button class="btn" onclick="sendQuick('сожги лазером')">Лазер</button>
+        <button class="btn btn-reset" onclick="resetSim()">Сброс</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const socket = io();
+
+const COLOUR_RU = {
+  red: 'красный', blue: 'синий', green: 'зелёный',
+  yellow: 'жёлтый', orange: 'оранжевый', white: 'белый',
+  black: 'чёрный', unknown: 'неизвестный'
+};
+
+const COLOUR_CSS = {
+  red: '#ef5350', blue: '#42a5f5', green: '#66bb6a',
+  yellow: '#ffee58', orange: '#ffa726', white: '#fafafa',
+  black: '#424242', unknown: '#9e9e9e'
+};
+
+const ACTION_RU = { grab: 'захват', burn: 'лазер' };
+
+// ── Connection ──
+socket.on('connect', () => {
+  document.getElementById('connDot').classList.add('connected');
+  document.getElementById('connText').textContent = 'Подключено';
+});
+
+socket.on('disconnect', () => {
+  document.getElementById('connDot').classList.remove('connected');
+  document.getElementById('connText').textContent = 'Отключено';
+});
+
+// ── State Updates ──
+socket.on('state_update', (data) => {
+  updateFSM(data.status);
+  updateSensors(data);
+  updateDetection(data.detection);
+  updateMap(data);
+  updateVoiceLog(data.voice_log);
+});
+
+function updateFSM(status) {
+  if (!status || !status.state) return;
+  const badge = document.getElementById('fsmBadge');
+  badge.textContent = status.state;
+  badge.className = 'fsm-badge ' + status.state;
+
+  const colour = status.target_colour || '—';
+  document.getElementById('targetColour').textContent =
+    COLOUR_RU[colour] || colour;
+  document.getElementById('targetColour').style.color =
+    COLOUR_CSS[colour] || 'var(--text)';
+
+  const action = status.target_action || '—';
+  document.getElementById('targetAction').textContent =
+    ACTION_RU[action] || action;
+}
+
+function updateSensors(data) {
+  // Range
+  const range = data.range_m;
+  const rangeStr = range >= 0 ? range.toFixed(2) + ' м' : '— м';
+  document.getElementById('rangeVal').textContent = rangeStr;
+  const pct = range >= 0 ? Math.min(range / 2.0 * 100, 100) : 0;
+  document.getElementById('rangeFill').style.width = pct + '%';
+
+  if (range >= 0 && range < 0.15) {
+    document.getElementById('rangeVal').style.color = 'var(--red)';
+  } else if (range >= 0 && range < 0.5) {
+    document.getElementById('rangeVal').style.color = 'var(--orange)';
+  } else {
+    document.getElementById('rangeVal').style.color = 'var(--text)';
+  }
+
+  // IMU
+  if (data.imu_ypr) {
+    document.getElementById('imuYaw').textContent = data.imu_ypr[0] + '°';
+    document.getElementById('imuPitch').textContent = data.imu_ypr[1] + '°';
+    document.getElementById('imuRoll').textContent = data.imu_ypr[2] + '°';
+  }
+
+  // Pose
+  if (data.pose) {
+    document.getElementById('poseX').textContent = data.pose.x.toFixed(3);
+    document.getElementById('poseY').textContent = data.pose.y.toFixed(3);
+  }
+
+  // Ball summary
+  const det = data.detection;
+  if (det && det.colour) {
+    const c = COLOUR_RU[det.colour] || det.colour;
+    document.getElementById('ballInfo').textContent =
+      c + ' (' + det.conf + ') ' + det.distance + 'м';
+    document.getElementById('ballInfo').style.color =
+      COLOUR_CSS[det.colour] || 'var(--text)';
+  } else {
+    document.getElementById('ballInfo').textContent = '—';
+    document.getElementById('ballInfo').style.color = 'var(--text-dim)';
+  }
+}
+
+function updateDetection(det) {
+  const bar = document.getElementById('detectionBar');
+  if (det && det.colour && det.colour !== 'unknown') {
+    bar.classList.add('active');
+    document.getElementById('detDot').style.background =
+      COLOUR_CSS[det.colour] || '#9e9e9e';
+    const c = COLOUR_RU[det.colour] || det.colour;
+    document.getElementById('detText').textContent =
+      'Обнаружен: ' + c + ' мяч — ' + det.distance + ' м (уверенность: ' + (det.conf * 100).toFixed(0) + '%)';
+  } else {
+    bar.classList.remove('active');
+  }
+}
+
+// ── Map Canvas ──
+const mapCanvas = document.getElementById('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
+let mapImg = new Image();
+
+function updateMap(data) {
+  if (!data.map_info || !data.map_info.width) return;
+
+  const info = data.map_info;
+  const pose = data.pose;
+  const scan = data.scan_points;
+
+  // Reload map image
+  mapImg.src = '/map.png?t=' + Date.now();
+  mapImg.onload = () => {
+    const rect = mapCanvas.getBoundingClientRect();
+    mapCanvas.width = rect.width;
+    mapCanvas.height = rect.height;
+
+    const ctx = mapCtx;
+    ctx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+
+    // Scale map to fit canvas
+    const scaleX = mapCanvas.width / info.width;
+    const scaleY = mapCanvas.height / info.height;
+    const scale = Math.min(scaleX, scaleY);
+
+    const offsetX = (mapCanvas.width - info.width * scale) / 2;
+    const offsetY = (mapCanvas.height - info.height * scale) / 2;
+
+    ctx.drawImage(mapImg, offsetX, offsetY, info.width * scale, info.height * scale);
+
+    // Helper: world coords → canvas pixels
+    function worldToCanvas(wx, wy) {
+      const mx = (wx - info.origin_x) / info.resolution;
+      const my = info.height - (wy - info.origin_y) / info.resolution;
+      return [offsetX + mx * scale, offsetY + my * scale];
+    }
+
+    // Draw scan points
+    if (scan && scan.length > 0) {
+      ctx.fillStyle = 'rgba(79, 195, 247, 0.5)';
+      for (const pt of scan) {
+        // Scan points are in base_link frame, transform using pose
+        const cos_y = Math.cos(pose.yaw);
+        const sin_y = Math.sin(pose.yaw);
+        const gx = pose.x + pt[0] * cos_y - pt[1] * sin_y;
+        const gy = pose.y + pt[0] * sin_y + pt[1] * cos_y;
+        const [cx, cy] = worldToCanvas(gx, gy);
+        ctx.beginPath();
+        ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Draw robot position
+    if (pose) {
+      const [rx, ry] = worldToCanvas(pose.x, pose.y);
+      // Robot body
+      ctx.fillStyle = '#4fc3f7';
+      ctx.beginPath();
+      ctx.arc(rx, ry, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Direction arrow
+      const arrowLen = 14;
+      const ax = rx + arrowLen * Math.cos(-pose.yaw);
+      const ay = ry + arrowLen * Math.sin(-pose.yaw);
+      ctx.strokeStyle = '#4fc3f7';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry);
+      ctx.lineTo(ax, ay);
+      ctx.stroke();
+    }
+  };
+}
+
+// ── Voice Log ──
+function updateVoiceLog(log) {
+  const list = document.getElementById('voiceList');
+  if (!log || log.length === 0) {
+    list.innerHTML = '<div class="empty-log">Команд пока нет</div>';
+    return;
+  }
+
+  let html = '';
+  for (let i = log.length - 1; i >= 0; i--) {
+    const entry = log[i];
+    html += '<div class="voice-entry">' +
+            '<span class="voice-time">' + entry.time + '</span>' +
+            '<span class="voice-text">' + escapeHtml(entry.text) + '</span>' +
+            '</div>';
+  }
+  list.innerHTML = html;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── Command Input ──
+function sendQuick(text) {
+  socket.emit('send_command', { text: text });
+}
+
+function resetSim() {
+  socket.emit('reset_sim', {});
+}
+
+document.getElementById('cmdSend').addEventListener('click', () => {
+  const input = document.getElementById('cmdInput');
+  const text = input.value.trim();
+  if (text) {
+    socket.emit('send_command', { text: text });
+    input.value = '';
+  }
+});
+
+document.getElementById('cmdInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    document.getElementById('cmdSend').click();
+  }
+});
+</script>
+</body>
+</html>

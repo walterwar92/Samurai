@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Samurai Robot</string>
+    <string name="btn_listen">Слушать</string>
+    <string name="btn_stop">Стоп</string>
+    <string name="btn_connect">Подключить</string>
+    <string name="btn_disconnect">Отключить</string>
+    <string name="hint_broker">MQTT Broker IP</string>
+    <string name="hint_robot_id">Robot ID</string>
+    <string name="status_connected">Подключено</string>
+    <string name="status_disconnected">Отключено</string>
+    <string name="label_voice">Голосовое управление</string>
+    <string name="label_manual">Ручные команды</string>
+</resources>

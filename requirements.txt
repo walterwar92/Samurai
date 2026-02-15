@@ -1,0 +1,44 @@
+# ========================================
+# Samurai Robot — Python Dependencies
+# ========================================
+
+# --- Hardware (Raspberry Pi) ---
+gpiozero
+RPi.GPIO
+adafruit-circuitpython-pca9685
+adafruit-circuitpython-motor
+adafruit-circuitpython-servokit
+smbus2                          # I2C for MPU6050
+picamera2                       # CSI camera
+
+# --- ROS2 (installed via apt, listed for reference) ---
+# ros-humble-desktop
+# ros-humble-slam-toolbox
+# ros-humble-navigation2
+# ros-humble-nav2-smac-planner
+# ros-humble-cartographer-ros
+# ros-humble-robot-localization
+# ros-humble-sensor-msgs
+# ros-humble-geometry-msgs
+# ros-humble-nav-msgs
+# ros-humble-cv-bridge
+# ros-humble-image-transport
+
+# --- Computer Vision ---
+opencv-python>=4.8.0
+ultralytics>=8.0.0              # YOLOv8n / YOLO11n
+numpy>=1.24.0
+
+# --- Speech Recognition ---
+vosk>=0.3.45
+pyaudio
+
+# --- Communication ---
+paho-mqtt>=1.6.0
+flask>=3.0.0
+flask-cors
+flask-socketio>=5.3.0
+python-socketio>=5.10.0
+
+# --- Utilities ---
+transforms3d

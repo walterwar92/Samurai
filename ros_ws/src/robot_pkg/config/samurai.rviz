@@ -1,0 +1,204 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    # ── Grid ──
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Normal Cell Count: 0
+      Cell Size: 1
+      Color: 60; 60; 70
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+
+    # ── TF Frames ──
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.3
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+
+    # ── SLAM Map ──
+    - Class: rviz_default_plugins/Map
+      Name: SLAM Map
+      Enabled: true
+      Topic:
+        Value: /map
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 0.8
+      Color Scheme: map
+      Draw Behind: true
+
+    # ── Global Costmap ──
+    - Class: rviz_default_plugins/Map
+      Name: Global Costmap
+      Enabled: false
+      Topic:
+        Value: /global_costmap/costmap
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 0.4
+      Color Scheme: costmap
+
+    # ── Local Costmap ──
+    - Class: rviz_default_plugins/Map
+      Name: Local Costmap
+      Enabled: false
+      Topic:
+        Value: /local_costmap/costmap
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 0.5
+      Color Scheme: costmap
+
+    # ── LaserScan (pseudo from ultrasonic) ──
+    - Class: rviz_default_plugins/LaserScan
+      Name: Laser Scan
+      Enabled: true
+      Topic:
+        Value: /scan
+        Depth: 5
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 79; 195; 247
+      Size (m): 0.03
+      Size (Pixels): 3
+      Style: Points
+      Decay Time: 0.5
+      Min Color: 79; 195; 247
+      Max Color: 255; 255; 255
+
+    # ── Filtered Odometry ──
+    - Class: rviz_default_plugins/Odometry
+      Name: Filtered Odometry
+      Enabled: true
+      Topic:
+        Value: /odometry/filtered
+        Depth: 5
+        Reliability Policy: Best Effort
+      Arrow Length: 0.15
+      Color: 102; 187; 106
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+        Position:
+          Alpha: 0.3
+      Keep: 50
+      Shape:
+        Alpha: 0.8
+        Axes Length: 0.1
+        Head Length: 0.05
+        Head Radius: 0.02
+        Shaft Length: 0.1
+        Shaft Radius: 0.01
+        Value: Arrow
+
+    # ── Nav2 Global Path ──
+    - Class: rviz_default_plugins/Path
+      Name: Nav2 Plan
+      Enabled: true
+      Topic:
+        Value: /plan
+        Depth: 5
+        Reliability Policy: Reliable
+      Color: 255; 167; 38
+      Line Style: Lines
+      Alpha: 0.8
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0.01
+
+    # ── Camera Image (YOLO annotated) ──
+    - Class: rviz_default_plugins/Image
+      Name: YOLO Camera
+      Enabled: true
+      Topic:
+        Value: /yolo/annotated
+        Depth: 1
+        Reliability Policy: Best Effort
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Normalize Range: true
+
+    # ── Goal Pose (interactive) ──
+    - Class: rviz_default_plugins/GoalTool
+      Name: Nav2 Goal
+      Topic:
+        Value: /goal_pose
+        Depth: 5
+
+    # ── Range (ultrasonic) ──
+    - Class: rviz_default_plugins/Range
+      Name: Ultrasonic Range
+      Enabled: true
+      Topic:
+        Value: /range
+        Depth: 5
+        Reliability Policy: Best Effort
+      Color: 255; 238; 88
+      Alpha: 0.3
+
+  Enabled: true
+  Global Options:
+    Background Color: 15; 17; 23
+    Fixed Frame: map
+    Frame Rate: 30
+
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Top Down
+      Enable Stereo Rendering:
+        Value: false
+      Near Clip Distance: 0.01
+      Scale: 50
+      Target Frame: base_link
+      X: 0
+      Y: 0
+
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1400
+  X: 100
+  Y: 100
+  Views:
+    collapsed: true
+  YOLO Camera:
+    collapsed: false

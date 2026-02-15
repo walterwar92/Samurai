@@ -1,0 +1,125 @@
+# ========================================
+# Samurai Robot — .gitignore
+# ========================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# --- ROS2 ---
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
+*.pyc
+
+# --- Android / Gradle ---
+android_app/.gradle/
+android_app/.idea/
+!android_app/.idea/runConfigurations/
+android_app/local.properties
+android_app/build/
+android_app/*/build/
+android_app/**/build/
+android_app/captures/
+android_app/.externalNativeBuild
+android_app/.cxx
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.iml
+android_app/.DS_Store
+
+# Android Vosk models (large binary files)
+android_app/app/src/main/assets/model/
+android_app/app/build/intermediates/assets/
+
+# --- Machine Learning Models ---
+*.pt
+*.onnx
+*.tflite
+*.h5
+*.pb
+vosk-model-*/
+yolov*.pt
+
+# --- IDE / Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# --- OS Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# --- Logs ---
+*.log
+*.logs
+log/
+logs/
+
+# --- Temporary Files ---
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+
+# --- Claude Code ---
+.claude/
+
+# --- Node.js (if used) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Secrets ---
+.env
+.env.local
+secrets.yaml
+credentials.json
+*.pem
+*.key
+
+# --- Generated documentation ---
+docs/_build/
+site/
+
+# --- Database ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Compressed files (if temporary) ---
+*.zip
+*.tar.gz
+*.rar
