@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 from collections import deque
@@ -74,10 +75,191 @@ COLOUR_BGR = {
 }
 
 SIM_DT = 0.05  # 20 Hz
+PATH_GRID_RES = 0.05  # 5 cm per cell for A* grid
+PATH_SAFETY_MARGIN = 0.10  # 10 cm extra clearance around obstacles
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimArena — 2D world with walls and balls
+# A* Pathfinder — grid-based pathfinding around forbidden zones
+# ═════════════════════════════════════════════════════════════════
+
+import heapq
+
+def _build_grid(arena, zones, robot_radius):
+    """Build occupancy grid: True = blocked, False = free."""
+    cols = int(arena.width / PATH_GRID_RES)
+    rows = int(arena.height / PATH_GRID_RES)
+    grid = [[False] * cols for _ in range(rows)]
+    margin = robot_radius + PATH_SAFETY_MARGIN
+
+    for r in range(rows):
+        for c in range(cols):
+            wx = (c + 0.5) * PATH_GRID_RES
+            wy = (r + 0.5) * PATH_GRID_RES
+
+            # Block cells near arena walls
+            if (wx < margin or wx > arena.width - margin or
+                    wy < margin or wy > arena.height - margin):
+                grid[r][c] = True
+                continue
+
+            # Block cells inside forbidden zones (with robot radius margin)
+            for z in zones:
+                zx1 = z['x1'] - margin
+                zy1 = z['y1'] - margin
+                zx2 = z['x2'] + margin
+                zy2 = z['y2'] + margin
+                if zx1 <= wx <= zx2 and zy1 <= wy <= zy2:
+                    grid[r][c] = True
+                    break
+
+    return grid, rows, cols
+
+
+def _world_to_grid(wx, wy):
+    """Convert world metres → grid cell (col, row)."""
+    return int(wx / PATH_GRID_RES), int(wy / PATH_GRID_RES)
+
+
+def _grid_to_world(c, r):
+    """Convert grid cell → world centre metres."""
+    return (c + 0.5) * PATH_GRID_RES, (r + 0.5) * PATH_GRID_RES
+
+
+def find_path(arena, zones, start_xy, goal_xy, robot_radius=ROBOT_RADIUS):
+    """A* pathfinding from start to goal, avoiding walls and forbidden zones.
+    Returns list of (x, y) world-coordinate waypoints, or [] if no path."""
+    grid, rows, cols = _build_grid(arena, zones, robot_radius)
+
+    sc, sr = _world_to_grid(*start_xy)
+    gc, gr = _world_to_grid(*goal_xy)
+
+    # Clamp to grid bounds
+    sc = max(0, min(cols - 1, sc))
+    sr = max(0, min(rows - 1, sr))
+    gc = max(0, min(cols - 1, gc))
+    gr = max(0, min(rows - 1, gr))
+
+    # If start or goal is blocked, find nearest free cell
+    if grid[sr][sc]:
+        sr, sc = _nearest_free(grid, sr, sc, rows, cols)
+    if grid[gr][gc]:
+        gr, gc = _nearest_free(grid, gr, gc, rows, cols)
+
+    if sr is None or gr is None:
+        return []
+
+    # A* with 8-directional movement
+    DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    COSTS = [1.0, 1.0, 1.0, 1.0, 1.414, 1.414, 1.414, 1.414]
+
+    def heuristic(r1, c1, r2, c2):
+        dr = abs(r1 - r2)
+        dc = abs(c1 - c2)
+        return max(dr, dc) + 0.414 * min(dr, dc)  # octile distance
+
+    open_set = [(heuristic(sr, sc, gr, gc), 0.0, sr, sc)]
+    g_cost = {(sr, sc): 0.0}
+    came_from = {}
+
+    while open_set:
+        _f, g, r, c = heapq.heappop(open_set)
+
+        if r == gr and c == gc:
+            # Reconstruct path
+            path = []
+            while (r, c) in came_from:
+                path.append(_grid_to_world(c, r))
+                r, c = came_from[(r, c)]
+            path.append(_grid_to_world(sc, sr))
+            path.reverse()
+            return _smooth_path(path, grid, rows, cols)
+
+        if g > g_cost.get((r, c), float('inf')):
+            continue
+
+        for (dr, dc), cost in zip(DIRS, COSTS):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and not grid[nr][nc]:
+                ng = g + cost
+                if ng < g_cost.get((nr, nc), float('inf')):
+                    g_cost[(nr, nc)] = ng
+                    f = ng + heuristic(nr, nc, gr, gc)
+                    came_from[(nr, nc)] = (r, c)
+                    heapq.heappush(open_set, (f, ng, nr, nc))
+
+    return []  # No path found
+
+
+def _nearest_free(grid, r, c, rows, cols):
+    """BFS to find nearest free cell."""
+    from collections import deque as dq
+    visited = set()
+    queue = dq([(r, c)])
+    visited.add((r, c))
+    while queue:
+        cr, cc = queue.popleft()
+        if not grid[cr][cc]:
+            return cr, cc
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = cr + dr, cc + dc
+            if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    return None, None
+
+
+def _line_of_sight(x0, y0, x1, y1, grid, rows, cols):
+    """Bresenham check: True if straight line between two world points is free."""
+    c0, r0 = _world_to_grid(x0, y0)
+    c1, r1 = _world_to_grid(x1, y1)
+    dc = abs(c1 - c0)
+    dr = abs(r1 - r0)
+    sc = 1 if c0 < c1 else -1
+    sr = 1 if r0 < r1 else -1
+    err = dc - dr
+    while True:
+        if 0 <= r0 < rows and 0 <= c0 < cols:
+            if grid[r0][c0]:
+                return False
+        else:
+            return False
+        if r0 == r1 and c0 == c1:
+            break
+        e2 = 2 * err
+        if e2 > -dr:
+            err -= dr
+            c0 += sc
+        if e2 < dc:
+            err += dc
+            r0 += sr
+    return True
+
+
+def _smooth_path(path, grid=None, rows=0, cols=0):
+    """Reduce path points using line-of-sight pruning against the grid."""
+    if len(path) <= 2:
+        return path
+    if grid is None:
+        return path
+    smoothed = [path[0]]
+    i = 0
+    while i < len(path) - 1:
+        best = i + 1
+        for j in range(len(path) - 1, i + 1, -1):
+            if _line_of_sight(path[i][0], path[i][1],
+                              path[j][0], path[j][1],
+                              grid, rows, cols):
+                best = j
+                break
+        smoothed.append(path[best])
+        i = best
+    return smoothed
+
+
+# ═════════════════════════════════════════════════════════════════
+# SimArena — 2D world with walls, balls, and forbidden zones
 # ═════════════════════════════════════════════════════════════════
 
 class SimArena:
@@ -85,6 +267,8 @@ class SimArena:
         self.width = ARENA_W
         self.height = ARENA_H
         self.balls = []
+        self.forbidden_zones = []  # list of {id, x1, y1, x2, y2}
+        self._zone_counter = 0
         self._spawn_balls()
 
     def _spawn_balls(self):
@@ -101,10 +285,41 @@ class SimArena:
                 'grabbed': False,
             })
 
+    def add_zone(self, x1, y1, x2, y2):
+        """Add a forbidden zone (rectangle). Returns zone id."""
+        self._zone_counter += 1
+        zone = {
+            'id': self._zone_counter,
+            'x1': min(x1, x2), 'y1': min(y1, y2),
+            'x2': max(x1, x2), 'y2': max(y1, y2),
+        }
+        self.forbidden_zones.append(zone)
+        return zone
+
+    def remove_zone(self, zone_id):
+        """Remove a forbidden zone by id. Returns True if found."""
+        for i, z in enumerate(self.forbidden_zones):
+            if z['id'] == zone_id:
+                self.forbidden_zones.pop(i)
+                return True
+        return False
+
+    def clear_zones(self):
+        """Remove all forbidden zones."""
+        self.forbidden_zones.clear()
+
+    def point_in_zone(self, x, y):
+        """Check if a world point is inside any forbidden zone."""
+        for z in self.forbidden_zones:
+            if z['x1'] <= x <= z['x2'] and z['y1'] <= y <= z['y2']:
+                return True
+        return False
+
     def reset(self):
         for b in self.balls:
             b['grabbed'] = False
         self._spawn_balls()
+        # Note: forbidden zones are preserved on reset
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -133,6 +348,8 @@ class SimRobot:
 
     def tick(self, dt: float):
         self._prev_v_linear = self.v_linear
+        # Save previous position for zone collision
+        prev_x, prev_y = self.x, self.y
         # Integrate velocities
         self.x += self.v_linear * math.cos(self.theta) * dt
         self.y += self.v_linear * math.sin(self.theta) * dt
@@ -143,6 +360,17 @@ class SimRobot:
         margin = ROBOT_RADIUS
         self.x = max(margin, min(self.arena.width - margin, self.x))
         self.y = max(margin, min(self.arena.height - margin, self.y))
+        # Forbidden zone collision — push robot back
+        for z in self.arena.forbidden_zones:
+            zx1 = z['x1'] - margin
+            zy1 = z['y1'] - margin
+            zx2 = z['x2'] + margin
+            zy2 = z['y2'] + margin
+            if zx1 <= self.x <= zx2 and zy1 <= self.y <= zy2:
+                self.x = prev_x
+                self.y = prev_y
+                self.v_linear = 0.0
+                break
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -416,6 +644,17 @@ class SimFSM:
         self._manual_distance = 0.0       # remaining distance to travel
         self._manual_direction = None     # 'forward', 'backward', 'left', 'right'
 
+        # Pathfinding
+        self.planned_path = []            # list of (x, y) waypoints
+        self._path_waypoint_idx = 0       # current waypoint index
+        self._path_replan_timer = 0.0     # replan every N seconds
+
+        # Remembered ball position (keeps last known world coords)
+        self._remembered_ball = None      # (x, y) or None
+
+        # Persistent target memory — survives SEARCHING, only cleared on IDLE/new target
+        self._last_known_target = None    # (x, y) or None
+
     def voice_command(self, text: str):
         text = text.lower().strip()
         self._log(f'Команда: "{text}"')
@@ -487,7 +726,6 @@ class SimFSM:
 
     def _extract_number(self, text: str) -> float:
         """Extract first number from text."""
-        import re
         numbers = re.findall(r'\d+\.?\d*', text)
         if numbers:
             return float(numbers[0])
@@ -522,13 +760,75 @@ class SimFSM:
         if new_state == State.IDLE:
             self.robot.stop()
             self.robot.laser_on = False
+            self.planned_path = []
+            self._remembered_ball = None
+            self._last_known_target = None
         elif new_state == State.SEARCHING:
             self._search_start_theta = self.robot.theta
             self._search_accumulated = 0.0
             self._prev_theta = self.robot.theta
+            self.planned_path = []
+            self._remembered_ball = None
+        elif new_state == State.RETURNING:
+            self._plan_path_to(self.arena.width / 2.0, self.arena.height / 2.0)
         elif new_state == State.CALLING:
             self._log('Вызываю вторую машину!')
             self._transition(State.IDLE)
+
+    def _plan_path_to(self, goal_x, goal_y):
+        """Plan path from robot's current position to goal, avoiding zones."""
+        start = (self.robot.x, self.robot.y)
+        goal = (goal_x, goal_y)
+        self.planned_path = find_path(
+            self.arena, self.arena.forbidden_zones, start, goal
+        )
+        self._path_waypoint_idx = 0
+        self._path_replan_timer = 0.0
+        if self.planned_path:
+            self._log(f'Маршрут: {len(self.planned_path)} точек')
+        else:
+            self._log('Маршрут не найден!')
+
+    def _follow_path(self, dt: float) -> bool:
+        """Follow planned path waypoint by waypoint.
+        Returns True if still following, False if path complete or empty."""
+        if not self.planned_path or self._path_waypoint_idx >= len(self.planned_path):
+            self.robot.stop()
+            self.planned_path = []
+            return False
+
+        # Current target waypoint
+        wx, wy = self.planned_path[self._path_waypoint_idx]
+        dx = wx - self.robot.x
+        dy = wy - self.robot.y
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        # Reached waypoint? Move to next
+        if dist < 0.10:
+            self._path_waypoint_idx += 1
+            if self._path_waypoint_idx >= len(self.planned_path):
+                self.robot.stop()
+                self.planned_path = []
+                return False
+            wx, wy = self.planned_path[self._path_waypoint_idx]
+            dx = wx - self.robot.x
+            dy = wy - self.robot.y
+            dist = math.sqrt(dx * dx + dy * dy)
+
+        # Steer towards waypoint
+        target_angle = math.atan2(dy, dx)
+        angle_error = target_angle - self.robot.theta
+        angle_error = math.atan2(math.sin(angle_error), math.cos(angle_error))
+
+        if abs(angle_error) > 0.4:
+            # Need to turn first
+            self.robot.set_velocity(0.0, angle_error * 1.5)
+        else:
+            # Move + steer
+            speed = min(0.15, dist * 0.5)
+            self.robot.set_velocity(speed, angle_error * 1.0)
+
+        return True
 
     def tick(self, sensors: SimSensors, detector: SimDetector, dt: float):
         self._last_detection = detector.get_closest_detection(self.target_colour)
@@ -611,7 +911,7 @@ class SimFSM:
         self._manual_mode = False
         self.robot.stop()
 
-    # ── SEARCHING: clockwise rotation, 360° check ─────────────
+    # ── SEARCHING: smart rotation toward last known target ─────
     def _do_search(self):
         # Track accumulated rotation
         delta = self._prev_theta - self.robot.theta
@@ -637,9 +937,20 @@ class SimFSM:
             self._transition(State.TARGETING)
             return
 
-        # Rotate clockwise (slower for more stable detection)
-        # Reduced from -0.4 to -0.3 for better stability
-        self.robot.set_velocity(0.0, -0.3)
+        # Choose rotation direction based on last known target position
+        if self._last_known_target:
+            dx = self._last_known_target[0] - self.robot.x
+            dy = self._last_known_target[1] - self.robot.y
+            target_angle = math.atan2(dy, dx)
+            angle_diff = target_angle - self.robot.theta
+            angle_diff = math.atan2(math.sin(angle_diff), math.cos(angle_diff))
+            # Rotate toward the remembered target (positive = CCW, negative = CW)
+            direction = 0.4 if angle_diff > 0 else -0.4
+        else:
+            # No memory — default clockwise
+            direction = -0.3
+
+        self.robot.set_velocity(0.0, direction)
 
     # ── TARGETING: rotate to centre ball, then approach ────────
     def _do_targeting(self, dt: float):
@@ -657,6 +968,14 @@ class SimFSM:
             return
 
         self._lost_frames = 0
+
+        # Update persistent target memory
+        ball_dist = det['distance']
+        ball_angle = self.robot.theta + ((det['x'] + det['w'] / 2.0) - CAM_W / 2.0) / (CAM_W / 2.0) * (CAM_FOV / 2)
+        self._last_known_target = (
+            self.robot.x + ball_dist * math.cos(ball_angle),
+            self.robot.y + ball_dist * math.sin(ball_angle),
+        )
 
         # Calculate how far ball is from vertical center line
         ball_center_x = det['x'] + det['w'] / 2.0  # Ball center in pixels
@@ -702,62 +1021,97 @@ class SimFSM:
         # Apply rotation (only angular, no linear movement)
         self.robot.set_velocity(0.0, angular)
 
-    # ── APPROACHING: drive straight to centred ball ────────────
+    # ── APPROACHING: drive to ball, avoiding forbidden zones ───
     def _do_approach(self, sensors: SimSensors, dt: float):
         self._timeout += dt
         det = self._last_detection
 
         if self._timeout > 30.0:
             self._log('Таймаут приближения')
+            self._remembered_ball = None
             self._transition(State.SEARCHING)
             return
 
-        if det is None:
-            self._lost_frames += 1
-            # Slow creep + gentle last-direction turn
-            self.robot.set_velocity(0.02, self._last_steer * 0.2)
-            if self._lost_frames > 60:  # More patience
-                self._log('Мяч потерян — возврат к поиску')
-                self._transition(State.SEARCHING)
-            return
-
-        self._lost_frames = 0
-
-        # Calculate ball offset from center
-        ball_center_x = det['x'] + det['w'] / 2.0
-        pixel_offset = ball_center_x - CAM_W / 2.0
-        normalized_offset = pixel_offset / (CAM_W / 2.0)
-        abs_offset = abs(normalized_offset)
-
-        # If ball drifted too far off center → back to TARGETING
-        if abs_offset > 0.65:  # Very lenient threshold
-            self.robot.stop()
-            self._log('Объект ушёл из центра — повторное наведение')
-            self._transition(State.TARGETING)
-            return
-
-        # Small correction while driving forward
-        # Same logic as TARGETING: turn TOWARDS the ball
-        target_angular = normalized_offset * 0.4  # Gentler correction while moving
-        angular = self._last_steer * 0.5 + target_angular * 0.5
-        self._last_steer = angular
-
-        # Drive forward (slower if off-center for better control)
-        linear = 0.10 if abs_offset < 0.20 else 0.05
-
-        # Check if we're close enough to grab/burn
+        # Check if we're close enough to grab/burn (works with or without detection)
         if sensors.range_m < 0.10:
             self.robot.stop()
+            self.planned_path = []
+            self._remembered_ball = None
+            colour = det['colour'] if det else self.target_colour or '?'
             if self.target_action == 'burn':
-                self._log(f'Достиг цели — жгу {det["colour"]} мяч')
+                self._log(f'Достиг цели — жгу {colour} мяч')
                 self._transition(State.BURNING)
             else:
-                self._log(f'Достиг цели — захватываю {det["colour"]} мяч')
+                self._log(f'Достиг цели — захватываю {colour} мяч')
                 self._transition(State.GRABBING)
             return
 
-        # Move forward with slight corrections
-        self.robot.set_velocity(linear, angular)
+        if det is not None:
+            # Ball is visible — update remembered position
+            self._lost_frames = 0
+            ball_dist = det['distance']
+            ball_angle = self.robot.theta + ((det['x'] + det['w'] / 2.0) - CAM_W / 2.0) / (CAM_W / 2.0) * (CAM_FOV / 2)
+            ball_wx = self.robot.x + ball_dist * math.cos(ball_angle)
+            ball_wy = self.robot.y + ball_dist * math.sin(ball_angle)
+            self._remembered_ball = (ball_wx, ball_wy)
+            self._last_known_target = (ball_wx, ball_wy)
+
+            # Replan path periodically
+            self._path_replan_timer += dt
+            if not self.planned_path or self._path_replan_timer > 2.0:
+                self._plan_path_to(ball_wx, ball_wy)
+
+            # Follow path if far enough
+            if self.planned_path and ball_dist > 0.3:
+                self._follow_path(dt)
+                return
+
+            # Close enough — direct visual approach
+            self.planned_path = []
+            ball_center_x = det['x'] + det['w'] / 2.0
+            pixel_offset = ball_center_x - CAM_W / 2.0
+            normalized_offset = pixel_offset / (CAM_W / 2.0)
+            abs_offset = abs(normalized_offset)
+
+            # If ball drifted too far off center → back to TARGETING
+            if abs_offset > 0.65:
+                self.robot.stop()
+                self._log('Объект ушёл из центра — повторное наведение')
+                self._transition(State.TARGETING)
+                return
+
+            target_angular = normalized_offset * 0.4
+            angular = self._last_steer * 0.5 + target_angular * 0.5
+            self._last_steer = angular
+
+            linear = 0.10 if abs_offset < 0.20 else 0.05
+            self.robot.set_velocity(linear, angular)
+        else:
+            # Ball NOT visible — follow path to remembered position
+            self._lost_frames += 1
+
+            if self._remembered_ball and self.planned_path:
+                # Keep following the planned path to the remembered position
+                still_going = self._follow_path(dt)
+                if not still_going:
+                    # Arrived at remembered position but ball not visible
+                    self._log('Прибыл к запомненной позиции — ищу объект')
+                    self._remembered_ball = None
+                    self._transition(State.SEARCHING)
+                return
+
+            if self._remembered_ball and not self.planned_path:
+                # Have remembered position but no path — plan one
+                self._plan_path_to(*self._remembered_ball)
+                if self.planned_path:
+                    self._follow_path(dt)
+                    return
+
+            # No remembered position and no path — search
+            if self._lost_frames > 60:
+                self._log('Мяч потерян — возврат к поиску')
+                self._remembered_ball = None
+                self._transition(State.SEARCHING)
 
     def _do_grab(self, dt: float):
         self._timeout += dt
@@ -786,7 +1140,7 @@ class SimFSM:
             self._transition(State.SEARCHING)
 
     def _do_return(self, dt: float):
-        """Navigate toward home (0, 0 is centre of arena)."""
+        """Navigate toward home using pathfinding around forbidden zones."""
         home_x = self.arena.width / 2.0
         home_y = self.arena.height / 2.0
         dx = home_x - self.robot.x
@@ -798,6 +1152,22 @@ class SimFSM:
             self._transition(State.IDLE)
             return
 
+        # Replan if needed
+        self._path_replan_timer += dt
+        if not self.planned_path or self._path_replan_timer > 3.0:
+            self._plan_path_to(home_x, home_y)
+
+        # Follow path if we have one
+        if self.planned_path:
+            still_going = self._follow_path(dt)
+            if not still_going:
+                # Path complete — check if actually home
+                if dist < 0.15:
+                    self._log('Вернулся домой')
+                    self._transition(State.IDLE)
+            return
+
+        # Fallback: direct navigation (no zones)
         target_angle = math.atan2(dy, dx)
         angle_error = target_angle - self.robot.theta
         angle_error = math.atan2(math.sin(angle_error), math.cos(angle_error))
@@ -848,7 +1218,8 @@ class MapRenderer:
         self.w = int(arena.width * scale)
         self.h = int(arena.height * scale)
 
-    def render(self, robot: SimRobot, scan_points=None) -> bytes:
+    def render(self, robot: SimRobot, scan_points=None,
+               planned_path=None) -> bytes:
         img = np.full((self.h, self.w, 3), 240, dtype=np.uint8)
 
         # Walls
@@ -861,6 +1232,23 @@ class MapRenderer:
         for i in range(1, int(self.arena.height)):
             y = int(i * self.scale)
             cv2.line(img, (0, y), (self.w, y), (210, 210, 210), 1)
+
+        # Forbidden zones (semi-transparent red)
+        overlay = img.copy()
+        for zone in self.arena.forbidden_zones:
+            px1 = int(zone['x1'] * self.scale)
+            py1 = self.h - int(zone['y2'] * self.scale)  # flip Y
+            px2 = int(zone['x2'] * self.scale)
+            py2 = self.h - int(zone['y1'] * self.scale)
+            cv2.rectangle(overlay, (px1, py1), (px2, py2), (0, 0, 200), -1)
+            cv2.rectangle(img, (px1, py1), (px2, py2), (0, 0, 180), 2)
+            # Zone label
+            cx = (px1 + px2) // 2
+            cy = (py1 + py2) // 2
+            cv2.putText(img, 'X', (cx - 5, cy + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        # Blend overlay for semi-transparency (40% opacity)
+        cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
 
         # Balls
         for ball in self.arena.balls:
@@ -880,6 +1268,20 @@ class MapRenderer:
                 sx = int(pt[0] * self.scale)
                 sy = self.h - int(pt[1] * self.scale)
                 cv2.circle(img, (sx, sy), 2, (200, 160, 60), -1)
+
+        # Planned path (yellow-green polyline)
+        if planned_path and len(planned_path) >= 2:
+            pts = []
+            for wx, wy in planned_path:
+                px = int(wx * self.scale)
+                py = self.h - int(wy * self.scale)
+                pts.append([px, py])
+            pts_arr = np.array(pts, dtype=np.int32)
+            cv2.polylines(img, [pts_arr], False, (0, 200, 100), 2,
+                          cv2.LINE_AA)
+            # Draw waypoint dots
+            for p in pts:
+                cv2.circle(img, (p[0], p[1]), 3, (0, 180, 80), -1)
 
         # Robot
         rx = int(robot.x * self.scale)
@@ -1291,6 +1693,55 @@ def main():
                 })
         return json_ok({'balls': balls})
 
+    # ── 7b. Forbidden Zones ──
+
+    @app.route('/api/zones')
+    def api_zones():
+        with lock:
+            zones = list(arena.forbidden_zones)
+        return json_ok({'zones': zones, 'count': len(zones)})
+
+    @app.route('/api/zones', methods=['POST'])
+    def api_zones_add():
+        body = request.get_json(silent=True)
+        if body is None:
+            return json_err("Request body must be JSON")
+        x1 = body.get('x1')
+        y1 = body.get('y1')
+        x2 = body.get('x2')
+        y2 = body.get('y2')
+        if any(v is None for v in [x1, y1, x2, y2]):
+            return json_err("x1, y1, x2, y2 are required")
+        if not all(isinstance(v, (int, float)) for v in [x1, y1, x2, y2]):
+            return json_err("x1, y1, x2, y2 must be numbers")
+        with lock:
+            zone = arena.add_zone(float(x1), float(y1), float(x2), float(y2))
+            fsm._log(f'Добавлена запретная зона #{zone["id"]}')
+        return json_ok({'zone': zone})
+
+    @app.route('/api/zones/<int:zone_id>', methods=['DELETE'])
+    def api_zones_delete(zone_id):
+        with lock:
+            removed = arena.remove_zone(zone_id)
+            if removed:
+                fsm._log(f'Удалена запретная зона #{zone_id}')
+        if removed:
+            return json_ok({'removed': zone_id})
+        return json_err(f"Zone {zone_id} not found", 404)
+
+    @app.route('/api/zones/clear', methods=['POST'])
+    def api_zones_clear():
+        with lock:
+            arena.clear_zones()
+            fsm._log('Все запретные зоны удалены')
+        return json_ok({'message': 'All zones cleared'})
+
+    @app.route('/api/path')
+    def api_path():
+        with lock:
+            path = [(round(x, 3), round(y, 3)) for x, y in fsm.planned_path]
+        return json_ok({'path': path, 'count': len(path)})
+
     # ── 8. Map and Camera ──
 
     @app.route('/api/map/image')
@@ -1374,23 +1825,72 @@ def main():
                 det = detector.get_closest_detection(fsm.target_colour)
                 det_all = detector.detections[0] if detector.detections else {}
 
+                # All detections list
+                all_dets = list(detector.detections)
+
+                # Remembered ball position
+                rem_ball = None
+                if fsm._remembered_ball:
+                    rem_ball = {
+                        'x': round(fsm._remembered_ball[0], 3),
+                        'y': round(fsm._remembered_ball[1], 3),
+                    }
+
+                # Balls info
+                balls_info = []
+                for i, b in enumerate(arena.balls):
+                    balls_info.append({
+                        'id': i,
+                        'colour': b['colour'],
+                        'x': round(b['x'], 3),
+                        'y': round(b['y'], 3),
+                        'grabbed': b['grabbed'],
+                    })
+
                 state = {
                     'status': status,
                     'detection': det_all,
+                    'all_detections': all_dets,
                     'range_m': round(sensors.range_m, 3),
                     'imu_ypr': [
                         round(sensors.imu_yaw, 1),
                         round(sensors.imu_pitch, 1),
                         round(sensors.imu_roll, 1),
                     ],
+                    'imu_gyro_z': round(sensors.imu_gyro_z, 3),
+                    'imu_accel_x': round(sensors.accel_x, 3),
                     'pose': {
                         'x': round(robot.x, 3),
                         'y': round(robot.y, 3),
                         'yaw': round(robot.theta, 3),
+                        'yaw_deg': round(math.degrees(robot.theta), 1),
+                    },
+                    'velocity': {
+                        'linear': round(robot.v_linear, 4),
+                        'angular': round(robot.v_angular, 4),
+                    },
+                    'actuators': {
+                        'claw_open': robot.claw_open,
+                        'laser_on': robot.laser_on,
                     },
                     'map_info': map_renderer.get_map_info(),
                     'scan_points': [],
                     'voice_log': fsm.log[-20:],
+                    'zones': list(arena.forbidden_zones),
+                    'planned_path': [(round(x, 3), round(y, 3))
+                                     for x, y in fsm.planned_path],
+                    'remembered_ball': rem_ball,
+                    'last_known_target': {
+                        'x': round(fsm._last_known_target[0], 3),
+                        'y': round(fsm._last_known_target[1], 3),
+                    } if fsm._last_known_target else None,
+                    'balls': balls_info,
+                    'sim_time': round(sim_time[0], 2),
+                    'arena_size': {
+                        'width': arena.width,
+                        'height': arena.height,
+                    },
+                    'lost_frames': fsm._lost_frames,
                 }
             socketio.emit('state_update', state)
             socketio.sleep(0.25)
@@ -1415,7 +1915,8 @@ def main():
                     latest_frame[0] = jpeg.tobytes()
 
                 # Render map
-                latest_map_png[0] = map_renderer.render(robot)
+                latest_map_png[0] = map_renderer.render(
+                    robot, planned_path=fsm.planned_path)
 
             time.sleep(SIM_DT)
 
