@@ -87,6 +87,9 @@ body {
   color: var(--text-dim);
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 /* ── Camera Panel ── */
@@ -103,6 +106,33 @@ body {
 /* ── Map Panel ── */
 .map-panel { grid-column: 2; grid-row: 1; }
 
+.map-toolbar {
+  display: flex;
+  gap: 4px;
+}
+
+.map-toolbar .btn-tool {
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.map-toolbar .btn-tool:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.map-toolbar .btn-tool.active {
+  background: rgba(239, 83, 80, 0.25);
+  border-color: var(--red);
+  color: var(--red);
+}
+
 .map-container {
   position: relative;
   width: 100%;
@@ -116,6 +146,17 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
+}
+
+.map-container canvas.drawing {
+  cursor: crosshair;
+}
+
+.zone-counter {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 10px;
+  text-align: right;
 }
 
 /* ── FSM State Panel ── */
@@ -365,15 +406,168 @@ body {
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Debug Modal ── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal-overlay.open { display: flex; }
+
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 90vw;
+  max-width: 900px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.modal-close:hover { color: var(--text); }
+
+.modal-body {
+  overflow-y: auto;
+  padding: 14px 18px;
+  flex: 1;
+}
+
+.debug-section {
+  margin-bottom: 16px;
+}
+
+.debug-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--accent);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px 16px;
+}
+
+.debug-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+}
+
+.debug-key {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.debug-val {
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-align: right;
+}
+
+.debug-val.on  { color: var(--green); }
+.debug-val.off { color: var(--text-dim); }
+
+.debug-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.debug-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.debug-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(42,45,58,0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-debug {
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-debug:hover {
+  background: rgba(79,195,247,0.12);
+}
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>SAMURAI</h1>
-  <div class="connection-status">
-    <div class="status-dot" id="connDot"></div>
-    <span id="connText">Подключение...</span>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button class="btn-debug" id="btnDebug">Все данные</button>
+    <div class="connection-status">
+      <div class="status-dot" id="connDot"></div>
+      <span id="connText">Подключение...</span>
+    </div>
+  </div>
+</div>
+
+<!-- Debug Modal -->
+<div class="modal-overlay" id="debugModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Все данные робота</h2>
+      <button class="modal-close" id="debugClose">&times;</button>
+    </div>
+    <div class="modal-body" id="debugBody">
+      <div class="debug-section">
+        <div class="debug-section-title">Загрузка...</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -387,10 +581,18 @@ body {
 
   <!-- Map -->
   <div class="card map-panel">
-    <div class="card-title">Карта SLAM</div>
+    <div class="card-title">
+      <span>Карта SLAM</span>
+      <div class="map-toolbar">
+        <button class="btn-tool" id="btnDrawZone" title="Рисовать запретную зону (ЛКМ)">+ Зона</button>
+        <button class="btn-tool" id="btnDeleteZone" title="Удалить зону (клик по зоне)">- Зона</button>
+        <button class="btn-tool" id="btnClearZones" title="Удалить все зоны">Очистить</button>
+      </div>
+    </div>
     <div class="map-container">
       <canvas id="mapCanvas"></canvas>
     </div>
+    <div class="zone-counter" id="zoneCounter">Зон: 0</div>
   </div>
 
   <!-- FSM State -->
@@ -522,7 +724,10 @@ socket.on('disconnect', () => {
 });
 
 // ── State Updates ──
+let latestData = null;
+
 socket.on('state_update', (data) => {
+  latestData = data;
   updateFSM(data.status);
   updateSensors(data);
   updateDetection(data.detection);
@@ -604,17 +809,175 @@ function updateDetection(det) {
   }
 }
 
-// ── Map Canvas ──
+// ═══════════════════════════════════════════════════
+// Map Canvas + Zone Drawing
+// ═══════════════════════════════════════════════════
+
 const mapCanvas = document.getElementById('mapCanvas');
 const mapCtx = mapCanvas.getContext('2d');
 let mapImg = new Image();
 
+// Map transform state (updated each frame)
+let mapTransform = { offsetX: 0, offsetY: 0, scale: 1, info: null };
+
+// Zone editing state
+let zoneMode = 'none'; // 'none', 'draw', 'delete'
+let isDrawing = false;
+let drawStart = null;   // {cx, cy} canvas coords
+let drawCurrent = null; // {cx, cy} canvas coords
+let serverZones = [];   // zones from server state_update
+
+// ── Zone Toolbar ──
+document.getElementById('btnDrawZone').addEventListener('click', () => {
+  if (zoneMode === 'draw') {
+    setZoneMode('none');
+  } else {
+    setZoneMode('draw');
+  }
+});
+
+document.getElementById('btnDeleteZone').addEventListener('click', () => {
+  if (zoneMode === 'delete') {
+    setZoneMode('none');
+  } else {
+    setZoneMode('delete');
+  }
+});
+
+document.getElementById('btnClearZones').addEventListener('click', () => {
+  fetch('/api/zones/clear', { method: 'POST' });
+  setZoneMode('none');
+});
+
+function setZoneMode(mode) {
+  zoneMode = mode;
+  isDrawing = false;
+  drawStart = null;
+  drawCurrent = null;
+
+  const btnDraw = document.getElementById('btnDrawZone');
+  const btnDel = document.getElementById('btnDeleteZone');
+
+  btnDraw.classList.toggle('active', mode === 'draw');
+  btnDel.classList.toggle('active', mode === 'delete');
+
+  mapCanvas.classList.toggle('drawing', mode !== 'none');
+}
+
+// ── Canvas → World coordinate conversion ──
+function canvasToWorld(cx, cy) {
+  const t = mapTransform;
+  if (!t.info) return null;
+  // Reverse the canvas→map transform
+  const mx = (cx - t.offsetX) / t.scale;
+  const my = (cy - t.offsetY) / t.scale;
+  // Map pixels → world metres (Y flipped)
+  const wx = mx * t.info.resolution + t.info.origin_x;
+  const wy = (t.info.height - my) * t.info.resolution + t.info.origin_y;
+  return { x: wx, y: wy };
+}
+
+function worldToCanvas(wx, wy) {
+  const t = mapTransform;
+  if (!t.info) return null;
+  const mx = (wx - t.info.origin_x) / t.info.resolution;
+  const my = t.info.height - (wy - t.info.origin_y) / t.info.resolution;
+  return { cx: t.offsetX + mx * t.scale, cy: t.offsetY + my * t.scale };
+}
+
+// ── Mouse events for zone drawing ──
+mapCanvas.addEventListener('mousedown', (e) => {
+  if (zoneMode === 'none') return;
+
+  const rect = mapCanvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) * (mapCanvas.width / rect.width);
+  const cy = (e.clientY - rect.top) * (mapCanvas.height / rect.height);
+
+  if (zoneMode === 'draw') {
+    isDrawing = true;
+    drawStart = { cx, cy };
+    drawCurrent = { cx, cy };
+  } else if (zoneMode === 'delete') {
+    // Find zone under click and delete it
+    const world = canvasToWorld(cx, cy);
+    if (!world) return;
+    for (let i = serverZones.length - 1; i >= 0; i--) {
+      const z = serverZones[i];
+      if (world.x >= z.x1 && world.x <= z.x2 && world.y >= z.y1 && world.y <= z.y2) {
+        fetch('/api/zones/' + z.id, { method: 'DELETE' });
+        break;
+      }
+    }
+  }
+});
+
+mapCanvas.addEventListener('mousemove', (e) => {
+  if (!isDrawing || zoneMode !== 'draw') return;
+  const rect = mapCanvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) * (mapCanvas.width / rect.width);
+  const cy = (e.clientY - rect.top) * (mapCanvas.height / rect.height);
+  drawCurrent = { cx, cy };
+});
+
+mapCanvas.addEventListener('mouseup', (e) => {
+  if (!isDrawing || zoneMode !== 'draw') return;
+  isDrawing = false;
+
+  const rect = mapCanvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) * (mapCanvas.width / rect.width);
+  const cy = (e.clientY - rect.top) * (mapCanvas.height / rect.height);
+
+  const w1 = canvasToWorld(drawStart.cx, drawStart.cy);
+  const w2 = canvasToWorld(cx, cy);
+
+  if (!w1 || !w2) return;
+
+  // Minimum zone size: 5cm x 5cm
+  if (Math.abs(w1.x - w2.x) < 0.05 || Math.abs(w1.y - w2.y) < 0.05) {
+    drawStart = null;
+    drawCurrent = null;
+    return;
+  }
+
+  // Send to server
+  fetch('/api/zones', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      x1: Math.round(w1.x * 1000) / 1000,
+      y1: Math.round(w1.y * 1000) / 1000,
+      x2: Math.round(w2.x * 1000) / 1000,
+      y2: Math.round(w2.y * 1000) / 1000,
+    })
+  });
+
+  drawStart = null;
+  drawCurrent = null;
+});
+
+// Cancel drawing on mouse leave
+mapCanvas.addEventListener('mouseleave', () => {
+  if (isDrawing) {
+    isDrawing = false;
+    drawStart = null;
+    drawCurrent = null;
+  }
+});
+
+// ── Map Rendering ──
 function updateMap(data) {
   if (!data.map_info || !data.map_info.width) return;
 
   const info = data.map_info;
   const pose = data.pose;
   const scan = data.scan_points;
+  const zones = data.zones || [];
+  const path = data.planned_path || [];
+
+  serverZones = zones;
+
+  // Update zone counter
+  document.getElementById('zoneCounter').textContent = 'Зон: ' + zones.length;
 
   // Reload map image
   mapImg.src = '/map.png?t=' + Date.now();
@@ -634,10 +997,13 @@ function updateMap(data) {
     const offsetX = (mapCanvas.width - info.width * scale) / 2;
     const offsetY = (mapCanvas.height - info.height * scale) / 2;
 
+    // Store transform for coordinate conversion
+    mapTransform = { offsetX, offsetY, scale, info };
+
     ctx.drawImage(mapImg, offsetX, offsetY, info.width * scale, info.height * scale);
 
     // Helper: world coords → canvas pixels
-    function worldToCanvas(wx, wy) {
+    function w2c(wx, wy) {
       const mx = (wx - info.origin_x) / info.resolution;
       const my = info.height - (wy - info.origin_y) / info.resolution;
       return [offsetX + mx * scale, offsetY + my * scale];
@@ -647,21 +1013,60 @@ function updateMap(data) {
     if (scan && scan.length > 0) {
       ctx.fillStyle = 'rgba(79, 195, 247, 0.5)';
       for (const pt of scan) {
-        // Scan points are in base_link frame, transform using pose
         const cos_y = Math.cos(pose.yaw);
         const sin_y = Math.sin(pose.yaw);
         const gx = pose.x + pt[0] * cos_y - pt[1] * sin_y;
         const gy = pose.y + pt[0] * sin_y + pt[1] * cos_y;
-        const [cx, cy] = worldToCanvas(gx, gy);
+        const [cx, cy] = w2c(gx, gy);
         ctx.beginPath();
         ctx.arc(cx, cy, 2, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
+    // Draw planned path (on canvas overlay for smoother rendering)
+    if (path && path.length >= 2) {
+      ctx.strokeStyle = 'rgba(0, 220, 120, 0.8)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 3]);
+      ctx.beginPath();
+      const [sx, sy] = w2c(path[0][0], path[0][1]);
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < path.length; i++) {
+        const [px, py] = w2c(path[i][0], path[i][1]);
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Draw waypoint markers
+      ctx.fillStyle = 'rgba(0, 220, 120, 0.6)';
+      for (const pt of path) {
+        const [px, py] = w2c(pt[0], pt[1]);
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Goal marker (last point)
+      const [gx, gy] = w2c(path[path.length - 1][0], path[path.length - 1][1]);
+      ctx.strokeStyle = '#00dc78';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(gx, gy, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      // Cross
+      ctx.beginPath();
+      ctx.moveTo(gx - 4, gy - 4);
+      ctx.lineTo(gx + 4, gy + 4);
+      ctx.moveTo(gx + 4, gy - 4);
+      ctx.lineTo(gx - 4, gy + 4);
+      ctx.stroke();
+    }
+
     // Draw robot position
     if (pose) {
-      const [rx, ry] = worldToCanvas(pose.x, pose.y);
+      const [rx, ry] = w2c(pose.x, pose.y);
       // Robot body
       ctx.fillStyle = '#4fc3f7';
       ctx.beginPath();
@@ -678,6 +1083,21 @@ function updateMap(data) {
       ctx.moveTo(rx, ry);
       ctx.lineTo(ax, ay);
       ctx.stroke();
+    }
+
+    // Draw zone preview while dragging
+    if (isDrawing && drawStart && drawCurrent) {
+      ctx.strokeStyle = 'rgba(239, 83, 80, 0.8)';
+      ctx.fillStyle = 'rgba(239, 83, 80, 0.2)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      const x = Math.min(drawStart.cx, drawCurrent.cx);
+      const y = Math.min(drawStart.cy, drawCurrent.cy);
+      const w = Math.abs(drawCurrent.cx - drawStart.cx);
+      const h = Math.abs(drawCurrent.cy - drawStart.cy);
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+      ctx.setLineDash([]);
     }
   };
 }
@@ -730,6 +1150,190 @@ document.getElementById('cmdInput').addEventListener('keydown', (e) => {
     document.getElementById('cmdSend').click();
   }
 });
+
+// ═══════════════════════════════════════════════════
+// Debug Modal — all robot data
+// ═══════════════════════════════════════════════════
+
+const debugModal = document.getElementById('debugModal');
+const debugBody = document.getElementById('debugBody');
+
+document.getElementById('btnDebug').addEventListener('click', () => {
+  debugModal.classList.add('open');
+  renderDebug();
+});
+
+document.getElementById('debugClose').addEventListener('click', () => {
+  debugModal.classList.remove('open');
+});
+
+debugModal.addEventListener('click', (e) => {
+  if (e.target === debugModal) debugModal.classList.remove('open');
+});
+
+function renderDebug() {
+  const d = latestData;
+  if (!d) {
+    debugBody.innerHTML = '<div class="debug-section"><div class="debug-section-title">Нет данных</div></div>';
+    return;
+  }
+
+  let html = '';
+
+  // -- Simulation --
+  html += debugSection('Симуляция', [
+    kv('Время', d.sim_time != null ? d.sim_time.toFixed(2) + ' с' : '—'),
+    kv('Арена', d.arena_size ? d.arena_size.width + ' x ' + d.arena_size.height + ' м' : '—'),
+  ]);
+
+  // -- FSM --
+  const s = d.status || {};
+  html += debugSection('FSM', [
+    kv('Состояние', s.state || '—'),
+    kv('Цель (цвет)', s.target_colour || '—'),
+    kv('Действие', s.target_action || '—'),
+    kv('Потерянные кадры', d.lost_frames != null ? d.lost_frames : '—'),
+  ]);
+
+  // -- Pose --
+  const p = d.pose || {};
+  html += debugSection('Позиция робота', [
+    kv('X', p.x != null ? p.x.toFixed(3) + ' м' : '—'),
+    kv('Y', p.y != null ? p.y.toFixed(3) + ' м' : '—'),
+    kv('Yaw (рад)', p.yaw != null ? p.yaw.toFixed(3) : '—'),
+    kv('Yaw (град)', p.yaw_deg != null ? p.yaw_deg.toFixed(1) + '\u00b0' : '—'),
+  ]);
+
+  // -- Velocity --
+  const v = d.velocity || {};
+  html += debugSection('Скорости', [
+    kv('Линейная', v.linear != null ? v.linear.toFixed(4) + ' м/с' : '—'),
+    kv('Угловая', v.angular != null ? v.angular.toFixed(4) + ' рад/с' : '—'),
+  ]);
+
+  // -- Sensors --
+  const imu = d.imu_ypr || [];
+  html += debugSection('Сенсоры', [
+    kv('Ультразвук', d.range_m != null ? d.range_m.toFixed(3) + ' м' : '—'),
+    kv('IMU Yaw', imu[0] != null ? imu[0].toFixed(1) + '\u00b0' : '—'),
+    kv('IMU Pitch', imu[1] != null ? imu[1].toFixed(1) + '\u00b0' : '—'),
+    kv('IMU Roll', imu[2] != null ? imu[2].toFixed(1) + '\u00b0' : '—'),
+    kv('Gyro Z', d.imu_gyro_z != null ? d.imu_gyro_z.toFixed(3) + ' рад/с' : '—'),
+    kv('Accel X', d.imu_accel_x != null ? d.imu_accel_x.toFixed(3) + ' м/с\u00b2' : '—'),
+  ]);
+
+  // -- Actuators --
+  const act = d.actuators || {};
+  html += debugSection('Актуаторы', [
+    kvBool('Клешня', act.claw_open),
+    kvBool('Лазер', act.laser_on),
+  ]);
+
+  // -- Remembered ball --
+  const rb = d.remembered_ball;
+  html += debugSection('Запомненный мяч (approach)', [
+    kv('X', rb ? rb.x.toFixed(3) + ' м' : '—'),
+    kv('Y', rb ? rb.y.toFixed(3) + ' м' : '—'),
+  ]);
+
+  // -- Last known target (persistent) --
+  const lkt = d.last_known_target;
+  html += debugSection('Последняя известная цель (поиск)', [
+    kv('X', lkt ? lkt.x.toFixed(3) + ' м' : '—'),
+    kv('Y', lkt ? lkt.y.toFixed(3) + ' м' : '—'),
+  ]);
+
+  // -- Path --
+  const path = d.planned_path || [];
+  html += debugSection('Маршрут A*', [
+    kv('Точек', path.length),
+  ]);
+  if (path.length > 0) {
+    html += '<div class="debug-section"><table class="debug-table"><tr><th>#</th><th>X</th><th>Y</th></tr>';
+    path.forEach((pt, i) => {
+      html += '<tr><td>' + i + '</td><td>' + pt[0].toFixed(3) + '</td><td>' + pt[1].toFixed(3) + '</td></tr>';
+    });
+    html += '</table></div>';
+  }
+
+  // -- Detections --
+  const dets = d.all_detections || [];
+  html += debugSection('Детекции камеры (' + dets.length + ')', []);
+  if (dets.length > 0) {
+    html += '<div class="debug-section"><table class="debug-table"><tr><th>Цвет</th><th>Класс</th><th>Conf</th><th>Dist</th><th>X</th><th>Y</th><th>W</th><th>H</th></tr>';
+    dets.forEach(det => {
+      html += '<tr>' +
+        '<td style="color:' + (COLOUR_CSS[det.colour] || 'inherit') + '">' + (det.colour || '—') + '</td>' +
+        '<td>' + (det.class || '—') + '</td>' +
+        '<td>' + (det.conf != null ? det.conf.toFixed(3) : '—') + '</td>' +
+        '<td>' + (det.distance != null ? det.distance.toFixed(3) + ' м' : '—') + '</td>' +
+        '<td>' + (det.x != null ? det.x : '—') + '</td>' +
+        '<td>' + (det.y != null ? det.y : '—') + '</td>' +
+        '<td>' + (det.w != null ? det.w : '—') + '</td>' +
+        '<td>' + (det.h != null ? det.h : '—') + '</td>' +
+        '</tr>';
+    });
+    html += '</table></div>';
+  }
+
+  // -- Balls --
+  const balls = d.balls || [];
+  html += debugSection('Мячи на арене (' + balls.length + ')', []);
+  if (balls.length > 0) {
+    html += '<div class="debug-section"><table class="debug-table"><tr><th>ID</th><th>Цвет</th><th>X</th><th>Y</th><th>Захвачен</th></tr>';
+    balls.forEach(b => {
+      html += '<tr>' +
+        '<td>' + b.id + '</td>' +
+        '<td style="color:' + (COLOUR_CSS[b.colour] || 'inherit') + '">' + b.colour + '</td>' +
+        '<td>' + b.x.toFixed(3) + '</td>' +
+        '<td>' + b.y.toFixed(3) + '</td>' +
+        '<td>' + (b.grabbed ? 'Да' : 'Нет') + '</td>' +
+        '</tr>';
+    });
+    html += '</table></div>';
+  }
+
+  // -- Zones --
+  const zones = d.zones || [];
+  html += debugSection('Запретные зоны (' + zones.length + ')', []);
+  if (zones.length > 0) {
+    html += '<div class="debug-section"><table class="debug-table"><tr><th>ID</th><th>X1</th><th>Y1</th><th>X2</th><th>Y2</th></tr>';
+    zones.forEach(z => {
+      html += '<tr><td>' + z.id + '</td><td>' + z.x1.toFixed(3) + '</td><td>' + z.y1.toFixed(3) + '</td><td>' + z.x2.toFixed(3) + '</td><td>' + z.y2.toFixed(3) + '</td></tr>';
+    });
+    html += '</table></div>';
+  }
+
+  debugBody.innerHTML = html;
+}
+
+function debugSection(title, items) {
+  let html = '<div class="debug-section"><div class="debug-section-title">' + title + '</div>';
+  if (items.length > 0) {
+    html += '<div class="debug-grid">';
+    items.forEach(item => { html += item; });
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function kv(key, val) {
+  return '<div class="debug-row"><span class="debug-key">' + key + '</span><span class="debug-val">' + val + '</span></div>';
+}
+
+function kvBool(key, val) {
+  const cls = val ? 'on' : 'off';
+  const text = val ? 'ВКЛ' : 'ВЫКЛ';
+  return '<div class="debug-row"><span class="debug-key">' + key + '</span><span class="debug-val ' + cls + '">' + text + '</span></div>';
+}
+
+// Auto-update debug modal while open
+setInterval(() => {
+  if (debugModal.classList.contains('open')) {
+    renderDebug();
+  }
+}, 250);
 </script>
 </body>
 </html>
