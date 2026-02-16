@@ -16,10 +16,11 @@ from datetime import datetime
 from pathlib import Path
 
 # ──────────────────────────────────────────────────────────────────────
-# Настройка логирования
+# Настройка логирования — всё сохраняется рядом со скриптом
 # ──────────────────────────────────────────────────────────────────────
 
-LOG_DIR = Path.home() / "samurai_diagnostics"
+SCRIPT_DIR = Path(__file__).resolve().parent
+LOG_DIR = SCRIPT_DIR / "diagnostics_output"
 LOG_DIR.mkdir(exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -49,6 +50,147 @@ logger.addHandler(ch)
 
 results: dict[str, dict] = {}
 saved_files: list[str] = []  # пути ко всем сохранённым файлам диагностики
+
+# Флаг: I2C был выключен до запуска диагностики и мы его включили
+_i2c_was_disabled: bool = False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Проверка и включение I2C
+# ──────────────────────────────────────────────────────────────────────
+
+def ensure_i2c() -> bool:
+    """Проверяет, что I2C включён. Если выключен — включает на время диагностики.
+
+    Проверяет наличие /dev/i2c-1, загружает модуль ядра i2c-dev,
+    при необходимости включает I2C через raspi-config.
+    Запоминает исходное состояние, чтобы отключить в конце (restore_i2c).
+    Возвращает True если I2C доступен, False если требуется перезагрузка.
+    """
+    global _i2c_was_disabled
+    section("ПРОВЕРКА I2C ИНТЕРФЕЙСА")
+
+    # 1. Быстрая проверка — /dev/i2c-1 уже есть?
+    if os.path.exists('/dev/i2c-1'):
+        logger.info("  /dev/i2c-1 — найден, I2C уже активен")
+        _i2c_was_disabled = False
+        record("i2c_enable", status="OK", details={"action": "already enabled"})
+        return True
+
+    logger.warning("  /dev/i2c-1 НЕ НАЙДЕН — попытка включения I2C...")
+
+    # 2. Загрузка модуля ядра
+    try:
+        result = subprocess.run(
+            ['modprobe', 'i2c-dev'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            logger.info("  modprobe i2c-dev — выполнено")
+        else:
+            logger.warning(f"  modprobe i2c-dev — ошибка: {result.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"  modprobe i2c-dev — не удалось: {e}")
+
+    if os.path.exists('/dev/i2c-1'):
+        logger.info("  /dev/i2c-1 появился после modprobe — OK")
+        _i2c_was_disabled = True
+        record("i2c_enable", status="OK", details={"action": "modprobe i2c-dev"})
+        return True
+
+    # 3. Проверяем raspi-config
+    try:
+        result = subprocess.run(
+            ['raspi-config', 'nonint', 'get_i2c'],
+            capture_output=True, text=True, timeout=5,
+        )
+        i2c_status = result.stdout.strip()
+        # raspi-config get_i2c: "1" = выключен, "0" = включён
+        if i2c_status == '1':
+            logger.warning("  I2C выключен в raspi-config — включаем...")
+            _i2c_was_disabled = True
+            enable_result = subprocess.run(
+                ['raspi-config', 'nonint', 'do_i2c', '0'],
+                capture_output=True, text=True, timeout=10,
+            )
+            if enable_result.returncode == 0:
+                logger.info("  raspi-config do_i2c 0 — выполнено")
+            else:
+                logger.error(f"  raspi-config do_i2c — ошибка: "
+                             f"{enable_result.stderr.strip()}")
+
+            # Повторная загрузка модуля
+            subprocess.run(
+                ['modprobe', 'i2c-dev'],
+                capture_output=True, timeout=5,
+            )
+
+            if os.path.exists('/dev/i2c-1'):
+                logger.info("  I2C включён успешно (будет выключен после диагностики)")
+                record("i2c_enable", status="OK",
+                       details={"action": "enabled via raspi-config + modprobe"})
+                return True
+            else:
+                logger.error("  I2C включён в raspi-config, но /dev/i2c-1 "
+                             "не появился — ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА")
+                logger.error("  Выполните: sudo reboot")
+                record("i2c_enable", status="ERROR",
+                       details={"action": "enabled, reboot required"})
+                return False
+        else:
+            logger.warning("  raspi-config: I2C включён, но /dev/i2c-1 "
+                           "отсутствует — ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА")
+            record("i2c_enable", status="ERROR",
+                   details={"action": "enabled in config, reboot required"})
+            return False
+
+    except FileNotFoundError:
+        logger.warning("  raspi-config не найден (не Raspberry Pi?)")
+        record("i2c_enable", status="WARNING",
+               details={"action": "raspi-config not found"})
+        return False
+    except Exception as e:
+        logger.error(f"  Ошибка проверки raspi-config: {e}")
+        record("i2c_enable", status="ERROR", details={"error": str(e)})
+        return False
+
+
+def restore_i2c():
+    """Выключает I2C если он был выключен до запуска диагностики."""
+    if not _i2c_was_disabled:
+        logger.info("I2C: был включён до диагностики — оставляем как есть")
+        return
+
+    section("ВОССТАНОВЛЕНИЕ СОСТОЯНИЯ I2C")
+    logger.info("  I2C был выключен до диагностики — выключаем обратно...")
+
+    # Выгружаем модуль ядра
+    try:
+        subprocess.run(
+            ['rmmod', 'i2c-dev'],
+            capture_output=True, text=True, timeout=5,
+        )
+        logger.info("  rmmod i2c-dev — выполнено")
+    except Exception as e:
+        logger.warning(f"  rmmod i2c-dev — не удалось: {e}")
+
+    # Выключаем I2C через raspi-config
+    try:
+        result = subprocess.run(
+            ['raspi-config', 'nonint', 'do_i2c', '1'],  # 1 = disable
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            logger.info("  raspi-config do_i2c 1 (disable) — выполнено")
+        else:
+            logger.warning(f"  raspi-config do_i2c 1 — ошибка: "
+                           f"{result.stderr.strip()}")
+    except FileNotFoundError:
+        logger.warning("  raspi-config не найден — пропуск выключения")
+    except Exception as e:
+        logger.warning(f"  Ошибка выключения I2C: {e}")
+
+    logger.info("  I2C восстановлен в исходное состояние (выключен)")
 
 
 def section(title: str):
@@ -1311,6 +1453,13 @@ def main():
 
     start_time = time.time()
 
+    #  Проверка I2C — без него I2C-устройства не заработают
+    i2c_ok = ensure_i2c()
+    if not i2c_ok:
+        logger.error("I2C НЕДОСТУПЕН! I2C-зависимые тесты могут завершиться "
+                     "с ошибками.")
+        logger.error("Рекомендация: sudo reboot и повторный запуск диагностики.")
+
     #  0. Системная информация
     diagnose_system_info()
 
@@ -1374,6 +1523,9 @@ def main():
     logger.info(f"\nВремя диагностики: {elapsed:.1f} сек")
 
     print_summary()
+
+    # Восстанавливаем I2C в исходное состояние (выключаем если был выключен)
+    restore_i2c()
 
     logger.info("")
     logger.info("Диагностика завершена.")
