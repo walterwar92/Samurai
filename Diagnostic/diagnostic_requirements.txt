@@ -1,0 +1,23 @@
+# Зависимости для diagnostic.py
+# Установка: sudo pip3 install -r diagnostic_requirements.txt
+
+# PCA9685 PWM-контроллер + моторы/сервоприводы
+adafruit-circuitpython-pca9685
+adafruit-circuitpython-motor
+
+# I2C (ADS7830 АЦП, сканирование шины)
+smbus2
+
+# WS2812 RGB LED (требует sudo)
+rpi_ws281x
+
+# Камера
+picamera2
+opencv-python-headless
+numpy
+
+# Микрофон
+pyaudio
+
+# Распознавание речи (опционально, для проверки модели)
+vosk

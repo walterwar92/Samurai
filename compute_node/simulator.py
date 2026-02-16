@@ -1354,6 +1354,10 @@ def main():
     def index():
         return render_template('dashboard.html')
 
+    @app.route('/admin')
+    def admin_panel():
+        return render_template('admin.html')
+
     @app.route('/video_feed')
     def video_feed():
         def generate():
