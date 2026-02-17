@@ -20,9 +20,22 @@ Subscribes:
 import json
 import math
 import os
+import socket
 import threading
 import time
 from collections import deque
+
+
+def _get_local_ip() -> str:
+    """Auto-detect local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
 
 import cv2
 import numpy as np
@@ -34,7 +47,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 
-from flask import Flask, Response, render_template
+from flask import Flask, Response, render_template, send_from_directory
 from flask_socketio import SocketIO
 from flask_cors import CORS
 
@@ -79,7 +92,7 @@ class DashboardNode(Node):
         self.create_subscription(String, '/voice_command', self._voice_cb, 10)
         self.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
 
-        self.get_logger().info(f'Dashboard node started — http://0.0.0.0:{self._port}')
+        self.get_logger().info(f'Dashboard node started — http://{_get_local_ip()}:{self._port}')
 
     # ── ROS2 Callbacks ───────────────────────────────────────────
 
@@ -213,13 +226,17 @@ class DashboardNode(Node):
 
 def create_app(ros_node: DashboardNode):
     template_dir = os.path.join(os.path.dirname(__file__), 'templates')
-    app = Flask(__name__, template_folder=template_dir)
+    static_dir = os.path.join(os.path.dirname(__file__), 'static')
+    app = Flask(__name__, template_folder=template_dir,
+                static_folder=static_dir, static_url_path='')
     CORS(app)
     socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
     @app.route('/')
-    def index():
-        return render_template('dashboard.html')
+    @app.route('/dashboard')
+    @app.route('/admin')
+    def serve_spa():
+        return send_from_directory(static_dir, 'index.html')
 
     @app.route('/video_feed')
     def video_feed():

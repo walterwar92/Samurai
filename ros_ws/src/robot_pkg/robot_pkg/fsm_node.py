@@ -114,13 +114,15 @@ class FSMNode(Node):
             return
 
     def _extract_colour(self, text: str) -> str:
+        # Нормализуем ё → е для единообразного поиска
+        text_norm = text.replace('ё', 'е')
         colours = {
             'красн': 'red', 'синий': 'blue', 'синего': 'blue',
             'зелен': 'green', 'желт': 'yellow', 'бел': 'white',
             'черн': 'black', 'оранж': 'orange',
         }
         for rus, eng in colours.items():
-            if rus in text:
+            if rus in text_norm:
                 return eng
         return ''
 

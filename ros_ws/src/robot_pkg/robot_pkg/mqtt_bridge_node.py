@@ -15,13 +15,27 @@ ROS2 topics:
 """
 
 import json
+import socket
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
 import paho.mqtt.client as mqtt
 
-MQTT_BROKER = 'localhost'
+
+def _get_local_ip() -> str:
+    """Auto-detect local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+
+MQTT_BROKER = _get_local_ip()
 MQTT_PORT = 1883
 ROBOT_ID = 'robot1'
 
