@@ -100,6 +100,22 @@ def generate_launch_description():
         }],
     )
 
+    # ── Monitoring nodes ───────────────────────────────────────
+    battery_node = Node(
+        package='robot_pkg', executable='battery_node',
+        name='battery_node', output='screen',
+    )
+
+    temperature_node = Node(
+        package='robot_pkg', executable='temperature_node',
+        name='temperature_node', output='screen',
+    )
+
+    watchdog_node = Node(
+        package='robot_pkg', executable='watchdog_node',
+        name='watchdog_node', output='screen',
+    )
+
     # ── Static transforms ────────────────────────────────────
     # base_link → ultrasonic_link (front-mounted)
     tf_ultrasonic = Node(
@@ -134,5 +150,6 @@ def generate_launch_description():
         motor_node, ultrasonic_node, camera_node,
         laser_node, servo_node, imu_node,
         voice_node, fsm_node, mqtt_bridge_node,
+        battery_node, temperature_node, watchdog_node,
         tf_ultrasonic, tf_camera, tf_imu, tf_laser,
     ])

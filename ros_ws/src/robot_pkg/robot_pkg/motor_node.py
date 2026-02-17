@@ -3,11 +3,13 @@
 motor_node — ROS2 node for 4-motor tracked chassis.
 
 Subscribes:
-  /cmd_vel  (geometry_msgs/Twist)  — linear.x  forward m/s
-                                    — angular.z  rotation rad/s
+  /cmd_vel        (geometry_msgs/Twist)  — linear.x  forward m/s
+                                          — angular.z  rotation rad/s
+  /speed_profile  (std_msgs/String)      — "slow" / "normal" / "fast"
 
 Publishes:
-  /odom  (nav_msgs/Odometry)       — wheel odometry estimate (open-loop)
+  /odom                  (nav_msgs/Odometry)  — wheel odometry estimate (open-loop)
+  /speed_profile/active  (std_msgs/String)    — current speed profile name
 
 TF broadcast:  odom → base_link
 """
@@ -17,14 +19,21 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 from robot_pkg.hardware.motor_driver import MotorDriver
 
 # Robot geometry (metres)
 WHEEL_BASE = 0.17        # distance between left and right tracks
-MAX_LINEAR_SPEED = 0.3   # m/s at 100 % throttle
-MAX_ANGULAR_SPEED = 2.0  # rad/s at full spin
+
+# Speed profiles: {name: (max_linear m/s, max_angular rad/s)}
+SPEED_PROFILES = {
+    'slow':   (0.10, 0.8),
+    'normal': (0.20, 1.5),
+    'fast':   (0.30, 2.0),
+}
+DEFAULT_PROFILE = 'normal'
 
 
 class MotorNode(Node):
@@ -38,6 +47,10 @@ class MotorNode(Node):
         else:
             self.get_logger().info('MotorDriver initialised (PCA9685 @ 0x5F)')
 
+        # Speed profile
+        self._profile = DEFAULT_PROFILE
+        self._max_lin, self._max_ang = SPEED_PROFILES[DEFAULT_PROFILE]
+
         # State for open-loop odometry
         self._x = 0.0
         self._y = 0.0
@@ -49,16 +62,28 @@ class MotorNode(Node):
 
         # ROS interfaces
         self.create_subscription(Twist, '/cmd_vel', self._cmd_vel_cb, 10)
+        self.create_subscription(String, '/speed_profile', self._profile_cb, 10)
         self._odom_pub = self.create_publisher(Odometry, '/odom', 10)
+        self._profile_pub = self.create_publisher(String, '/speed_profile/active', 10)
         self._tf_broadcaster = TransformBroadcaster(self)
 
         # 20 Hz control + odometry loop
         self.create_timer(0.05, self._control_loop)
+        # 1 Hz profile broadcast
+        self.create_timer(1.0, self._publish_profile)
 
     # ------------------------------------------------------------------
     def _cmd_vel_cb(self, msg: Twist):
         self._linear = msg.linear.x
         self._angular = msg.angular.z
+
+    def _profile_cb(self, msg: String):
+        name = msg.data.strip().lower()
+        if name in SPEED_PROFILES:
+            self._profile = name
+            self._max_lin, self._max_ang = SPEED_PROFILES[name]
+            self.get_logger().info(
+                f'Speed profile: {name} (lin={self._max_lin}, ang={self._max_ang})')
 
     # ------------------------------------------------------------------
     def _control_loop(self):
@@ -67,8 +92,8 @@ class MotorNode(Node):
         self._last_time = now
 
         # Convert m/s → percentage for driver
-        lin_pct = (self._linear / MAX_LINEAR_SPEED) * 100.0
-        ang_pct = (self._angular / MAX_ANGULAR_SPEED) * 100.0
+        lin_pct = (self._linear / self._max_lin) * 100.0 if self._max_lin > 0 else 0.0
+        ang_pct = (self._angular / self._max_ang) * 100.0 if self._max_ang > 0 else 0.0
         self._driver.move(lin_pct, ang_pct)
 
         # Open-loop odometry integration
@@ -102,6 +127,11 @@ class MotorNode(Node):
         t.transform.rotation.z = math.sin(self._theta / 2.0)
         t.transform.rotation.w = math.cos(self._theta / 2.0)
         self._tf_broadcaster.sendTransform(t)
+
+    def _publish_profile(self):
+        msg = String()
+        msg.data = self._profile
+        self._profile_pub.publish(msg)
 
     # ------------------------------------------------------------------
     def destroy_node(self):

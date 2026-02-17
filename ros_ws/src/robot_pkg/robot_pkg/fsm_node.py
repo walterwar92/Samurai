@@ -3,20 +3,24 @@
 fsm_node — Finite State Machine for autonomous ball-hunting robot.
 
 States:
-  IDLE        — waiting for voice command
-  SEARCHING   — navigating arena, scanning for balls via YOLO detections
-  APPROACHING — moving toward detected ball
-  GRABBING    — positioning claw, closing on ball
-  BURNING     — activating laser to burn ball
-  CALLING     — requesting second robot via MQTT
-  RETURNING   — returning to home / safe zone
+  IDLE         — waiting for voice command
+  SEARCHING    — navigating arena, scanning for balls via YOLO detections
+  TARGETING    — rotating to centre ball in camera
+  APPROACHING  — moving toward detected ball
+  GRABBING     — positioning claw, closing on ball
+  BURNING      — activating laser to burn ball
+  CALLING      — requesting second robot via MQTT
+  RETURNING    — returning to home / safe zone
+  PATROLLING   — autonomous waypoint patrol
+  FOLLOWING    — follow-me mode (person tracking)
+  PATH_REPLAY  — replaying a recorded path
 
 Subscribes:
   /voice_command        (String) — parsed voice commands
   /ball_detection       (String) — JSON from YOLO node: {colour, x, y, w, h, conf}
   /range                (Range)  — ultrasonic proximity
   /incoming_call        (String) — call from second robot
-  /move_base/result     (String) — nav2 goal result (simplified)
+  /gesture/command      (String) — hand gesture commands
 
 Publishes:
   /cmd_vel              (Twist)  — motor commands
@@ -25,6 +29,9 @@ Publishes:
   /call_second_robot    (String) — MQTT call trigger
   /robot_status         (String) — current state for monitoring
   /goal_pose            (PoseStamped) — nav2 goal
+  /patrol/command       (String) — patrol control
+  /follow_me/command    (String) — follow-me control
+  /path_recorder/command (String) — path recorder control
 """
 
 import json
@@ -45,6 +52,9 @@ class State:
     BURNING = 'BURNING'
     CALLING = 'CALLING'
     RETURNING = 'RETURNING'
+    PATROLLING = 'PATROLLING'
+    FOLLOWING = 'FOLLOWING'
+    PATH_REPLAY = 'PATH_REPLAY'
 
 
 class FSMNode(Node):
@@ -69,12 +79,16 @@ class FSMNode(Node):
         self._call_pub = self.create_publisher(String, '/call_second_robot', 10)
         self._status_pub = self.create_publisher(String, '/robot_status', 10)
         self._goal_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
+        self._patrol_cmd_pub = self.create_publisher(String, '/patrol/command', 10)
+        self._follow_cmd_pub = self.create_publisher(String, '/follow_me/command', 10)
+        self._path_cmd_pub = self.create_publisher(String, '/path_recorder/command', 10)
 
         # Subscribers
         self.create_subscription(String, '/voice_command', self._voice_cb, 10)
         self.create_subscription(String, '/ball_detection', self._ball_cb, 10)
         self.create_subscription(Range, '/range', self._range_cb, 10)
         self.create_subscription(String, '/incoming_call', self._call_recv_cb, 10)
+        self.create_subscription(String, '/gesture/command', self._gesture_cb, 10)
 
         # FSM tick — 10 Hz
         self.create_timer(0.1, self._tick)
@@ -113,8 +127,51 @@ class FSMNode(Node):
             self._transition(State.RETURNING)
             return
 
+        if 'патрул' in text or 'обход' in text:
+            self._transition(State.PATROLLING)
+            return
+
+        if 'следуй' in text or 'за мной' in text:
+            self._transition(State.FOLLOWING)
+            return
+
+        if 'запиши путь' in text or 'запись' in text:
+            self._pub_string(self._path_cmd_pub, 'record')
+            self.get_logger().info('Path recording started')
+            return
+
+        if 'воспроизведи' in text or 'повтори путь' in text:
+            self._transition(State.PATH_REPLAY)
+            return
+
+    # ── Gesture command handler ────────────────────────────────
+    def _gesture_cb(self, msg: String):
+        gesture = msg.data.strip()
+        if not gesture:
+            return
+
+        if gesture == 'stop':
+            self._transition(State.IDLE)
+        elif gesture == 'forward' and self._state == State.IDLE:
+            twist = Twist()
+            twist.linear.x = 0.15
+            self._cmd_pub.publish(twist)
+        elif gesture == 'grab' and self._state == State.IDLE:
+            self._target_action = 'grab'
+            self._target_colour = ''
+            self._transition(State.SEARCHING)
+        elif gesture == 'follow':
+            self._transition(State.FOLLOWING)
+        elif gesture == 'point_left' and self._state == State.IDLE:
+            twist = Twist()
+            twist.angular.z = 0.5
+            self._cmd_pub.publish(twist)
+        elif gesture == 'point_right' and self._state == State.IDLE:
+            twist = Twist()
+            twist.angular.z = -0.5
+            self._cmd_pub.publish(twist)
+
     def _extract_colour(self, text: str) -> str:
-        # Нормализуем ё → е для единообразного поиска
         text_norm = text.replace('ё', 'е')
         colours = {
             'красн': 'red', 'синий': 'blue', 'синего': 'blue',
@@ -138,7 +195,6 @@ class FSMNode(Node):
 
     def _call_recv_cb(self, msg: String):
         self.get_logger().info(f'Incoming call: {msg.data}')
-        # Accept call — start searching
         try:
             data = json.loads(msg.data)
             self._target_colour = data.get('colour', '')
@@ -155,48 +211,52 @@ class FSMNode(Node):
         self._lost_frames = 0
         self.get_logger().info(f'FSM: {old} → {new_state}')
 
+        # Exit actions: stop delegated modes when leaving
+        if old == State.PATROLLING:
+            self._pub_string(self._patrol_cmd_pub, 'stop')
+        if old == State.FOLLOWING:
+            self._pub_string(self._follow_cmd_pub, 'stop')
+        if old == State.PATH_REPLAY:
+            self._pub_string(self._path_cmd_pub, 'stop')
+
         # Entry actions
         if new_state == State.IDLE:
             self._stop_all()
         elif new_state == State.SEARCHING:
             self._search_accumulated = 0.0
-            # _prev_theta will be set on first tick from odometry
             self._prev_theta = self._get_yaw()
         elif new_state == State.CALLING:
             self._do_call()
+        elif new_state == State.PATROLLING:
+            self._pub_string(self._patrol_cmd_pub, 'start')
+        elif new_state == State.FOLLOWING:
+            self._pub_string(self._follow_cmd_pub, 'start')
+        elif new_state == State.PATH_REPLAY:
+            self._pub_string(self._path_cmd_pub, 'replay')
 
     def _get_yaw(self) -> float:
-        """Get current yaw from last odometry/detection state."""
-        # Simple estimate from accumulated commands (open-loop)
         return self._prev_theta
 
     def _tick(self):
         if self._state == State.IDLE:
             pass
-
         elif self._state == State.SEARCHING:
             self._do_search()
-
         elif self._state == State.TARGETING:
             self._do_targeting()
-
         elif self._state == State.APPROACHING:
             self._do_approach()
-
         elif self._state == State.GRABBING:
             self._do_grab()
-
         elif self._state == State.BURNING:
             self._do_burn()
-
         elif self._state == State.RETURNING:
             self._do_return()
+        # PATROLLING, FOLLOWING, PATH_REPLAY are handled by their respective nodes
 
     # ── Behaviours ───────────────────────────────────────────
     def _do_search(self):
-        """Rotate clockwise scanning for ball. Full 360° = not found."""
-        # Track rotation: 10 Hz tick × 0.4 rad/s ≈ 0.04 rad/tick
-        self._search_accumulated += 0.4 * 0.1  # angular_speed × dt
+        self._search_accumulated += 0.4 * 0.1
 
         if self._search_accumulated > 2 * math.pi + 0.3:
             colour = self._target_colour or 'any'
@@ -208,17 +268,15 @@ class FSMNode(Node):
         if det and self._colour_matches(det):
             self.get_logger().info(
                 f'Ball spotted: {det.get("colour")} — targeting')
-            self._cmd_pub.publish(Twist())  # stop rotation
+            self._cmd_pub.publish(Twist())
             self._transition(State.TARGETING)
             return
 
-        # Clockwise rotation
         twist = Twist()
-        twist.angular.z = -0.4  # clockwise
+        twist.angular.z = -0.4
         self._cmd_pub.publish(twist)
 
     def _do_targeting(self):
-        """Rotate in place to centre ball in camera, then approach."""
         self._approach_timeout += 0.1
         det = self._ball_detection
 
@@ -227,7 +285,7 @@ class FSMNode(Node):
             twist = Twist()
             twist.angular.z = self._last_steer * 0.3
             self._cmd_pub.publish(twist)
-            if self._lost_frames > 15:  # ~1.5 sec
+            if self._lost_frames > 15:
                 self.get_logger().warn('Lost ball during targeting')
                 self._transition(State.SEARCHING)
             return
@@ -238,14 +296,12 @@ class FSMNode(Node):
         error_x = (ball_cx - img_cx) / img_cx
 
         if abs(error_x) < 0.15:
-            # Ball centred → approach
             self._cmd_pub.publish(Twist())
             self.get_logger().info(
                 f'Ball centred — approaching {det.get("colour")}')
             self._transition(State.APPROACHING)
             return
 
-        # Turn in place to centre
         target_angular = -error_x * 0.8
         angular = self._last_steer * 0.4 + target_angular * 0.6
         self._last_steer = angular
@@ -255,7 +311,6 @@ class FSMNode(Node):
         self._cmd_pub.publish(twist)
 
     def _do_approach(self):
-        """Drive straight toward centred ball."""
         det = self._ball_detection
         self._approach_timeout += 0.1
 
@@ -282,13 +337,11 @@ class FSMNode(Node):
         error_x = (ball_cx - img_cx) / img_cx
         abs_error = abs(error_x)
 
-        # Ball drifted too far → back to targeting
         if abs_error > 0.5:
             self._cmd_pub.publish(Twist())
             self._transition(State.TARGETING)
             return
 
-        # Small course correction + forward
         target_angular = -error_x * 0.8
         angular = self._last_steer * 0.3 + target_angular * 0.7
         self._last_steer = angular
@@ -297,7 +350,6 @@ class FSMNode(Node):
         twist.angular.z = angular
         twist.linear.x = 0.12 if abs_error < 0.15 else 0.06
 
-        # Close enough?
         if self._range_m < 0.10:
             self._cmd_pub.publish(Twist())
             if self._target_action == 'burn':
@@ -309,18 +361,14 @@ class FSMNode(Node):
         self._cmd_pub.publish(twist)
 
     def _do_grab(self):
-        """Open claw, creep forward, close claw."""
-        # Step 1: open
         self._pub_claw('open')
-        # Small delay handled via state timing
         self._approach_timeout += 0.1
         if self._approach_timeout < 1.0:
-            # Creep forward
             twist = Twist()
             twist.linear.x = 0.05
             self._cmd_pub.publish(twist)
         elif self._approach_timeout < 2.0:
-            self._cmd_pub.publish(Twist())  # stop
+            self._cmd_pub.publish(Twist())
         elif self._approach_timeout < 3.0:
             self._pub_claw('close')
         else:
@@ -328,19 +376,17 @@ class FSMNode(Node):
             self._transition(State.RETURNING)
 
     def _do_burn(self):
-        """Activate laser for a controlled burn."""
         self._approach_timeout += 0.1
         if self._approach_timeout < 0.5:
             self._pub_laser(True)
         elif self._approach_timeout < 5.0:
-            pass  # laser is on, hold position
+            pass
         else:
             self._pub_laser(False)
             self.get_logger().info('Burn complete')
             self._transition(State.SEARCHING)
 
     def _do_call(self):
-        """Send MQTT call to second robot, then return to idle."""
         call_data = json.dumps({
             'colour': self._target_colour,
             'action': self._target_action or 'grab',
@@ -352,7 +398,6 @@ class FSMNode(Node):
         self._transition(State.IDLE)
 
     def _do_return(self):
-        """Navigate to home position via nav2."""
         goal = PoseStamped()
         goal.header.stamp = self.get_clock().now().to_msg()
         goal.header.frame_id = 'map'
@@ -365,7 +410,7 @@ class FSMNode(Node):
     # ── Helpers ──────────────────────────────────────────────
     def _colour_matches(self, det: dict) -> bool:
         if not self._target_colour:
-            return True  # any ball
+            return True
         return det.get('colour', '') == self._target_colour
 
     def _stop_all(self):
@@ -381,6 +426,11 @@ class FSMNode(Node):
         m = Bool()
         m.data = on
         self._laser_pub.publish(m)
+
+    def _pub_string(self, pub, text: str):
+        m = String()
+        m.data = text
+        pub.publish(m)
 
     def _publish_status(self):
         m = String()

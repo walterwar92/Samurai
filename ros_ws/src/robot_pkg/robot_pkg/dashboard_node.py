@@ -6,15 +6,25 @@ Runs on the compute laptop alongside YOLO/SLAM/Nav2.
 Provides a real-time web interface at http://localhost:5000
 
 Subscribes:
-    /yolo/annotated     (sensor_msgs/Image)      — annotated camera feed
-    /robot_status       (std_msgs/String)         — FSM state JSON
-    /ball_detection     (std_msgs/String)         — ball detection JSON
-    /range              (sensor_msgs/Range)       — ultrasonic distance
-    /imu/data           (sensor_msgs/Imu)         — IMU orientation
-    /map                (nav_msgs/OccupancyGrid)  — SLAM map
-    /odometry/filtered  (nav_msgs/Odometry)       — robot pose
-    /voice_command      (std_msgs/String)         — voice commands
-    /scan               (sensor_msgs/LaserScan)   — pseudo-laser scan
+    /yolo/annotated       (Image)         — annotated camera feed
+    /robot_status         (String)        — FSM state JSON
+    /ball_detection       (String)        — ball detection JSON
+    /range                (Range)         — ultrasonic distance
+    /imu/data             (Imu)           — IMU orientation
+    /map                  (OccupancyGrid) — SLAM map
+    /odometry/filtered    (Odometry)      — robot pose
+    /voice_command        (String)        — voice commands
+    /scan                 (LaserScan)     — pseudo-laser scan
+    /battery              (Float32)       — battery voltage
+    /battery_percent      (Float32)       — battery percentage
+    /cpu_temperature      (Float32)       — CPU temperature
+    /watchdog             (String)        — node health JSON
+    /patrol/status        (String)        — patrol status JSON
+    /path_recorder/status (String)        — path recorder status JSON
+    /follow_me/status     (String)        — follow-me status JSON
+    /qr_detection         (String)        — QR detection JSON
+    /gesture/command      (String)        — gesture command
+    /speed_profile/active (String)        — current speed profile
 """
 
 import json
@@ -27,7 +37,6 @@ from collections import deque
 
 
 def _get_local_ip() -> str:
-    """Auto-detect local network IP address."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))
@@ -44,10 +53,10 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, Range, Imu, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 from cv_bridge import CvBridge
 
-from flask import Flask, Response, render_template, send_from_directory
+from flask import Flask, Response, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
 from flask_cors import CORS
 
@@ -63,16 +72,28 @@ class DashboardNode(Node):
         self._lock = threading.Lock()
 
         # --- Shared state ---
-        self._latest_frame = None          # JPEG bytes
-        self._robot_status = {}            # FSM state dict
-        self._ball_detection = {}          # latest detection dict
-        self._range_m = -1.0              # ultrasonic range
-        self._imu_ypr = [0.0, 0.0, 0.0]  # yaw, pitch, roll (degrees)
-        self._map_png = None               # PNG bytes of SLAM map
-        self._map_info = {}                # map metadata (resolution, origin)
+        self._latest_frame = None
+        self._robot_status = {}
+        self._ball_detection = {}
+        self._range_m = -1.0
+        self._imu_ypr = [0.0, 0.0, 0.0]
+        self._map_png = None
+        self._map_info = {}
         self._robot_pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
-        self._scan_points = []             # laser scan as list of (x,y) in map frame
+        self._scan_points = []
         self._voice_log = deque(maxlen=20)
+
+        # New state fields
+        self._battery_voltage = 0.0
+        self._battery_percent = 0.0
+        self._cpu_temp = 0.0
+        self._watchdog_status = {}
+        self._patrol_status = {}
+        self._path_recorder_status = {}
+        self._follow_me_status = {}
+        self._qr_detection = {}
+        self._gesture_command = ''
+        self._speed_profile = 'normal'
 
         # --- QoS for map (transient local) ---
         map_qos = QoSProfile(
@@ -81,7 +102,7 @@ class DashboardNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
 
-        # --- Subscriptions ---
+        # --- Original subscriptions ---
         self.create_subscription(Image, '/yolo/annotated', self._image_cb, 5)
         self.create_subscription(String, '/robot_status', self._status_cb, 10)
         self.create_subscription(String, '/ball_detection', self._detection_cb, 10)
@@ -92,9 +113,38 @@ class DashboardNode(Node):
         self.create_subscription(String, '/voice_command', self._voice_cb, 10)
         self.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
 
+        # --- New subscriptions ---
+        self.create_subscription(Float32, '/battery', self._battery_cb, 10)
+        self.create_subscription(Float32, '/battery_percent', self._battery_pct_cb, 10)
+        self.create_subscription(Float32, '/cpu_temperature', self._cpu_temp_cb, 10)
+        self.create_subscription(String, '/watchdog', self._watchdog_cb, 10)
+        self.create_subscription(String, '/patrol/status', self._patrol_status_cb, 10)
+        self.create_subscription(String, '/path_recorder/status', self._path_status_cb, 10)
+        self.create_subscription(String, '/follow_me/status', self._follow_status_cb, 10)
+        self.create_subscription(String, '/qr_detection', self._qr_cb, 10)
+        self.create_subscription(String, '/gesture/command', self._gesture_cb, 10)
+        self.create_subscription(String, '/speed_profile/active', self._speed_profile_cb, 10)
+
+        # --- Publishers for commands from dashboard ---
+        self._speed_profile_pub = self.create_publisher(String, '/speed_profile', 10)
+        self._patrol_wp_pub = self.create_publisher(String, '/patrol/waypoints', 10)
+        self._patrol_cmd_pub = self.create_publisher(String, '/patrol/command', 10)
+        self._follow_cmd_pub = self.create_publisher(String, '/follow_me/command', 10)
+        self._path_cmd_pub = self.create_publisher(String, '/path_recorder/command', 10)
+        self._map_save_pub = self.create_publisher(String, '/map_manager/save', 10)
+        self._map_load_pub = self.create_publisher(String, '/map_manager/load', 10)
+        self._map_list_pub = self.create_publisher(String, '/map_manager/list', 10)
+        self._voice_cmd_pub = self.create_publisher(String, '/voice_command', 10)
+
+        # Listen for map list responses
+        self._map_list_data = []
+        self.create_subscription(String, '/map_manager/map_list', self._map_list_cb, 10)
+        self._path_list_data = []
+        self.create_subscription(String, '/path_recorder/path_list', self._path_list_cb, 10)
+
         self.get_logger().info(f'Dashboard node started — http://{_get_local_ip()}:{self._port}')
 
-    # ── ROS2 Callbacks ───────────────────────────────────────────
+    # ── Original ROS2 Callbacks ────────────────────────────────────
 
     def _image_cb(self, msg: Image):
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -124,7 +174,6 @@ class DashboardNode(Node):
 
     def _imu_cb(self, msg: Imu):
         q = msg.orientation
-        # Quaternion to Euler (yaw, pitch, roll)
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
@@ -144,12 +193,11 @@ class DashboardNode(Node):
         h = msg.info.height
         data = np.array(msg.data, dtype=np.int8).reshape((h, w))
 
-        # Convert: -1 (unknown) → grey, 0 (free) → white, 100 (occupied) → black
-        img = np.full((h, w, 3), 128, dtype=np.uint8)  # grey default
-        img[data == 0] = [240, 240, 240]    # free → light
-        img[data > 50] = [30, 30, 30]       # occupied → dark
+        img = np.full((h, w, 3), 128, dtype=np.uint8)
+        img[data == 0] = [240, 240, 240]
+        img[data > 50] = [30, 30, 30]
 
-        img = cv2.flip(img, 0)  # flip Y axis for image coordinates
+        img = cv2.flip(img, 0)
         _, png = cv2.imencode('.png', img)
 
         with self._lock:
@@ -196,6 +244,76 @@ class DashboardNode(Node):
         with self._lock:
             self._scan_points = points
 
+    # ── New ROS2 Callbacks ─────────────────────────────────────────
+
+    def _battery_cb(self, msg: Float32):
+        with self._lock:
+            self._battery_voltage = round(msg.data, 2)
+
+    def _battery_pct_cb(self, msg: Float32):
+        with self._lock:
+            self._battery_percent = round(msg.data, 1)
+
+    def _cpu_temp_cb(self, msg: Float32):
+        with self._lock:
+            self._cpu_temp = round(msg.data, 1)
+
+    def _watchdog_cb(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+            with self._lock:
+                self._watchdog_status = data
+        except json.JSONDecodeError:
+            pass
+
+    def _patrol_status_cb(self, msg: String):
+        try:
+            with self._lock:
+                self._patrol_status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _path_status_cb(self, msg: String):
+        try:
+            with self._lock:
+                self._path_recorder_status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _follow_status_cb(self, msg: String):
+        try:
+            with self._lock:
+                self._follow_me_status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _qr_cb(self, msg: String):
+        try:
+            with self._lock:
+                self._qr_detection = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _gesture_cb(self, msg: String):
+        with self._lock:
+            self._gesture_command = msg.data
+
+    def _speed_profile_cb(self, msg: String):
+        with self._lock:
+            self._speed_profile = msg.data
+
+    def _map_list_cb(self, msg: String):
+        try:
+            self._map_list_data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _path_list_cb(self, msg: String):
+        try:
+            self._path_list_data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
     # ── Data Access (for Flask) ──────────────────────────────────
 
     def get_frame(self):
@@ -213,11 +331,26 @@ class DashboardNode(Node):
                 'map_info': self._map_info,
                 'scan_points': self._scan_points,
                 'voice_log': list(self._voice_log),
+                'battery_voltage': self._battery_voltage,
+                'battery_percent': self._battery_percent,
+                'cpu_temp': self._cpu_temp,
+                'watchdog': self._watchdog_status,
+                'patrol': self._patrol_status,
+                'path_recorder': self._path_recorder_status,
+                'follow_me': self._follow_me_status,
+                'qr_detection': self._qr_detection,
+                'gesture': self._gesture_command,
+                'speed_profile': self._speed_profile,
             }
 
     def get_map_png(self):
         with self._lock:
             return self._map_png
+
+    def pub_string(self, publisher, text: str):
+        msg = String()
+        msg.data = text
+        publisher.publish(msg)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -225,16 +358,12 @@ class DashboardNode(Node):
 # ═════════════════════════════════════════════════════════════════
 
 def _find_compute_node_dir() -> str:
-    """Find compute_node directory regardless of where the script runs from."""
-    # When running via ROS2, __file__ points to build/ directory
-    # Walk up to find the project root containing compute_node/
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(10):
         candidate = os.path.join(d, 'compute_node')
         if os.path.isdir(candidate) and os.path.isdir(os.path.join(candidate, 'static')):
             return candidate
         d = os.path.dirname(d)
-    # Fallback: relative to __file__ (works when run directly)
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -264,7 +393,7 @@ def create_app(ros_node: DashboardNode):
                            + frame + b'\r\n')
                 else:
                     time.sleep(0.1)
-                time.sleep(0.033)  # ~30 fps cap
+                time.sleep(0.033)
         return Response(generate(),
                         mimetype='multipart/x-mixed-replace; boundary=frame')
 
@@ -272,16 +401,120 @@ def create_app(ros_node: DashboardNode):
     def map_image():
         png = ros_node.get_map_png()
         if png is None:
-            # Return 1x1 transparent pixel
             return Response(b'\x89PNG\r\n\x1a\n', mimetype='image/png')
         return Response(png, mimetype='image/png')
 
+    # ── New API routes ─────────────────────────────────────────
+
+    @app.route('/api/speed_profile', methods=['POST'])
+    def set_speed_profile():
+        data = request.get_json(silent=True) or {}
+        profile = data.get('profile', 'normal')
+        ros_node.pub_string(ros_node._speed_profile_pub, profile)
+        return jsonify({'ok': True, 'profile': profile})
+
+    @app.route('/api/patrol/waypoints', methods=['POST'])
+    def set_patrol_waypoints():
+        data = request.get_json(silent=True) or {}
+        waypoints = data.get('waypoints', [])
+        ros_node.pub_string(ros_node._patrol_wp_pub, json.dumps(waypoints))
+        return jsonify({'ok': True, 'count': len(waypoints)})
+
+    @app.route('/api/patrol/command', methods=['POST'])
+    def patrol_command():
+        data = request.get_json(silent=True) or {}
+        cmd = data.get('command', 'stop')
+        ros_node.pub_string(ros_node._patrol_cmd_pub, cmd)
+        return jsonify({'ok': True, 'command': cmd})
+
+    @app.route('/api/map/save', methods=['POST'])
+    def save_map():
+        data = request.get_json(silent=True) or {}
+        name = data.get('name', 'default')
+        ros_node.pub_string(ros_node._map_save_pub, name)
+        return jsonify({'ok': True, 'name': name})
+
+    @app.route('/api/map/load', methods=['POST'])
+    def load_map():
+        data = request.get_json(silent=True) or {}
+        name = data.get('name', '')
+        ros_node.pub_string(ros_node._map_load_pub, name)
+        return jsonify({'ok': True, 'name': name})
+
+    @app.route('/api/map/list', methods=['GET'])
+    def list_maps():
+        ros_node.pub_string(ros_node._map_list_pub, 'list')
+        time.sleep(0.3)
+        return jsonify({'maps': ros_node._map_list_data})
+
+    @app.route('/api/follow_me', methods=['POST'])
+    def follow_me_cmd():
+        data = request.get_json(silent=True) or {}
+        cmd = data.get('command', 'stop')
+        ros_node.pub_string(ros_node._follow_cmd_pub, cmd)
+        return jsonify({'ok': True, 'command': cmd})
+
+    @app.route('/api/path_recorder/command', methods=['POST'])
+    def path_recorder_cmd():
+        data = request.get_json(silent=True) or {}
+        cmd = data.get('command', 'stop')
+        ros_node.pub_string(ros_node._path_cmd_pub, cmd)
+        return jsonify({'ok': True, 'command': cmd})
+
+    @app.route('/api/path_recorder/list', methods=['GET'])
+    def list_paths():
+        ros_node.pub_string(ros_node._path_cmd_pub, 'list')
+        time.sleep(0.3)
+        return jsonify({'paths': ros_node._path_list_data})
+
+    # ── SocketIO events ────────────────────────────────────────
+
+    @socketio.on('send_command')
+    def handle_command(data):
+        text = data.get('text', '')
+        if text:
+            ros_node.pub_string(ros_node._voice_cmd_pub, text)
+
+    @socketio.on('set_speed_profile')
+    def handle_speed_profile(data):
+        profile = data.get('profile', 'normal')
+        ros_node.pub_string(ros_node._speed_profile_pub, profile)
+
+    @socketio.on('patrol_command')
+    def handle_patrol_cmd(data):
+        cmd = data.get('command', 'stop')
+        ros_node.pub_string(ros_node._patrol_cmd_pub, cmd)
+
+    @socketio.on('patrol_waypoints')
+    def handle_patrol_wp(data):
+        waypoints = data.get('waypoints', [])
+        ros_node.pub_string(ros_node._patrol_wp_pub, json.dumps(waypoints))
+
+    @socketio.on('follow_me_command')
+    def handle_follow_cmd(data):
+        cmd = data.get('command', 'stop')
+        ros_node.pub_string(ros_node._follow_cmd_pub, cmd)
+
+    @socketio.on('path_recorder_command')
+    def handle_path_cmd(data):
+        cmd = data.get('command', 'stop')
+        ros_node.pub_string(ros_node._path_cmd_pub, cmd)
+
+    @socketio.on('map_save')
+    def handle_map_save(data):
+        name = data.get('name', 'default')
+        ros_node.pub_string(ros_node._map_save_pub, name)
+
+    @socketio.on('map_load')
+    def handle_map_load(data):
+        name = data.get('name', '')
+        ros_node.pub_string(ros_node._map_load_pub, name)
+
     def emit_state():
-        """Background thread: push state to all clients via SocketIO."""
         while True:
             state = ros_node.get_state()
             socketio.emit('state_update', state)
-            socketio.sleep(0.25)  # 4 Hz updates
+            socketio.sleep(0.25)
 
     socketio.start_background_task(emit_state)
 
@@ -296,11 +529,9 @@ def main(args=None):
     rclpy.init(args=args)
     node = DashboardNode()
 
-    # Spin ROS2 in a background thread
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
-    # Run Flask in the main thread
     app, socketio = create_app(node)
     port = node._port
     try:
