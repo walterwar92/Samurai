@@ -480,14 +480,89 @@ def diagnose_ads7830():
 
 pca_driver = None
 
+# ── smbus2-based PCA9685 fallback ────────────────────────────────────
+
+class PCA9685Smbus:
+    """Минимальная реализация PCA9685 через smbus2 (без adafruit-blinka)."""
+
+    _MODE1 = 0x00
+    _MODE2 = 0x01
+    _PRESCALE = 0xFE
+    _LED0_ON_L = 0x06
+
+    def __init__(self, bus, address=0x40):
+        self._bus = bus
+        self._address = address
+        self.frequency = 50
+        # Reset
+        self._bus.write_byte_data(self._address, self._MODE1, 0x00)
+
+    @property
+    def frequency(self):
+        return self._freq
+
+    @frequency.setter
+    def frequency(self, freq):
+        self._freq = freq
+        prescale = int(round(25_000_000.0 / (4096 * freq)) - 1)
+        old_mode = self._bus.read_byte_data(self._address, self._MODE1)
+        # Sleep
+        self._bus.write_byte_data(self._address, self._MODE1, (old_mode & 0x7F) | 0x10)
+        self._bus.write_byte_data(self._address, self._PRESCALE, prescale)
+        self._bus.write_byte_data(self._address, self._MODE1, old_mode)
+        time.sleep(0.005)
+        self._bus.write_byte_data(self._address, self._MODE1, old_mode | 0xA0)
+
+    def set_pwm(self, channel, on, off):
+        reg = self._LED0_ON_L + 4 * channel
+        self._bus.write_byte_data(self._address, reg, on & 0xFF)
+        self._bus.write_byte_data(self._address, reg + 1, on >> 8)
+        self._bus.write_byte_data(self._address, reg + 2, off & 0xFF)
+        self._bus.write_byte_data(self._address, reg + 3, off >> 8)
+
+    def get_pwm(self, channel):
+        reg = self._LED0_ON_L + 4 * channel
+        on_l = self._bus.read_byte_data(self._address, reg)
+        on_h = self._bus.read_byte_data(self._address, reg + 1)
+        off_l = self._bus.read_byte_data(self._address, reg + 2)
+        off_h = self._bus.read_byte_data(self._address, reg + 3)
+        return (on_h << 8 | on_l, off_h << 8 | off_l)
+
+    def set_throttle(self, channel_in1, channel_in2, throttle):
+        """Управление DC-мотором через 2 PWM-канала (DRV8833 slow decay)."""
+        throttle = max(-1.0, min(1.0, throttle))
+        duty = int(abs(throttle) * 0xFFFF)
+        duty12 = duty >> 4  # 16-bit → 12-bit
+        if throttle > 0:
+            self.set_pwm(channel_in1, 0, duty12)
+            self.set_pwm(channel_in2, 0, 0)
+        elif throttle < 0:
+            self.set_pwm(channel_in1, 0, 0)
+            self.set_pwm(channel_in2, 0, duty12)
+        else:
+            self.set_pwm(channel_in1, 0, 0)
+            self.set_pwm(channel_in2, 0, 0)
+
+    def set_servo_angle(self, channel, angle, min_pulse=500, max_pulse=2400):
+        """Установка угла сервопривода (0-180°)."""
+        pulse_us = min_pulse + (max_pulse - min_pulse) * angle / 180.0
+        # При частоте 50 Hz период = 20000 мкс, 12-bit = 4096 шагов
+        duty = int(pulse_us / 20000.0 * 4096)
+        self.set_pwm(channel, 0, duty)
+
+    def deinit(self):
+        # Все каналы выключить
+        for ch in range(16):
+            self.set_pwm(ch, 0, 0)
+
 
 def diagnose_pca9685():
     global pca_driver
     section("PCA9685 PWM-КОНТРОЛЛЕР (I2C)")
 
-    # Попробуем оба адреса: 0x5F (Adeept) и 0x40 (стандартный)
     ADDRS_TO_TRY = [0x5F, 0x40]
 
+    # Попытка 1: adafruit-blinka (полная библиотека)
     try:
         import board
         import busio
@@ -502,7 +577,50 @@ def diagnose_pca9685():
                 pca = PCA9685(i2c, address=addr)
                 pca.frequency = 50
                 used_addr = addr
-                logger.info(f"  PCA9685 найден на адресе {hex(addr)}")
+                logger.info(f"  PCA9685 найден на адресе {hex(addr)} (adafruit)")
+                break
+            except Exception:
+                continue
+
+        if pca is None:
+            raise RuntimeError("PCA9685 not found via adafruit")
+
+        pca_driver = pca
+        _log_pca9685_info(hex(used_addr), pca.frequency, "adafruit-blinka")
+
+        for ch_num in range(16):
+            try:
+                dc = pca.channels[ch_num].duty_cycle
+                logger.debug(f"  Канал {ch_num:2d}: duty_cycle = {dc}")
+            except Exception as e:
+                logger.debug(f"  Канал {ch_num:2d}: ошибка чтения — {e}")
+
+        record("pca9685", status="OK", details={
+            "address": hex(used_addr),
+            "frequency_hz": pca.frequency,
+            "channels": 16,
+            "driver": "adafruit-blinka",
+        })
+        return pca
+
+    except Exception as e_adafruit:
+        logger.warning(f"  adafruit-blinka недоступен: {e_adafruit}")
+        logger.info(f"  Попытка инициализации через smbus2...")
+
+    # Попытка 2: smbus2 fallback
+    try:
+        import smbus2
+
+        bus = smbus2.SMBus(1)
+        pca = None
+        used_addr = None
+
+        for addr in ADDRS_TO_TRY:
+            try:
+                bus.read_byte(addr)
+                pca = PCA9685Smbus(bus, address=addr)
+                used_addr = addr
+                logger.info(f"  PCA9685 найден на адресе {hex(addr)} (smbus2)")
                 break
             except Exception:
                 continue
@@ -516,34 +634,12 @@ def diagnose_pca9685():
             return None
 
         pca_driver = pca
+        _log_pca9685_info(hex(used_addr), pca.frequency, "smbus2")
 
-        logger.info(f"  PCA9685 инициализирован успешно")
-        logger.info(f"  I2C адрес: {hex(used_addr)}")
-        logger.info(f"  Частота PWM: {pca.frequency} Hz")
-        logger.info(f"  Каналов: 16 (0-15)")
-        logger.info(f"  Распределение каналов:")
-        logger.info(f"    ch0  — Сервопривод 0 (клешня)")
-        logger.info(f"    ch1  — Сервопривод 1")
-        logger.info(f"    ch2  — Сервопривод 2")
-        logger.info(f"    ch3  — Сервопривод 3")
-        logger.info(f"    ch4  — Сервопривод 4")
-        logger.info(f"    ch5  — Сервопривод 5")
-        logger.info(f"    ch6  — Свободен")
-        logger.info(f"    ch7  — Свободен")
-        logger.info(f"    ch8  — M4 правый-задний IN1")
-        logger.info(f"    ch9  — M4 правый-задний IN2")
-        logger.info(f"    ch10 — M3 левый-задний IN2")
-        logger.info(f"    ch11 — M3 левый-задний IN1")
-        logger.info(f"    ch12 — M2 левый-передний IN1")
-        logger.info(f"    ch13 — M2 левый-передний IN2")
-        logger.info(f"    ch14 — M1 правый-передний IN2")
-        logger.info(f"    ch15 — M1 правый-передний IN1")
-
-        # Чтение duty_cycle каждого канала
         for ch_num in range(16):
             try:
-                dc = pca.channels[ch_num].duty_cycle
-                logger.debug(f"  Канал {ch_num:2d}: duty_cycle = {dc}")
+                on_val, off_val = pca.get_pwm(ch_num)
+                logger.debug(f"  Канал {ch_num:2d}: ON={on_val}, OFF={off_val}")
             except Exception as e:
                 logger.debug(f"  Канал {ch_num:2d}: ошибка чтения — {e}")
 
@@ -551,6 +647,7 @@ def diagnose_pca9685():
             "address": hex(used_addr),
             "frequency_hz": pca.frequency,
             "channels": 16,
+            "driver": "smbus2-fallback",
         })
         return pca
 
@@ -558,6 +655,30 @@ def diagnose_pca9685():
         logger.error(f"  PCA9685 ОШИБКА: {e}")
         record("pca9685", status="ERROR", details={"error": str(e)})
         return None
+
+
+def _log_pca9685_info(addr_hex: str, freq: int, driver: str):
+    logger.info(f"  PCA9685 инициализирован успешно (драйвер: {driver})")
+    logger.info(f"  I2C адрес: {addr_hex}")
+    logger.info(f"  Частота PWM: {freq} Hz")
+    logger.info(f"  Каналов: 16 (0-15)")
+    logger.info(f"  Распределение каналов:")
+    logger.info(f"    ch0  — Сервопривод 0 (клешня)")
+    logger.info(f"    ch1  — Сервопривод 1")
+    logger.info(f"    ch2  — Сервопривод 2")
+    logger.info(f"    ch3  — Сервопривод 3")
+    logger.info(f"    ch4  — Сервопривод 4")
+    logger.info(f"    ch5  — Сервопривод 5")
+    logger.info(f"    ch6  — Свободен")
+    logger.info(f"    ch7  — Свободен")
+    logger.info(f"    ch8  — M4 правый-задний IN1")
+    logger.info(f"    ch9  — M4 правый-задний IN2")
+    logger.info(f"    ch10 — M3 левый-задний IN2")
+    logger.info(f"    ch11 — M3 левый-задний IN1")
+    logger.info(f"    ch12 — M2 левый-передний IN1")
+    logger.info(f"    ch13 — M2 левый-передний IN2")
+    logger.info(f"    ch14 — M1 правый-передний IN2")
+    logger.info(f"    ch15 — M1 правый-передний IN1")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -621,56 +742,73 @@ def diagnose_motors(pca):
         record("motors", status="ERROR", details={"error": "PCA9685 not available"})
         return None
 
+    MOTOR_MAP = {
+        "M1_right_front": (15, 14),
+        "M2_left_front": (12, 13),
+        "M3_left_rear": (11, 10),
+        "M4_right_rear": (8, 9),
+    }
+
+    is_smbus = isinstance(pca, PCA9685Smbus)
+
     try:
-        from adafruit_motor import motor as adafruit_motor
+        if is_smbus:
+            # smbus2-фоллбэк: используем PCA9685Smbus напрямую
+            motor_channels = {}
+            for name, (ch_in1, ch_in2) in MOTOR_MAP.items():
+                motor_channels[name] = (ch_in1, ch_in2)
+                logger.info(f"  {name}: ch_IN1={ch_in1}, ch_IN2={ch_in2} — OK (smbus2)")
+        else:
+            from adafruit_motor import motor as adafruit_motor
 
-        MOTOR_MAP = {
-            "M1_right_front": (15, 14),
-            "M2_left_front": (12, 13),
-            "M3_left_rear": (11, 10),
-            "M4_right_rear": (8, 9),
-        }
+            motor_channels = {}
+            motors_adafruit = {}
+            for name, (ch_in1, ch_in2) in MOTOR_MAP.items():
+                try:
+                    m = adafruit_motor.DCMotor(pca.channels[ch_in1], pca.channels[ch_in2])
+                    m.decay_mode = adafruit_motor.SLOW_DECAY
+                    motors_adafruit[name] = m
+                    motor_channels[name] = (ch_in1, ch_in2)
+                    logger.info(f"  {name}: ch_IN1={ch_in1}, ch_IN2={ch_in2} — OK")
+                except Exception as e:
+                    logger.error(f"  {name}: ch_IN1={ch_in1}, ch_IN2={ch_in2} — ОШИБКА: {e}")
 
-        motors = {}
-        for name, (ch_in1, ch_in2) in MOTOR_MAP.items():
-            try:
-                m = adafruit_motor.DCMotor(pca.channels[ch_in1], pca.channels[ch_in2])
-                m.decay_mode = adafruit_motor.SLOW_DECAY
-                motors[name] = m
-                logger.info(f"  {name}: ch_IN1={ch_in1}, ch_IN2={ch_in2} — OK")
-            except Exception as e:
-                logger.error(f"  {name}: ch_IN1={ch_in1}, ch_IN2={ch_in2} — ОШИБКА: {e}")
-
-        if not motors:
+        if not motor_channels:
             record("motors", status="ERROR", details={"error": "No motors initialized"})
             return None
 
         SPEED = 0.35
         MOVE_TIME = 1.0
-        move_log = []  # лог всех движений с таймштампами
+        move_log = []
+
+        def set_throttle(name, throttle):
+            if is_smbus:
+                ch_in1, ch_in2 = MOTOR_MAP[name]
+                pca.set_throttle(ch_in1, ch_in2, throttle)
+            else:
+                motors_adafruit[name].throttle = throttle
 
         def set_all(throttle):
-            for m in motors.values():
+            for name in motor_channels:
                 try:
-                    m.throttle = throttle
+                    set_throttle(name, throttle)
                 except Exception as e:
                     logger.error(f"  throttle error: {e}")
 
         def set_sides(left, right):
-            for name, m in motors.items():
+            for name in motor_channels:
                 try:
-                    m.throttle = left if "left" in name else right
+                    set_throttle(name, left if "left" in name else right)
                 except Exception as e:
                     logger.error(f"  {name} throttle error: {e}")
 
         def stop_all():
-            for m in motors.values():
+            for name in motor_channels:
                 try:
-                    m.throttle = 0
+                    set_throttle(name, 0)
                 except Exception:
                     pass
 
-        # --- Комбинированные движения ---
         movements = [
             ("ВПЕРЁД",        lambda: set_all(SPEED),          f"throttle={SPEED}"),
             ("НАЗАД",         lambda: set_all(-SPEED),         f"throttle={-SPEED}"),
@@ -701,22 +839,21 @@ def diagnose_motors(pca):
 
         stop_all()
 
-        # --- Каждый мотор по отдельности ---
         logger.info("")
         logger.info("  --- Тест каждого мотора по отдельности ---")
         individual_results = {}
-        for name, m in motors.items():
+        for name in motor_channels:
             try:
                 logger.info(f"  >>> {name}: вперёд 0.5с")
-                m.throttle = SPEED
+                set_throttle(name, SPEED)
                 time.sleep(0.5)
-                m.throttle = 0
+                set_throttle(name, 0)
                 time.sleep(0.3)
 
                 logger.info(f"  >>> {name}: назад 0.5с")
-                m.throttle = -SPEED
+                set_throttle(name, -SPEED)
                 time.sleep(0.5)
-                m.throttle = 0
+                set_throttle(name, 0)
                 time.sleep(0.3)
 
                 individual_results[name] = "OK"
@@ -727,14 +864,14 @@ def diagnose_motors(pca):
 
         stop_all()
         record("motors", status="OK", details={
-            "count": len(motors),
-            "names": list(motors.keys()),
+            "count": len(motor_channels),
+            "names": list(motor_channels.keys()),
             "test_speed": SPEED,
-            "driver": "DRV8833 x2 via PCA9685",
+            "driver": f"DRV8833 x2 via PCA9685 ({'smbus2' if is_smbus else 'adafruit'})",
             "movement_tests": move_log,
             "individual_tests": individual_results,
         })
-        return motors
+        return motor_channels
 
     except Exception as e:
         logger.error(f"  Общая ошибка моторов: {e}")
@@ -754,56 +891,59 @@ def diagnose_servos(pca):
         record("servos_ad002", status="ERROR", details={"error": "PCA9685 not available"})
         return
 
+    MIN_PULSE = 500
+    MAX_PULSE = 2400
+    ACTUATION_RANGE = 180
+
+    SERVO_CONFIG = {
+        0: {"name": "Servo0 (клешня / gripper)", "init": 90, "test_angles": [30, 130, 90]},
+        1: {"name": "Servo1 (рука / arm joint 1)", "init": 90, "test_angles": [70, 110, 90]},
+        2: {"name": "Servo2 (рука / arm joint 2)", "init": 90, "test_angles": [70, 110, 90]},
+        3: {"name": "Servo3 (рука / arm joint 3)", "init": 90, "test_angles": [70, 110, 90]},
+        4: {"name": "Servo4 (рука / arm joint 4)", "init": 90, "test_angles": [70, 110, 90]},
+        5: {"name": "Servo5 (рука / arm joint 5)", "init": 90, "test_angles": [70, 110, 90]},
+    }
+
+    is_smbus = isinstance(pca, PCA9685Smbus)
+
+    logger.info(f"  Тип: AD002 Servo Motor")
+    logger.info(f"  Количество: 6 шт.")
+    logger.info(f"  Диапазон пульса: {MIN_PULSE}-{MAX_PULSE} мкс")
+    logger.info(f"  Диапазон угла: 0-{ACTUATION_RANGE}°")
+    logger.info("")
+
     try:
-        from adafruit_motor import servo as adafruit_servo
-
-        MIN_PULSE = 500
-        MAX_PULSE = 2400
-        ACTUATION_RANGE = 180
-
-        # Конфигурация 6 сервоприводов
-        SERVO_CONFIG = {
-            0: {"name": "Servo0 (клешня / gripper)", "init": 90, "test_angles": [30, 130, 90]},
-            1: {"name": "Servo1 (рука / arm joint 1)", "init": 90, "test_angles": [70, 110, 90]},
-            2: {"name": "Servo2 (рука / arm joint 2)", "init": 90, "test_angles": [70, 110, 90]},
-            3: {"name": "Servo3 (рука / arm joint 3)", "init": 90, "test_angles": [70, 110, 90]},
-            4: {"name": "Servo4 (рука / arm joint 4)", "init": 90, "test_angles": [70, 110, 90]},
-            5: {"name": "Servo5 (рука / arm joint 5)", "init": 90, "test_angles": [70, 110, 90]},
-        }
-
-        logger.info(f"  Тип: AD002 Servo Motor")
-        logger.info(f"  Количество: 6 шт.")
-        logger.info(f"  Диапазон пульса: {MIN_PULSE}-{MAX_PULSE} мкс")
-        logger.info(f"  Диапазон угла: 0-{ACTUATION_RANGE}°")
-        logger.info("")
-
         servo_results = {}
 
         for ch, cfg in SERVO_CONFIG.items():
             name = cfg["name"]
             try:
-                srv = adafruit_servo.Servo(
-                    pca.channels[ch],
-                    min_pulse=MIN_PULSE,
-                    max_pulse=MAX_PULSE,
-                    actuation_range=ACTUATION_RANGE,
-                )
-
                 logger.info(f"  [{ch}] {name}")
                 logger.info(f"      PCA9685 канал: {ch}")
                 logger.info(f"      Пульс: {MIN_PULSE}-{MAX_PULSE} мкс")
 
-                # Начальная позиция
+                def set_angle(angle):
+                    if is_smbus:
+                        pca.set_servo_angle(ch, angle, MIN_PULSE, MAX_PULSE)
+                    else:
+                        from adafruit_motor import servo as adafruit_servo
+                        srv = adafruit_servo.Servo(
+                            pca.channels[ch],
+                            min_pulse=MIN_PULSE,
+                            max_pulse=MAX_PULSE,
+                            actuation_range=ACTUATION_RANGE,
+                        )
+                        srv.angle = angle
+
                 init_angle = cfg["init"]
-                srv.angle = init_angle
+                set_angle(init_angle)
                 logger.info(f"      INIT → {init_angle}° (установлен)")
                 time.sleep(0.5)
 
-                # Тестовые углы
                 tested_angles = []
                 for angle in cfg["test_angles"]:
                     try:
-                        srv.angle = angle
+                        set_angle(angle)
                         tested_angles.append({"angle": angle, "status": "OK"})
                         logger.info(f"      → {angle}° — OK (установлен)")
                         time.sleep(0.5)
@@ -811,8 +951,7 @@ def diagnose_servos(pca):
                         tested_angles.append({"angle": angle, "status": "ERROR", "error": str(e)})
                         logger.error(f"      → {angle}° — ОШИБКА: {e}")
 
-                # Вернуть в init
-                srv.angle = init_angle
+                set_angle(init_angle)
                 time.sleep(0.3)
 
                 servo_results[f"ch{ch}"] = {
@@ -914,13 +1053,14 @@ def diagnose_line_tracking():
     LINE_LEFT = 20
 
     try:
-        import RPi.GPIO as GPIO
+        # gpiozero — работает на Trixie (lgpio) и Bookworm (pigpio/rpigpio)
+        from gpiozero import DigitalInputDevice
 
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(LINE_RIGHT, GPIO.IN)
-        GPIO.setup(LINE_MIDDLE, GPIO.IN)
-        GPIO.setup(LINE_LEFT, GPIO.IN)
+        sensors = {
+            "right": DigitalInputDevice(LINE_RIGHT),
+            "middle": DigitalInputDevice(LINE_MIDDLE),
+            "left": DigitalInputDevice(LINE_LEFT),
+        }
 
         logger.info(f"  3-канальный ИК-модуль следования за линией")
         logger.info(f"  GPIO Right:  {LINE_RIGHT}")
@@ -928,19 +1068,17 @@ def diagnose_line_tracking():
         logger.info(f"  GPIO Left:   {LINE_LEFT}")
         logger.info(f"  Логика: 0 = линия обнаружена, 1 = нет линии")
 
-        # Несколько замеров
         logger.info(f"  >>> Тест: 5 замеров с интервалом 0.2с...")
         all_readings = []
         for i in range(5):
-            r = GPIO.input(LINE_RIGHT)
-            m = GPIO.input(LINE_MIDDLE)
-            l = GPIO.input(LINE_LEFT)
-            reading = {"right": r, "middle": m, "left": l}
+            reading = {name: s.value for name, s in sensors.items()}
             all_readings.append(reading)
-            logger.info(f"    Замер {i+1}: Left={l}  Middle={m}  Right={r}")
+            logger.info(f"    Замер {i+1}: Left={reading['left']}  "
+                        f"Middle={reading['middle']}  Right={reading['right']}")
             time.sleep(0.2)
 
-        GPIO.cleanup([LINE_RIGHT, LINE_MIDDLE, LINE_LEFT])
+        for s in sensors.values():
+            s.close()
 
         record("line_tracking", status="OK", details={
             "type": "3-CH IR Line Tracking Module",
@@ -950,33 +1088,35 @@ def diagnose_line_tracking():
             "readings": all_readings,
         })
 
-    except ImportError:
-        # Попробуем через gpiozero
+    except Exception as e_gpiozero:
+        # Фоллбэк: RPi.GPIO (только Bookworm/старые версии)
         try:
-            from gpiozero import DigitalInputDevice
+            import RPi.GPIO as GPIO
 
-            sensors = {
-                "right": DigitalInputDevice(LINE_RIGHT),
-                "middle": DigitalInputDevice(LINE_MIDDLE),
-                "left": DigitalInputDevice(LINE_LEFT),
-            }
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(LINE_RIGHT, GPIO.IN)
+            GPIO.setup(LINE_MIDDLE, GPIO.IN)
+            GPIO.setup(LINE_LEFT, GPIO.IN)
 
-            logger.info(f"  3-канальный ИК-модуль (через gpiozero)")
+            logger.info(f"  3-канальный ИК-модуль (через RPi.GPIO)")
             logger.info(f"  GPIO Right:  {LINE_RIGHT}")
             logger.info(f"  GPIO Middle: {LINE_MIDDLE}")
             logger.info(f"  GPIO Left:   {LINE_LEFT}")
+            logger.info(f"  Логика: 0 = линия обнаружена, 1 = нет линии")
 
             logger.info(f"  >>> Тест: 5 замеров с интервалом 0.2с...")
             all_readings = []
             for i in range(5):
-                reading = {name: s.value for name, s in sensors.items()}
+                r = GPIO.input(LINE_RIGHT)
+                m = GPIO.input(LINE_MIDDLE)
+                l = GPIO.input(LINE_LEFT)
+                reading = {"right": r, "middle": m, "left": l}
                 all_readings.append(reading)
-                logger.info(f"    Замер {i+1}: Left={reading['left']}  "
-                            f"Middle={reading['middle']}  Right={reading['right']}")
+                logger.info(f"    Замер {i+1}: Left={l}  Middle={m}  Right={r}")
                 time.sleep(0.2)
 
-            for s in sensors.values():
-                s.close()
+            GPIO.cleanup([LINE_RIGHT, LINE_MIDDLE, LINE_LEFT])
 
             record("line_tracking", status="OK", details={
                 "type": "3-CH IR Line Tracking Module",
@@ -989,10 +1129,6 @@ def diagnose_line_tracking():
         except Exception as e:
             logger.error(f"  Line Tracking ОШИБКА: {e}")
             record("line_tracking", status="ERROR", details={"error": str(e)})
-
-    except Exception as e:
-        logger.error(f"  Line Tracking ОШИБКА: {e}")
-        record("line_tracking", status="ERROR", details={"error": str(e)})
 
 
 # ══════════════════════════════════════════════════════════════════════

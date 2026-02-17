@@ -1,23 +1,26 @@
 # Зависимости для diagnostic.py
-# Установка: sudo pip3 install -r diagnostic_requirements.txt
+# Установка: sudo pip3 install --break-system-packages -r diagnostic_requirements.txt
+#
+# Минимально необходимый: smbus2 (для I2C и PCA9685 fallback)
+# Остальные — опциональные, диагностика работает и без них
 
-# PCA9685 PWM-контроллер + моторы/сервоприводы
+# I2C (ADS7830 АЦП, PCA9685 smbus2-fallback, сканирование шины)
+smbus2
+
+# PCA9685 PWM-контроллер + моторы/сервоприводы (опционально, есть smbus2-fallback)
 adafruit-circuitpython-pca9685
 adafruit-circuitpython-motor
-
-# I2C (ADS7830 АЦП, сканирование шины)
-smbus2
 
 # WS2812 RGB LED (требует sudo)
 rpi_ws281x
 
-# Камера
-picamera2
-opencv-python-headless
-numpy
+# Камера (лучше ставить через apt: python3-picamera2)
+# picamera2
+# opencv-python-headless
+# numpy
 
-# Микрофон
-pyaudio
+# Микрофон (лучше ставить через apt: python3-pyaudio)
+# pyaudio
 
-# Распознавание речи (опционально, для проверки модели)
+# Распознавание речи (опционально)
 vosk

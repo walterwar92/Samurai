@@ -5,8 +5,14 @@ Runs on the laptop (i9-13900H) with the same ROS_DOMAIN_ID as the Pi.
 Receives /camera/image_raw, /range, /imu/data, /odom over WiFi DDS.
 
 Usage:
-  export ROS_DOMAIN_ID=42
-  ros2 launch robot_pkg compute_bringup.launch.py
+    docker build -t samurai /home/rs/Projects/Samurai
+    docker run -it --net=host -v /home/rs/Projects/Samurai:/root/Samurai samurai bash
+    # Inside container:
+    cd /root/Samurai/ros_ws
+    colcon build --symlink-install
+    source install/setup.bash
+    export ROS_DOMAIN_ID=42
+    ros2 launch robot_pkg compute_bringup.launch.py
 """
 
 import os
@@ -32,6 +38,21 @@ def generate_launch_description():
         name='ekf_filter_node',
         output='screen',
         parameters=[os.path.join(config_dir, 'robot_localization.yaml')],
+    )
+
+    # ── Monocular depth → LaserScan (MiDaS + ultrasonic) ────
+    depth_to_scan_node = Node(
+        package='robot_pkg',
+        executable='depth_to_scan_node',
+        name='depth_to_scan',
+        output='screen',
+        parameters=[{
+            'camera_hfov': 1.085,       # ~62° RPi CSI v2
+            'max_range': 3.0,
+            'num_beams': 180,
+            'publish_rate': 10.0,
+            'scale_smoothing': 0.8,
+        }],
     )
 
     # ── SLAM Toolbox (online async) ──────────────────────────
@@ -83,6 +104,7 @@ def generate_launch_description():
     return LaunchDescription([
         use_sim_time_arg,
         ekf_node,
+        depth_to_scan_node,
         slam_toolbox_node,
         nav2_launch,
         yolo_node,
