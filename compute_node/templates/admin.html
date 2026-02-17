@@ -1,0 +1,1230 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAMURAI — Панель администратора</title>
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0c12;
+  --card: #12151f;
+  --card-hover: #181c28;
+  --border: #252838;
+  --text: #e0e4ec;
+  --text-dim: #6b7490;
+  --accent: #4fc3f7;
+  --green: #4caf50;
+  --red: #ef5350;
+  --orange: #ff9800;
+  --yellow: #ffeb3b;
+  --purple: #ab47bc;
+  --radius: 8px;
+}
+
+body {
+  font-family: 'Segoe UI', 'Inter', 'Ubuntu', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 2px;
+}
+
+.header .badge-admin {
+  font-size: 10px;
+  background: var(--red);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.sim-time {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.conn-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  transition: background 0.3s;
+}
+
+.conn-dot.ok { background: var(--green); }
+
+/* ── Main Layout: 3-column grid ── */
+.main {
+  display: grid;
+  grid-template-columns: 1fr 1fr 340px;
+  grid-template-rows: auto auto auto;
+  gap: 10px;
+  padding: 10px;
+  max-width: 1920px;
+  margin: 0 auto;
+  min-height: calc(100vh - 48px);
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  flex-shrink: 0;
+}
+
+.card-head h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--text-dim);
+}
+
+.card-body {
+  padding: 10px 12px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── Camera Panel ── */
+.panel-camera { grid-column: 1; grid-row: 1; }
+.panel-camera img {
+  width: 100%;
+  display: block;
+  background: #000;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+/* ── Map Panel ── */
+.panel-map { grid-column: 2; grid-row: 1; }
+.map-wrap {
+  position: relative;
+  width: 100%;
+  padding-top: 75%;
+  background: #151825;
+}
+.map-wrap canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+}
+.map-wrap canvas.crosshair { cursor: crosshair; }
+
+.map-tools {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-sm {
+  padding: 3px 8px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-sm:hover { border-color: var(--accent); color: var(--text); }
+.btn-sm.active { background: rgba(239,83,80,0.2); border-color: var(--red); color: var(--red); }
+
+.zone-info {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 4px 12px;
+  text-align: right;
+}
+
+/* ── Right Sidebar ── */
+.sidebar { grid-column: 3; grid-row: 1 / 4; display: flex; flex-direction: column; gap: 10px; }
+
+/* ── FSM Panel ── */
+.fsm-badge {
+  display: inline-block;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 4px 14px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.fsm-badge.IDLE       { background: #37474f; color: #b0bec5; }
+.fsm-badge.SEARCHING  { background: #1b5e20; color: #a5d6a7; }
+.fsm-badge.TARGETING  { background: #f57f17; color: #fff9c4; }
+.fsm-badge.APPROACHING{ background: #e65100; color: #ffcc80; }
+.fsm-badge.GRABBING   { background: #4a148c; color: #ce93d8; }
+.fsm-badge.BURNING    { background: #b71c1c; color: #ef9a9a; }
+.fsm-badge.CALLING    { background: #01579b; color: #81d4fa; }
+.fsm-badge.RETURNING  { background: #33691e; color: #c5e1a5; }
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.info-label { color: var(--text-dim); font-size: 11px; }
+.info-val { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* ── Sensor Bars ── */
+.sensor-bar-wrap {
+  margin: 6px 0;
+}
+.sensor-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+.sensor-bar-label span:first-child { color: var(--text-dim); }
+.sensor-bar-label span:last-child { font-weight: 600; font-variant-numeric: tabular-nums; }
+.sensor-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.sensor-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.25s ease;
+}
+
+/* ── Actuator Buttons ── */
+.actuator-row {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.btn-actuator {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+}
+.btn-actuator:hover { border-color: var(--accent); color: var(--text); }
+.btn-actuator.on { background: rgba(76,175,80,0.2); border-color: var(--green); color: var(--green); }
+.btn-actuator.danger.on { background: rgba(239,83,80,0.2); border-color: var(--red); color: var(--red); }
+
+/* ── Joystick ── */
+.joystick-container {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0;
+}
+.joystick-area {
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  background: var(--border);
+  position: relative;
+  touch-action: none;
+  cursor: grab;
+}
+.joystick-area:active { cursor: grabbing; }
+.joystick-center {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 12px; height: 12px;
+  margin: -6px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.15);
+}
+.joystick-knob {
+  position: absolute;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.85;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: none;
+}
+
+.vel-display {
+  display: flex;
+  justify-content: space-around;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.vel-display span { font-variant-numeric: tabular-nums; }
+.vel-display .val { color: var(--text); font-weight: 600; }
+
+/* ── Bottom Panels ── */
+.panel-control { grid-column: 1; grid-row: 2; }
+.panel-detection { grid-column: 2; grid-row: 2; }
+.panel-log { grid-column: 1 / 3; grid-row: 3; }
+
+/* ── Command Input ── */
+.cmd-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.cmd-input {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.cmd-input:focus { border-color: var(--accent); }
+.cmd-input::placeholder { color: var(--text-dim); }
+
+.btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.btn:hover { background: var(--border); border-color: var(--accent); }
+.btn-primary { background: #1565c0; border-color: #1976d2; color: white; }
+.btn-primary:hover { background: #1976d2; }
+.btn-danger { border-color: var(--red); color: var(--red); }
+.btn-danger:hover { background: rgba(239,83,80,0.12); }
+.btn-warn { border-color: var(--orange); color: var(--orange); }
+.btn-warn:hover { background: rgba(255,152,0,0.12); }
+
+.quick-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* ── FSM Force Transition ── */
+.fsm-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.btn-fsm {
+  padding: 4px 10px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.btn-fsm:hover { border-color: var(--accent); color: var(--text); }
+.btn-fsm.current { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 700; }
+
+/* ── Detection Table ── */
+.det-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.det-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.det-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(37,40,56,0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.colour-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* ── Log ── */
+.log-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(37,40,56,0.4);
+  font-size: 12px;
+}
+.log-entry:last-child { border-bottom: none; }
+.log-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* ── Ball Table ── */
+.ball-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 6px;
+}
+.ball-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+}
+.ball-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid rgba(37,40,56,0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Responsive ── */
+@media (max-width: 1200px) {
+  .main {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto;
+  }
+  .sidebar { grid-column: 1 / 3; grid-row: auto; flex-direction: row; flex-wrap: wrap; }
+  .sidebar .card { flex: 1; min-width: 300px; }
+}
+
+@media (max-width: 768px) {
+  .main { grid-template-columns: 1fr; }
+  .sidebar { grid-column: 1; flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═════════ HEADER ═════════ -->
+<div class="header">
+  <div class="header-left">
+    <h1>SAMURAI</h1>
+    <span class="badge-admin">ADMIN</span>
+  </div>
+  <div class="header-right">
+    <span class="sim-time" id="simTime">t = 0.00 s</span>
+    <div class="conn-indicator">
+      <div class="conn-dot" id="connDot"></div>
+      <span id="connText">Подключение...</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════ MAIN GRID ═════════ -->
+<div class="main">
+
+  <!-- ──── Camera ──── -->
+  <div class="card panel-camera">
+    <div class="card-head">
+      <h3>Камера + YOLO</h3>
+      <span style="font-size:10px;color:var(--text-dim)" id="camRes">640x480</span>
+    </div>
+    <img id="camFeed" src="/video_feed" alt="Camera">
+  </div>
+
+  <!-- ──── Map ──── -->
+  <div class="card panel-map">
+    <div class="card-head">
+      <h3>Карта</h3>
+      <div class="map-tools">
+        <button class="btn-sm" id="btnDraw" title="Нарисовать запретную зону">+ Зона</button>
+        <button class="btn-sm" id="btnDelZone" title="Удалить зону (клик)">- Зона</button>
+        <button class="btn-sm" id="btnClearZ" title="Удалить все">Очистить</button>
+      </div>
+    </div>
+    <div class="map-wrap">
+      <canvas id="mapCanvas"></canvas>
+    </div>
+    <div class="zone-info" id="zoneInfo">Зон: 0</div>
+  </div>
+
+  <!-- ──── RIGHT SIDEBAR ──── -->
+  <div class="sidebar">
+
+    <!-- FSM State -->
+    <div class="card">
+      <div class="card-head"><h3>Состояние FSM</h3></div>
+      <div class="card-body">
+        <div style="margin-bottom:8px;">
+          <span class="fsm-badge IDLE" id="fsmBadge">IDLE</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Цель</span>
+          <span class="info-val" id="targetColour">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Действие</span>
+          <span class="info-val" id="targetAction">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Позиция</span>
+          <span class="info-val" id="poseDisplay">0.000, 0.000</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Курс</span>
+          <span class="info-val" id="headingDisplay">0.0°</span>
+        </div>
+        <div style="margin-top:8px;">
+          <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">ПРИНУДИТЕЛЬНЫЙ ПЕРЕХОД</div>
+          <div class="fsm-buttons" id="fsmButtons"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sensors -->
+    <div class="card">
+      <div class="card-head"><h3>Сенсоры</h3></div>
+      <div class="card-body">
+        <div class="sensor-bar-wrap">
+          <div class="sensor-bar-label">
+            <span>Ультразвук</span>
+            <span id="rangeVal">— м</span>
+          </div>
+          <div class="sensor-bar">
+            <div class="sensor-bar-fill" id="rangeFill" style="width:0%;background:var(--accent)"></div>
+          </div>
+        </div>
+        <div class="info-row">
+          <span class="info-label">IMU Yaw</span>
+          <span class="info-val" id="imuYaw">0.0°</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">IMU Pitch</span>
+          <span class="info-val" id="imuPitch">0.0°</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">IMU Roll</span>
+          <span class="info-val" id="imuRoll">0.0°</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Gyro Z</span>
+          <span class="info-val" id="gyroZ">0.000 рад/с</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Accel X</span>
+          <span class="info-val" id="accelX">0.000 м/с²</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Скорость лин.</span>
+          <span class="info-val" id="velLin">0.0000 м/с</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Скорость угл.</span>
+          <span class="info-val" id="velAng">0.0000 рад/с</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actuators + Joystick -->
+    <div class="card">
+      <div class="card-head"><h3>Управление роботом</h3></div>
+      <div class="card-body">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">АКТУАТОРЫ</div>
+        <div class="actuator-row">
+          <button class="btn-actuator" id="btnClaw" onclick="toggleClaw()">Клешня: ОТКР</button>
+          <button class="btn-actuator danger" id="btnLaser" onclick="toggleLaser()">Лазер: ВЫКЛ</button>
+        </div>
+        <div style="font-size:10px;color:var(--text-dim);margin:10px 0 4px;">ДЖОЙСТИК СКОРОСТИ</div>
+        <div class="joystick-container">
+          <div class="joystick-area" id="joystick">
+            <div class="joystick-center"></div>
+            <div class="joystick-knob" id="joystickKnob"></div>
+          </div>
+        </div>
+        <div class="vel-display">
+          <span>Lin: <span class="val" id="joyLin">0.00</span> м/с</span>
+          <span>Ang: <span class="val" id="joyAng">0.00</span> рад/с</span>
+        </div>
+        <button class="btn btn-danger" style="width:100%;margin-top:8px;" onclick="emergencyStop()">АВАРИЙНЫЙ СТОП</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ──── Command Panel ──── -->
+  <div class="card panel-control">
+    <div class="card-head"><h3>Команды</h3></div>
+    <div class="card-body">
+      <div class="cmd-row">
+        <input type="text" class="cmd-input" id="cmdInput"
+               placeholder="Введите команду..." autocomplete="off">
+        <button class="btn btn-primary" id="cmdSend">Отправить</button>
+      </div>
+      <div class="quick-grid">
+        <button class="btn" onclick="sendCmd('найди красный мяч')" style="color:#ef5350">Красный</button>
+        <button class="btn" onclick="sendCmd('найди синий мяч')" style="color:#42a5f5">Синий</button>
+        <button class="btn" onclick="sendCmd('найди зелёный мяч')" style="color:#66bb6a">Зелёный</button>
+        <button class="btn" onclick="sendCmd('найди жёлтый мяч')" style="color:#ffeb3b">Жёлтый</button>
+        <button class="btn" onclick="sendCmd('найди оранжевый мяч')" style="color:#ff9800">Оранжевый</button>
+        <button class="btn" onclick="sendCmd('сожги лазером')">Лазер</button>
+        <button class="btn btn-danger" onclick="sendCmd('стоп')">Стоп</button>
+        <button class="btn" onclick="sendCmd('домой')">Домой</button>
+        <button class="btn btn-warn" onclick="resetSim()">Сброс</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ──── Detection Panel ──── -->
+  <div class="card panel-detection">
+    <div class="card-head">
+      <h3>Детекции <span id="detCount" style="color:var(--accent)">(0)</span></h3>
+      <span style="font-size:10px;color:var(--text-dim)" id="closestInfo">—</span>
+    </div>
+    <div class="card-body">
+      <table class="det-table">
+        <thead>
+          <tr><th>Цвет</th><th>Conf</th><th>Дист.</th><th>X</th><th>Y</th><th>W</th><th>H</th></tr>
+        </thead>
+        <tbody id="detBody">
+          <tr><td colspan="7" style="text-align:center;color:var(--text-dim)">Нет детекций</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:10px;">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">МЯЧИ НА АРЕНЕ</div>
+        <table class="ball-table">
+          <thead>
+            <tr><th>ID</th><th>Цвет</th><th>X</th><th>Y</th><th>Статус</th></tr>
+          </thead>
+          <tbody id="ballBody">
+            <tr><td colspan="5" style="text-align:center;color:var(--text-dim)">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ──── Event Log ──── -->
+  <div class="card panel-log">
+    <div class="card-head">
+      <h3>Лог событий</h3>
+      <span style="font-size:10px;color:var(--text-dim)" id="logCount">0</span>
+    </div>
+    <div class="card-body">
+      <div class="log-list" id="logList">
+        <div style="text-align:center;color:var(--text-dim);font-size:12px;padding:20px">Событий пока нет</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═════════════════════════════════════════════════════ -->
+<!-- JAVASCRIPT -->
+<!-- ═════════════════════════════════════════════════════ -->
+<script>
+const socket = io();
+
+const COLOUR_RU = {
+  red:'красный', blue:'синий', green:'зелёный',
+  yellow:'жёлтый', orange:'оранжевый', white:'белый',
+  black:'чёрный', unknown:'неизвестный'
+};
+const COLOUR_CSS = {
+  red:'#ef5350', blue:'#42a5f5', green:'#66bb6a',
+  yellow:'#ffeb3b', orange:'#ff9800', white:'#fafafa',
+  black:'#424242', unknown:'#9e9e9e'
+};
+const ACTION_RU = { grab:'захват', burn:'лазер' };
+const ALL_STATES = ['IDLE','SEARCHING','TARGETING','APPROACHING','GRABBING','BURNING','CALLING','RETURNING'];
+
+// ── Actuator state ──
+let clawOpen = false;
+let laserOn = false;
+
+// ── Generate FSM buttons ──
+const fsmBtnsEl = document.getElementById('fsmButtons');
+ALL_STATES.forEach(s => {
+  const b = document.createElement('button');
+  b.className = 'btn-fsm';
+  b.textContent = s;
+  b.onclick = () => {
+    fetch('/api/fsm/transition', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({state: s})
+    });
+  };
+  fsmBtnsEl.appendChild(b);
+});
+
+// ── Connection ──
+socket.on('connect', () => {
+  document.getElementById('connDot').classList.add('ok');
+  document.getElementById('connText').textContent = 'Подключено';
+});
+socket.on('disconnect', () => {
+  document.getElementById('connDot').classList.remove('ok');
+  document.getElementById('connText').textContent = 'Отключено';
+});
+
+// ═══════════════════════════════════════════
+// State update handler
+// ═══════════════════════════════════════════
+let latestData = null;
+
+socket.on('state_update', (data) => {
+  latestData = data;
+
+  // Sim time
+  document.getElementById('simTime').textContent = 't = ' + (data.sim_time || 0).toFixed(2) + ' s';
+
+  // FSM
+  const st = data.status || {};
+  const badge = document.getElementById('fsmBadge');
+  badge.textContent = st.state || 'IDLE';
+  badge.className = 'fsm-badge ' + (st.state || 'IDLE');
+
+  document.getElementById('targetColour').textContent = COLOUR_RU[st.target_colour] || st.target_colour || '—';
+  document.getElementById('targetColour').style.color = COLOUR_CSS[st.target_colour] || 'var(--text)';
+  document.getElementById('targetAction').textContent = ACTION_RU[st.target_action] || st.target_action || '—';
+
+  // Highlight current FSM button
+  document.querySelectorAll('.btn-fsm').forEach(b => {
+    b.classList.toggle('current', b.textContent === st.state);
+  });
+
+  // Pose
+  if (data.pose) {
+    document.getElementById('poseDisplay').textContent =
+      data.pose.x.toFixed(3) + ', ' + data.pose.y.toFixed(3);
+    document.getElementById('headingDisplay').textContent =
+      (data.pose.yaw_deg || (data.pose.yaw * 180 / Math.PI)).toFixed(1) + '°';
+  }
+
+  // Velocity
+  if (data.velocity) {
+    document.getElementById('velLin').textContent = data.velocity.linear.toFixed(4) + ' м/с';
+    document.getElementById('velAng').textContent = data.velocity.angular.toFixed(4) + ' рад/с';
+  }
+
+  // Sensors
+  const range = data.range_m;
+  if (range != null) {
+    document.getElementById('rangeVal').textContent = range.toFixed(3) + ' м';
+    const pct = Math.min(range / 2.0 * 100, 100);
+    const fill = document.getElementById('rangeFill');
+    fill.style.width = pct + '%';
+    if (range < 0.15) { fill.style.background = 'var(--red)'; }
+    else if (range < 0.5) { fill.style.background = 'var(--orange)'; }
+    else { fill.style.background = 'var(--accent)'; }
+  }
+
+  if (data.imu_ypr) {
+    document.getElementById('imuYaw').textContent = data.imu_ypr[0].toFixed(1) + '°';
+    document.getElementById('imuPitch').textContent = data.imu_ypr[1].toFixed(1) + '°';
+    document.getElementById('imuRoll').textContent = data.imu_ypr[2].toFixed(1) + '°';
+  }
+  if (data.imu_gyro_z != null) {
+    document.getElementById('gyroZ').textContent = data.imu_gyro_z.toFixed(3) + ' рад/с';
+  }
+  if (data.imu_accel_x != null) {
+    document.getElementById('accelX').textContent = data.imu_accel_x.toFixed(3) + ' м/с²';
+  }
+
+  // Actuators
+  if (data.actuators) {
+    clawOpen = data.actuators.claw_open;
+    laserOn = data.actuators.laser_on;
+    updateActuatorUI();
+  }
+
+  // Detections
+  updateDetections(data.all_detections || [], data.detection);
+
+  // Balls
+  updateBalls(data.balls || []);
+
+  // Map
+  updateMap(data);
+
+  // Log
+  updateLog(data.voice_log || []);
+});
+
+function updateActuatorUI() {
+  const clawBtn = document.getElementById('btnClaw');
+  clawBtn.textContent = 'Клешня: ' + (clawOpen ? 'ОТКР' : 'ЗАКР');
+  clawBtn.classList.toggle('on', clawOpen);
+
+  const laserBtn = document.getElementById('btnLaser');
+  laserBtn.textContent = 'Лазер: ' + (laserOn ? 'ВКЛ' : 'ВЫКЛ');
+  laserBtn.classList.toggle('on', laserOn);
+}
+
+function updateDetections(dets, closest) {
+  document.getElementById('detCount').textContent = '(' + dets.length + ')';
+
+  if (closest && closest.colour) {
+    const c = COLOUR_RU[closest.colour] || closest.colour;
+    document.getElementById('closestInfo').textContent =
+      'Ближайший: ' + c + ' ' + closest.distance + 'м';
+    document.getElementById('closestInfo').style.color = COLOUR_CSS[closest.colour] || 'var(--text-dim)';
+  } else {
+    document.getElementById('closestInfo').textContent = '—';
+    document.getElementById('closestInfo').style.color = 'var(--text-dim)';
+  }
+
+  const body = document.getElementById('detBody');
+  if (dets.length === 0) {
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim)">Нет детекций</td></tr>';
+    return;
+  }
+  let html = '';
+  for (const d of dets) {
+    const css = COLOUR_CSS[d.colour] || '#9e9e9e';
+    html += '<tr>' +
+      '<td><span class="colour-dot" style="background:'+css+'"></span>' + (COLOUR_RU[d.colour]||d.colour) + '</td>' +
+      '<td>' + (d.conf != null ? (d.conf*100).toFixed(0)+'%' : '—') + '</td>' +
+      '<td>' + (d.distance != null ? d.distance.toFixed(2)+'м' : '—') + '</td>' +
+      '<td>' + (d.x||'—') + '</td>' +
+      '<td>' + (d.y||'—') + '</td>' +
+      '<td>' + (d.w||'—') + '</td>' +
+      '<td>' + (d.h||'—') + '</td>' +
+      '</tr>';
+  }
+  body.innerHTML = html;
+}
+
+function updateBalls(balls) {
+  const body = document.getElementById('ballBody');
+  if (balls.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">—</td></tr>';
+    return;
+  }
+  let html = '';
+  for (const b of balls) {
+    const css = COLOUR_CSS[b.colour] || '#9e9e9e';
+    html += '<tr>' +
+      '<td>' + b.id + '</td>' +
+      '<td><span class="colour-dot" style="background:'+css+'"></span>' + (COLOUR_RU[b.colour]||b.colour) + '</td>' +
+      '<td>' + b.x.toFixed(3) + '</td>' +
+      '<td>' + b.y.toFixed(3) + '</td>' +
+      '<td style="color:' + (b.grabbed ? 'var(--red)' : 'var(--green)') + '">' + (b.grabbed ? 'Захвачен' : 'Активен') + '</td>' +
+      '</tr>';
+  }
+  body.innerHTML = html;
+}
+
+function updateLog(log) {
+  document.getElementById('logCount').textContent = log.length;
+  const list = document.getElementById('logList');
+  if (!log || log.length === 0) {
+    list.innerHTML = '<div style="text-align:center;color:var(--text-dim);font-size:12px;padding:20px">Событий пока нет</div>';
+    return;
+  }
+  let html = '';
+  for (let i = log.length - 1; i >= 0; i--) {
+    html += '<div class="log-entry">' +
+      '<span class="log-time">' + log[i].time + '</span>' +
+      '<span>' + escapeHtml(log[i].text) + '</span>' +
+      '</div>';
+  }
+  list.innerHTML = html;
+}
+
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+// ═══════════════════════════════════════════
+// Commands
+// ═══════════════════════════════════════════
+function sendCmd(text) { socket.emit('send_command', { text }); }
+function resetSim() { socket.emit('reset_sim', {}); }
+function emergencyStop() {
+  fetch('/api/robot/stop', { method: 'POST' });
+  fetch('/api/fsm/transition', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({state:'IDLE'})
+  });
+}
+
+document.getElementById('cmdSend').addEventListener('click', () => {
+  const inp = document.getElementById('cmdInput');
+  const text = inp.value.trim();
+  if (text) { sendCmd(text); inp.value = ''; }
+});
+document.getElementById('cmdInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('cmdSend').click();
+});
+
+// ── Actuators ──
+function toggleClaw() {
+  fetch('/api/actuators/claw', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({open: !clawOpen})
+  });
+}
+function toggleLaser() {
+  fetch('/api/actuators/laser', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({on: !laserOn})
+  });
+}
+
+// ═══════════════════════════════════════════
+// Joystick
+// ═══════════════════════════════════════════
+const joystick = document.getElementById('joystick');
+const knob = document.getElementById('joystickKnob');
+let joyActive = false;
+let joyInterval = null;
+
+function getJoyPos(e) {
+  const rect = joystick.getBoundingClientRect();
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  let dx = clientX - rect.left - cx;
+  let dy = clientY - rect.top - cy;
+  const maxR = rect.width / 2 - 22;
+  const dist = Math.sqrt(dx*dx + dy*dy);
+  if (dist > maxR) {
+    dx = dx / dist * maxR;
+    dy = dy / dist * maxR;
+  }
+  return { dx, dy, maxR };
+}
+
+function startJoy(e) {
+  e.preventDefault();
+  joyActive = true;
+  moveJoy(e);
+  if (!joyInterval) {
+    joyInterval = setInterval(sendJoyVel, 100);
+  }
+}
+
+function moveJoy(e) {
+  if (!joyActive) return;
+  e.preventDefault();
+  const { dx, dy, maxR } = getJoyPos(e);
+  knob.style.left = (50 + dx / joystick.offsetWidth * 100) + '%';
+  knob.style.top = (50 + dy / joystick.offsetHeight * 100) + '%';
+
+  const lin = -dy / maxR * 0.3;
+  const ang = -dx / maxR * 2.0;
+  document.getElementById('joyLin').textContent = lin.toFixed(2);
+  document.getElementById('joyAng').textContent = ang.toFixed(2);
+}
+
+function endJoy() {
+  joyActive = false;
+  knob.style.left = '50%';
+  knob.style.top = '50%';
+  document.getElementById('joyLin').textContent = '0.00';
+  document.getElementById('joyAng').textContent = '0.00';
+  if (joyInterval) { clearInterval(joyInterval); joyInterval = null; }
+  fetch('/api/robot/stop', { method: 'POST' });
+}
+
+function sendJoyVel() {
+  const lin = parseFloat(document.getElementById('joyLin').textContent);
+  const ang = parseFloat(document.getElementById('joyAng').textContent);
+  fetch('/api/robot/velocity', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({linear: lin, angular: ang})
+  });
+}
+
+joystick.addEventListener('mousedown', startJoy);
+document.addEventListener('mousemove', moveJoy);
+document.addEventListener('mouseup', endJoy);
+joystick.addEventListener('touchstart', startJoy);
+document.addEventListener('touchmove', moveJoy);
+document.addEventListener('touchend', endJoy);
+
+// ═══════════════════════════════════════════
+// Map Canvas + Zone Drawing
+// ═══════════════════════════════════════════
+const mapCanvas = document.getElementById('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
+let mapImg = new Image();
+let mapTransform = { offsetX:0, offsetY:0, scale:1, info:null };
+let zoneMode = 'none';
+let isDrawing = false;
+let drawStart = null;
+let drawCurrent = null;
+let serverZones = [];
+
+document.getElementById('btnDraw').addEventListener('click', () => {
+  setZoneMode(zoneMode === 'draw' ? 'none' : 'draw');
+});
+document.getElementById('btnDelZone').addEventListener('click', () => {
+  setZoneMode(zoneMode === 'delete' ? 'none' : 'delete');
+});
+document.getElementById('btnClearZ').addEventListener('click', () => {
+  fetch('/api/zones/clear', { method: 'POST' });
+  setZoneMode('none');
+});
+
+function setZoneMode(mode) {
+  zoneMode = mode;
+  isDrawing = false;
+  drawStart = null;
+  drawCurrent = null;
+  document.getElementById('btnDraw').classList.toggle('active', mode === 'draw');
+  document.getElementById('btnDelZone').classList.toggle('active', mode === 'delete');
+  mapCanvas.classList.toggle('crosshair', mode !== 'none');
+}
+
+function canvasToWorld(cx, cy) {
+  const t = mapTransform;
+  if (!t.info) return null;
+  const mx = (cx - t.offsetX) / t.scale;
+  const my = (cy - t.offsetY) / t.scale;
+  const wx = mx * t.info.resolution + t.info.origin_x;
+  const wy = (t.info.height - my) * t.info.resolution + t.info.origin_y;
+  return { x: wx, y: wy };
+}
+
+mapCanvas.addEventListener('mousedown', e => {
+  if (zoneMode === 'none') return;
+  const rect = mapCanvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) * (mapCanvas.width / rect.width);
+  const cy = (e.clientY - rect.top) * (mapCanvas.height / rect.height);
+  if (zoneMode === 'draw') {
+    isDrawing = true;
+    drawStart = { cx, cy };
+    drawCurrent = { cx, cy };
+  } else if (zoneMode === 'delete') {
+    const w = canvasToWorld(cx, cy);
+    if (!w) return;
+    for (let i = serverZones.length - 1; i >= 0; i--) {
+      const z = serverZones[i];
+      if (w.x >= z.x1 && w.x <= z.x2 && w.y >= z.y1 && w.y <= z.y2) {
+        fetch('/api/zones/' + z.id, { method: 'DELETE' });
+        break;
+      }
+    }
+  }
+});
+
+mapCanvas.addEventListener('mousemove', e => {
+  if (!isDrawing || zoneMode !== 'draw') return;
+  const rect = mapCanvas.getBoundingClientRect();
+  drawCurrent = {
+    cx: (e.clientX - rect.left) * (mapCanvas.width / rect.width),
+    cy: (e.clientY - rect.top) * (mapCanvas.height / rect.height)
+  };
+});
+
+mapCanvas.addEventListener('mouseup', e => {
+  if (!isDrawing || zoneMode !== 'draw') return;
+  isDrawing = false;
+  const rect = mapCanvas.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) * (mapCanvas.width / rect.width);
+  const cy = (e.clientY - rect.top) * (mapCanvas.height / rect.height);
+  const w1 = canvasToWorld(drawStart.cx, drawStart.cy);
+  const w2 = canvasToWorld(cx, cy);
+  if (!w1 || !w2) return;
+  if (Math.abs(w1.x - w2.x) < 0.05 || Math.abs(w1.y - w2.y) < 0.05) {
+    drawStart = null; drawCurrent = null; return;
+  }
+  fetch('/api/zones', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      x1: Math.round(w1.x*1000)/1000, y1: Math.round(w1.y*1000)/1000,
+      x2: Math.round(w2.x*1000)/1000, y2: Math.round(w2.y*1000)/1000
+    })
+  });
+  drawStart = null; drawCurrent = null;
+});
+
+mapCanvas.addEventListener('mouseleave', () => {
+  if (isDrawing) { isDrawing = false; drawStart = null; drawCurrent = null; }
+});
+
+function updateMap(data) {
+  if (!data.map_info || !data.map_info.width) return;
+  const info = data.map_info;
+  const pose = data.pose;
+  const path = data.planned_path || [];
+  const zones = data.zones || [];
+  serverZones = zones;
+  document.getElementById('zoneInfo').textContent = 'Зон: ' + zones.length;
+
+  mapImg.src = '/map.png?t=' + Date.now();
+  mapImg.onload = () => {
+    const rect = mapCanvas.getBoundingClientRect();
+    mapCanvas.width = rect.width;
+    mapCanvas.height = rect.height;
+    const ctx = mapCtx;
+    ctx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+    const scaleX = mapCanvas.width / info.width;
+    const scaleY = mapCanvas.height / info.height;
+    const scale = Math.min(scaleX, scaleY);
+    const offsetX = (mapCanvas.width - info.width * scale) / 2;
+    const offsetY = (mapCanvas.height - info.height * scale) / 2;
+    mapTransform = { offsetX, offsetY, scale, info };
+    ctx.drawImage(mapImg, offsetX, offsetY, info.width * scale, info.height * scale);
+
+    function w2c(wx, wy) {
+      const mx = (wx - info.origin_x) / info.resolution;
+      const my = info.height - (wy - info.origin_y) / info.resolution;
+      return [offsetX + mx * scale, offsetY + my * scale];
+    }
+
+    // Path
+    if (path.length >= 2) {
+      ctx.strokeStyle = 'rgba(0,220,120,0.8)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6,3]);
+      ctx.beginPath();
+      const [sx,sy] = w2c(path[0][0], path[0][1]);
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < path.length; i++) {
+        const [px,py] = w2c(path[i][0], path[i][1]);
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = 'rgba(0,220,120,0.6)';
+      for (const pt of path) {
+        const [px,py] = w2c(pt[0], pt[1]);
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI*2);
+        ctx.fill();
+      }
+      const [gx,gy] = w2c(path[path.length-1][0], path[path.length-1][1]);
+      ctx.strokeStyle = '#00dc78';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(gx, gy, 6, 0, Math.PI*2);
+      ctx.stroke();
+    }
+
+    // Robot
+    if (pose) {
+      const [rx,ry] = w2c(pose.x, pose.y);
+      ctx.fillStyle = '#4fc3f7';
+      ctx.beginPath();
+      ctx.arc(rx, ry, 6, 0, Math.PI*2);
+      ctx.fill();
+      const al = 14;
+      ctx.strokeStyle = '#4fc3f7';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry);
+      ctx.lineTo(rx + al*Math.cos(-pose.yaw), ry + al*Math.sin(-pose.yaw));
+      ctx.stroke();
+    }
+
+    // Draw preview
+    if (isDrawing && drawStart && drawCurrent) {
+      ctx.strokeStyle = 'rgba(239,83,80,0.8)';
+      ctx.fillStyle = 'rgba(239,83,80,0.2)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4,4]);
+      const x = Math.min(drawStart.cx, drawCurrent.cx);
+      const y = Math.min(drawStart.cy, drawCurrent.cy);
+      const w = Math.abs(drawCurrent.cx - drawStart.cx);
+      const h = Math.abs(drawCurrent.cy - drawStart.cy);
+      ctx.fillRect(x,y,w,h);
+      ctx.strokeRect(x,y,w,h);
+      ctx.setLineDash([]);
+    }
+  };
+}
+</script>
+</body>
+</html>

@@ -1,20 +1,34 @@
 """
 Servo driver for Adeept Robot HAT V3.1 — PCA9685 channel 0 (claw).
-Pulse range 500-2400 µs, 180° actuation.
+Pulse range 500-2400 us, 180 degree actuation.
 Based on adeept_rasptank2/web/RPIservo.py patterns.
 """
 
-from adafruit_motor import servo as adafruit_servo
+import logging
+
+try:
+    from adafruit_motor import servo as adafruit_servo
+    _HW_SERVO = True
+except (ImportError, RuntimeError):
+    _HW_SERVO = False
+
 from .pca9685_driver import PCA9685Driver
 
 CLAW_CHANNEL = 0
-MIN_PULSE = 500    # µs
-MAX_PULSE = 2400   # µs
+MIN_PULSE = 500    # us
+MAX_PULSE = 2400   # us
 ACTUATION_RANGE = 180  # degrees
 
 CLAW_OPEN_ANGLE = 30.0
 CLAW_CLOSE_ANGLE = 130.0
 CLAW_INIT_ANGLE = 90.0
+
+_log = logging.getLogger(__name__)
+
+
+class _FakeServo:
+    """Stub servo for simulation mode."""
+    angle = 90.0
 
 
 class ServoDriver:
@@ -23,14 +37,25 @@ class ServoDriver:
     def __init__(self, channel: int = CLAW_CHANNEL):
         self._pca = PCA9685Driver()
         self._pca.init()
-        self._servo = adafruit_servo.Servo(
-            self._pca.channel(channel),
-            min_pulse=MIN_PULSE,
-            max_pulse=MAX_PULSE,
-            actuation_range=ACTUATION_RANGE,
-        )
+        self._simulated = self._pca.simulated or not _HW_SERVO
+
+        if self._simulated:
+            _log.warning('Servo hardware unavailable — running in simulation mode')
+            self._servo = _FakeServo()
+        else:
+            self._servo = adafruit_servo.Servo(
+                self._pca.channel(channel),
+                min_pulse=MIN_PULSE,
+                max_pulse=MAX_PULSE,
+                actuation_range=ACTUATION_RANGE,
+            )
+
         self._angle = CLAW_INIT_ANGLE
         self._servo.angle = self._angle
+
+    @property
+    def simulated(self) -> bool:
+        return self._simulated
 
     @property
     def angle(self) -> float:

@@ -33,6 +33,8 @@ setup(
             'imu_node = robot_pkg.imu_node:main',
             'mqtt_bridge_node = robot_pkg.mqtt_bridge_node:main',
             'dashboard_node = robot_pkg.dashboard_node:main',
+            'yolo_detector_node = robot_pkg.yolo_detector_node:main',
+            'depth_to_scan_node = robot_pkg.depth_to_scan_node:main',
         ],
     },
 )

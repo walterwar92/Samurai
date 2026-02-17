@@ -11,7 +11,14 @@ Throttle range: -1.0 … +1.0  (negative = reverse).
 Based on adeept_rasptank2/web/move.py patterns.
 """
 
-from adafruit_motor import motor as adafruit_motor
+import logging
+
+try:
+    from adafruit_motor import motor as adafruit_motor
+    _HW_MOTOR = True
+except (ImportError, RuntimeError):
+    _HW_MOTOR = False
+
 from .pca9685_driver import PCA9685Driver
 
 # (IN1_channel, IN2_channel)
@@ -21,6 +28,14 @@ MOTOR_CHANNELS = {
     3: (11, 10),  # M3 left-rear
     4: (8, 9),    # M4 right-rear
 }
+
+_log = logging.getLogger(__name__)
+
+
+class _FakeMotor:
+    """Stub DC motor for simulation mode."""
+    throttle = 0.0
+    decay_mode = 0
 
 
 def _map_value(x: float, in_min: float, in_max: float,
@@ -34,14 +49,25 @@ class MotorDriver:
     def __init__(self):
         self._pca = PCA9685Driver()
         self._pca.init()
-        self._motors: dict[int, adafruit_motor.DCMotor] = {}
-        for mid, (ch_in1, ch_in2) in MOTOR_CHANNELS.items():
-            m = adafruit_motor.DCMotor(
-                self._pca.channel(ch_in1),
-                self._pca.channel(ch_in2),
-            )
-            m.decay_mode = adafruit_motor.SLOW_DECAY
-            self._motors[mid] = m
+        self._simulated = self._pca.simulated or not _HW_MOTOR
+        self._motors: dict = {}
+
+        if self._simulated:
+            _log.warning('Motor hardware unavailable — running in simulation mode')
+            for mid in MOTOR_CHANNELS:
+                self._motors[mid] = _FakeMotor()
+        else:
+            for mid, (ch_in1, ch_in2) in MOTOR_CHANNELS.items():
+                m = adafruit_motor.DCMotor(
+                    self._pca.channel(ch_in1),
+                    self._pca.channel(ch_in2),
+                )
+                m.decay_mode = adafruit_motor.SLOW_DECAY
+                self._motors[mid] = m
+
+    @property
+    def simulated(self) -> bool:
+        return self._simulated
 
     # ------------------------------------------------------------------
     def set_motor(self, motor_id: int, speed_pct: float):

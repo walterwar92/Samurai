@@ -15,16 +15,29 @@ import math
 import os
 import random
 import re
+import socket
 import threading
 import time
 from collections import deque
+
+
+def _get_local_ip() -> str:
+    """Auto-detect local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
 
 import cv2
 import numpy as np
 
 import base64
 
-from flask import Flask, Response, render_template, request, jsonify
+from flask import Flask, Response, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
 from flask_cors import CORS
 
@@ -714,13 +727,15 @@ class SimFSM:
             return
 
     def _extract_colour(self, text: str) -> str:
+        # Нормализуем ё → е для единообразного поиска
+        text_norm = text.replace('ё', 'е')
         colours = {
             'красн': 'red', 'синий': 'blue', 'синего': 'blue',
             'зелен': 'green', 'желт': 'yellow', 'бел': 'white',
             'черн': 'black', 'оранж': 'orange',
         }
         for rus, eng in colours.items():
-            if rus in text:
+            if rus in text_norm:
                 return eng
         return ''
 
@@ -1346,13 +1361,17 @@ def main():
 
     # ── Flask app ─────────────────────────────────────────────
     template_dir = os.path.join(os.path.dirname(__file__), 'templates')
-    app = Flask(__name__, template_folder=template_dir)
+    static_dir = os.path.join(os.path.dirname(__file__), 'static')
+    app = Flask(__name__, template_folder=template_dir,
+                static_folder=static_dir, static_url_path='')
     CORS(app)
     socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
     @app.route('/')
-    def index():
-        return render_template('dashboard.html')
+    @app.route('/dashboard')
+    @app.route('/admin')
+    def serve_spa():
+        return send_from_directory(static_dir, 'index.html')
 
     @app.route('/video_feed')
     def video_feed():
@@ -1924,10 +1943,11 @@ def main():
     sim_thread.start()
 
     # ── Start server ──────────────────────────────────────────
+    local_ip = _get_local_ip()
     print('='*55)
     print('  SAMURAI SIMULATOR')
-    print('  Dashboard: http://localhost:5000')
-    print('  REST API:  http://localhost:5000/api/status')
+    print(f'  Dashboard: http://{local_ip}:5000')
+    print(f'  REST API:  http://{local_ip}:5000/api/status')
     print('='*55)
     socketio.run(app, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
 

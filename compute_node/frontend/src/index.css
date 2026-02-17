@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 199 91% 64%;
+    --primary-foreground: 210 40% 2%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 199 91% 64%;
+    --accent-foreground: 210 40% 2%;
+    --destructive: 4 82% 63%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 199 91% 64%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 228 30% 7%;
+    --foreground: 220 15% 90%;
+    --card: 228 25% 11%;
+    --card-foreground: 220 15% 90%;
+    --popover: 228 25% 11%;
+    --popover-foreground: 220 15% 90%;
+    --primary: 199 91% 64%;
+    --primary-foreground: 210 40% 2%;
+    --secondary: 228 20% 16%;
+    --secondary-foreground: 220 15% 90%;
+    --muted: 228 20% 16%;
+    --muted-foreground: 220 12% 52%;
+    --accent: 199 91% 64%;
+    --accent-foreground: 210 40% 2%;
+    --destructive: 4 82% 63%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 228 15% 19%;
+    --input: 228 15% 19%;
+    --ring: 199 91% 64%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', 'Segoe UI', 'Ubuntu', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Joystick area - prevent default touch */
+.joystick-area {
+  touch-action: none;
+}

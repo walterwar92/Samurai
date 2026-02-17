@@ -24,7 +24,10 @@ class ServoNode(Node):
         self.create_subscription(String, '/claw/command', self._cmd_cb, 10)
         self._state_pub = self.create_publisher(Float32, '/claw/state', 10)
         self.create_timer(0.1, self._publish_state)  # 10 Hz
-        self.get_logger().info('Claw servo node ready (channel 0)')
+        if self._servo.simulated:
+            self.get_logger().warn('Claw servo in SIMULATION mode — no real servo')
+        else:
+            self.get_logger().info('Claw servo node ready (channel 0)')
 
     def _cmd_cb(self, msg: String):
         cmd = msg.data.strip().lower()

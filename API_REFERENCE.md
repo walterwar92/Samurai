@@ -1056,3 +1056,54 @@ SimRobot SimSensors SimDetector SimFSM SimArena MapRenderer
 ```
 
 All API calls and the simulation loop share a single `threading.Lock()` for thread safety. API calls are fast (no blocking I/O) and do not affect simulation performance.
+
+---
+
+## Web Interfaces
+
+### Dashboard (Basic)
+**URL:** `http://localhost:5000/`
+
+Basic monitoring dashboard with camera feed, map, FSM state, sensors, and command input.
+
+### Admin Panel (Full Control)
+**URL:** `http://localhost:5000/admin`
+
+Full-featured admin panel with all simulator controls:
+- **Camera + YOLO** — live MJPEG video feed
+- **Map** — interactive map with zone drawing (add/delete forbidden zones)
+- **FSM** — state display + force transition buttons for all 8 states
+- **Sensors** — ultrasonic range bar, IMU (yaw/pitch/roll), gyro, accelerometer
+- **Velocity** — real-time linear/angular speed display
+- **Actuators** — toggle claw (open/close) and laser (on/off) buttons
+- **Joystick** — drag-based velocity control (mouse/touch)
+- **Emergency Stop** — immediate stop + force IDLE
+- **Commands** — text input + quick buttons (colour search, stop, home, laser, reset)
+- **Detections** — table of all detected balls with colour, confidence, distance, bbox
+- **Balls** — table of all arena balls with position and grabbed status
+- **Event Log** — chronological FSM event log
+
+---
+
+## Android Mobile App
+
+The Android app supports two connection modes:
+
+### Simulator Mode (REST API)
+- Polls all endpoints at 4 Hz for state data
+- Camera frame polling at ~10 fps
+- Map image polling at ~3 fps
+- Commands sent via `POST /api/fsm/command`
+- Full control: velocity, actuators, FSM transitions, zones
+
+### Robot Mode (MQTT)
+- Commands sent via `samurai/<robotId>/voice_command` topic
+- Status received from `samurai/<robotId>/status` topic
+- Voice recognition via Vosk (offline, Russian)
+
+### App Tabs
+1. **Управление** — FSM state, quick commands, actuators, joystick, voice input
+2. **Камера** — live camera feed with detection list
+3. **Карта** — arena map, ball positions, zones, robot path
+4. **Датчики** — ultrasonic, IMU, velocity, pose, actuator state, event log
+5. **Настройки** — connection mode (simulator/robot), IP, port, robot ID

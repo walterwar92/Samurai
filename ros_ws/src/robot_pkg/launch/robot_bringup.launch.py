@@ -10,17 +10,31 @@ Usage:
   ros2 launch robot_pkg robot_bringup.launch.py
 """
 
+import socket
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _get_local_ip() -> str:
+    """Auto-detect local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+
 def generate_launch_description():
     # Declare arguments
     broker_arg = DeclareLaunchArgument(
-        'mqtt_broker', default_value='192.168.1.100',
-        description='MQTT broker IP address')
+        'mqtt_broker', default_value=_get_local_ip(),
+        description='MQTT broker IP address (auto-detected)')
     robot_id_arg = DeclareLaunchArgument(
         'robot_id', default_value='robot1',
         description='Unique robot identifier')

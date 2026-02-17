@@ -33,7 +33,10 @@ class MotorNode(Node):
 
         # Hardware
         self._driver = MotorDriver()
-        self.get_logger().info('MotorDriver initialised (PCA9685 @ 0x5F)')
+        if self._driver.simulated:
+            self.get_logger().warn('MotorDriver in SIMULATION mode — no real motors')
+        else:
+            self.get_logger().info('MotorDriver initialised (PCA9685 @ 0x5F)')
 
         # State for open-loop odometry
         self._x = 0.0
