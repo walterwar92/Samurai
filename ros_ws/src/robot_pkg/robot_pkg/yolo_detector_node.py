@@ -6,6 +6,7 @@ Runs on the compute laptop (i9-13900H).
 Subscribes: /camera/image_raw  (sensor_msgs/Image)
 Publishes:  /ball_detection     (std_msgs/String)  JSON per detection
             /yolo/annotated     (sensor_msgs/Image) annotated frame
+            /yolo/detections    (std_msgs/String)  JSON list of ALL detections
 
 Colour classification: uses HSV analysis inside each bounding box.
 """
@@ -45,10 +46,12 @@ class YoloDetectorNode(Node):
         self.declare_parameter('model', 'yolov8n.pt')
         self.declare_parameter('confidence', 0.45)
         self.declare_parameter('device', 'cpu')
+        self.declare_parameter('detect_all_classes', True)
 
         model_path = self.get_parameter('model').value
         self._conf = self.get_parameter('confidence').value
         device = self.get_parameter('device').value
+        self._detect_all = self.get_parameter('detect_all_classes').value
 
         self._bridge = CvBridge()
         self._model = YOLO(model_path)
@@ -57,6 +60,7 @@ class YoloDetectorNode(Node):
 
         self.create_subscription(Image, '/camera/image_raw', self._image_cb, 5)
         self._det_pub = self.create_publisher(String, '/ball_detection', 10)
+        self._all_det_pub = self.create_publisher(String, '/yolo/detections', 10)
         self._ann_pub = self.create_publisher(Image, '/yolo/annotated', 5)
 
     def _image_cb(self, msg: Image):
@@ -65,6 +69,7 @@ class YoloDetectorNode(Node):
 
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         annotated = frame.copy()
+        all_detections = []
 
         for r in results:
             for box in r.boxes:
@@ -73,8 +78,6 @@ class YoloDetectorNode(Node):
                 cls_id = int(box.cls[0])
                 cls_name = self._model.names.get(cls_id, 'unknown')
 
-                # Only process "sports ball" class (id=32 in COCO) or all
-                # For custom-trained models, adjust accordingly
                 w = x2 - x1
                 h = y2 - y1
 
@@ -88,7 +91,6 @@ class YoloDetectorNode(Node):
                 if apparent_px > 10:
                     dist_est = (BALL_DIAMETER_M * FOCAL_LENGTH_PX) / apparent_px
 
-                # Publish detection as JSON
                 det = {
                     'colour': colour,
                     'class': cls_name,
@@ -96,15 +98,25 @@ class YoloDetectorNode(Node):
                     'conf': round(conf, 3),
                     'distance': round(dist_est, 3),
                 }
+
+                # Publish ball detection (backward compatible)
                 det_msg = String()
                 det_msg.data = json.dumps(det)
                 self._det_pub.publish(det_msg)
 
+                # Collect for all-detections list
+                all_detections.append(det)
+
                 # Annotate frame
-                label = f'{colour} {conf:.2f} {dist_est:.2f}m'
+                label = f'{cls_name} {colour} {conf:.2f} {dist_est:.2f}m'
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(annotated, label, (x1, y1 - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        # Publish all detections list
+        all_msg = String()
+        all_msg.data = json.dumps(all_detections)
+        self._all_det_pub.publish(all_msg)
 
         # Publish annotated image
         ann_msg = self._bridge.cv2_to_imgmsg(annotated, encoding='bgr8')

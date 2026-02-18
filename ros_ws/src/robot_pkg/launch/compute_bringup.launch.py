@@ -89,6 +89,7 @@ def generate_launch_description():
             'model': 'yolov8n.pt',
             'confidence': 0.45,
             'device': 'cpu',
+            'detect_all_classes': True,
         }],
     )
 
@@ -101,6 +102,49 @@ def generate_launch_description():
         parameters=[{'port': 5000}],
     )
 
+    # ── New compute nodes ──────────────────────────────────────
+    patrol_node = Node(
+        package='robot_pkg',
+        executable='patrol_node',
+        name='patrol_node',
+        output='screen',
+    )
+
+    map_manager_node = Node(
+        package='robot_pkg',
+        executable='map_manager_node',
+        name='map_manager_node',
+        output='screen',
+    )
+
+    follow_me_node = Node(
+        package='robot_pkg',
+        executable='follow_me_node',
+        name='follow_me_node',
+        output='screen',
+    )
+
+    path_recorder_node = Node(
+        package='robot_pkg',
+        executable='path_recorder_node',
+        name='path_recorder_node',
+        output='screen',
+    )
+
+    qr_detector_node = Node(
+        package='robot_pkg',
+        executable='qr_detector_node',
+        name='qr_detector_node',
+        output='screen',
+    )
+
+    gesture_node = Node(
+        package='robot_pkg',
+        executable='gesture_node',
+        name='gesture_node',
+        output='screen',
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         ekf_node,
@@ -109,4 +153,10 @@ def generate_launch_description():
         nav2_launch,
         yolo_node,
         dashboard_node,
+        patrol_node,
+        map_manager_node,
+        follow_me_node,
+        path_recorder_node,
+        qr_detector_node,
+        gesture_node,
     ])

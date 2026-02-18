@@ -81,6 +81,36 @@ export type FsmState =
   | 'CALLING'
   | 'RETURNING'
 
+export interface PatrolStatus {
+  active: boolean
+  paused: boolean
+  current_waypoint_idx: number
+  total: number
+}
+
+export interface PathRecorderStatus {
+  state: string
+  points_count: number
+  current_idx: number
+}
+
+export interface FollowMeStatus {
+  active: boolean
+  tracking: boolean
+  distance: number
+}
+
+export interface QrDetection {
+  data: string
+  timestamp?: number
+}
+
+export interface WatchdogNodeStatus {
+  name: string
+  alive: boolean
+  last_seen?: number
+}
+
 export interface RobotState {
   status: RobotStatus
   detection: Detection | null
@@ -103,4 +133,15 @@ export interface RobotState {
   sim_time: number
   arena_size: ArenaSize
   lost_frames: number
+  // New fields
+  battery_voltage: number
+  battery_percent: number
+  cpu_temp: number
+  watchdog: Record<string, { alive: boolean; last_seen_sec: number }> | null
+  patrol: PatrolStatus | null
+  path_recorder: PathRecorderStatus | null
+  follow_me: FollowMeStatus | null
+  qr_detection: QrDetection | null
+  gesture: string
+  speed_profile: string
 }

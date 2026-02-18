@@ -9,6 +9,11 @@ async function post(url: string, body?: object) {
   return res
 }
 
+async function get(url: string) {
+  const res = await fetch(BASE + url)
+  return res.json()
+}
+
 async function del(url: string) {
   const res = await fetch(BASE + url, { method: 'DELETE' })
   return res
@@ -38,4 +43,36 @@ export const api = {
 
   setLaser: (on: boolean) =>
     post('/api/actuators/laser', { on }),
+
+  // Speed profiles
+  setSpeedProfile: (profile: string) =>
+    post('/api/speed_profile', { profile }),
+
+  // Patrol
+  setPatrolWaypoints: (waypoints: { x: number; y: number; yaw?: number }[]) =>
+    post('/api/patrol/waypoints', { waypoints }),
+
+  patrolCommand: (command: string) =>
+    post('/api/patrol/command', { command }),
+
+  // Map management
+  saveMap: (name: string) =>
+    post('/api/map/save', { name }),
+
+  loadMap: (name: string) =>
+    post('/api/map/load', { name }),
+
+  listMaps: () =>
+    get('/api/map/list'),
+
+  // Follow me
+  followMeCommand: (command: string) =>
+    post('/api/follow_me', { command }),
+
+  // Path recorder
+  pathRecorderCommand: (command: string) =>
+    post('/api/path_recorder/command', { command }),
+
+  listPaths: () =>
+    get('/api/path_recorder/list'),
 }
