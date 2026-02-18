@@ -2,7 +2,7 @@ import { QrCode } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 interface QrDetectionBannerProps {
-  qr: { data: string; timestamp: number } | null
+  qr: { data: string; timestamp?: number } | null
 }
 
 export function QrDetectionBanner({ qr }: QrDetectionBannerProps) {
