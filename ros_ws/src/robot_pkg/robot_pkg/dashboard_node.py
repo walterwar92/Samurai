@@ -51,10 +51,9 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, Range, Imu, LaserScan
+from sensor_msgs.msg import CompressedImage, Range, Imu, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import String, Float32
-from cv_bridge import CvBridge
 
 from flask import Flask, Response, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
@@ -68,7 +67,6 @@ class DashboardNode(Node):
         self.declare_parameter('port', 5000)
         self._port = self.get_parameter('port').value
 
-        self._bridge = CvBridge()
         self._lock = threading.Lock()
 
         # --- Shared state ---
@@ -103,7 +101,7 @@ class DashboardNode(Node):
         )
 
         # --- Original subscriptions ---
-        self.create_subscription(Image, '/yolo/annotated', self._image_cb, 5)
+        self.create_subscription(CompressedImage, '/yolo/annotated/compressed', self._image_cb, 5)
         self.create_subscription(String, '/robot_status', self._status_cb, 10)
         self.create_subscription(String, '/ball_detection', self._detection_cb, 10)
         self.create_subscription(Range, '/range', self._range_cb, 10)
@@ -146,11 +144,10 @@ class DashboardNode(Node):
 
     # ── Original ROS2 Callbacks ────────────────────────────────────
 
-    def _image_cb(self, msg: Image):
-        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    def _image_cb(self, msg: CompressedImage):
+        # Кадр уже JPEG от yolo_detector — передаём напрямую без decode+encode
         with self._lock:
-            self._latest_frame = jpeg.tobytes()
+            self._latest_frame = bytes(msg.data)
 
     def _status_cb(self, msg: String):
         try:

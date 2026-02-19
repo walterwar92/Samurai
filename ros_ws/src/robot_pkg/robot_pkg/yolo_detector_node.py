@@ -3,22 +3,24 @@
 yolo_detector_node — Ball detection with YOLOv8n / YOLO11n.
 
 Runs on the compute laptop (i9-13900H).
-Subscribes: /camera/image_raw  (sensor_msgs/Image)
-Publishes:  /ball_detection     (std_msgs/String)  JSON per detection
-            /yolo/annotated     (sensor_msgs/Image) annotated frame
-            /yolo/detections    (std_msgs/String)  JSON list of ALL detections
+Subscribes: /camera/image_raw/compressed  (sensor_msgs/CompressedImage)
+Publishes:  /ball_detection               (std_msgs/String)  JSON per detection
+            /yolo/annotated/compressed    (sensor_msgs/CompressedImage) annotated JPEG
+            /yolo/detections              (std_msgs/String)  JSON list of ALL detections
 
+Using CompressedImage reduces DDS traffic by ~20x vs raw Image.
 Colour classification: uses HSV analysis inside each bounding box.
 """
 
 import json
+import os
 import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
-from cv_bridge import CvBridge
 
 from ultralytics import YOLO
 
@@ -53,75 +55,141 @@ class YoloDetectorNode(Node):
         device = self.get_parameter('device').value
         self._detect_all = self.get_parameter('detect_all_classes').value
 
-        self._bridge = CvBridge()
-        self._model = YOLO(model_path)
-        self._model.to(device)
-        self.get_logger().info(f'YOLO model loaded: {model_path} on {device}')
+        # Автоматически экспортируем в ONNX если передан .pt файл
+        # ONNX Runtime работает без PyTorch → быстрее, меньше памяти (~500MB RAM)
+        onnx_path = model_path.replace('.pt', '.onnx')
+        if model_path.endswith('.pt') and not os.path.exists(onnx_path):
+            self.get_logger().info(f'Exporting {model_path} → {onnx_path} (ONNX, imgsz=320)...')
+            tmp = YOLO(model_path)
+            tmp.export(format='onnx', imgsz=320, optimize=True, simplify=True)
+            self.get_logger().info('ONNX export complete')
 
-        self.create_subscription(Image, '/camera/image_raw', self._image_cb, 5)
+        if os.path.exists(onnx_path):
+            import onnxruntime as ort
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] \
+                        if device == 'cuda' else ['CPUExecutionProvider']
+            self._ort = ort.InferenceSession(onnx_path, providers=providers)
+            self._input_name = self._ort.get_inputs()[0].name
+            self._imgsz = 320
+            self._use_onnx = True
+            # Загружаем метаданные классов из .pt модели один раз
+            _tmp = YOLO(model_path) if os.path.exists(model_path) else None
+            self._names = _tmp.names if _tmp else {0: 'object'}
+            self.get_logger().info(f'ONNX Runtime session: {onnx_path} on {providers[0]}')
+        else:
+            self._model = YOLO(model_path)
+            self._model.to(device)
+            self._use_onnx = False
+            self._names = self._model.names
+            self.get_logger().info(f'YOLO (PyTorch) loaded: {model_path} on {device}')
+
+        # BEST_EFFORT: старые кадры не нужны для детекции
+        cam_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(CompressedImage, '/camera/image_raw/compressed', self._image_cb, cam_qos)
         self._det_pub = self.create_publisher(String, '/ball_detection', 10)
         self._all_det_pub = self.create_publisher(String, '/yolo/detections', 10)
-        self._ann_pub = self.create_publisher(Image, '/yolo/annotated', 5)
+        self._ann_pub = self.create_publisher(CompressedImage, '/yolo/annotated/compressed', cam_qos)
 
-    def _image_cb(self, msg: Image):
-        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+    def _infer(self, frame: np.ndarray):
+        """Запускает инференс (ONNX или PyTorch) и возвращает список боксов."""
+        if self._use_onnx:
+            return self._infer_onnx(frame)
         results = self._model(frame, conf=self._conf, verbose=False)
+        boxes = []
+        for r in results:
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                boxes.append((x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])))
+        return boxes
 
+    def _infer_onnx(self, frame: np.ndarray):
+        """ONNX Runtime инференс: в 1.5-2x быстрее PyTorch CPU."""
+        h, w = frame.shape[:2]
+        img = cv2.resize(frame, (self._imgsz, self._imgsz))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))[np.newaxis]  # NCHW
+        outputs = self._ort.run(None, {self._input_name: img})[0]  # [1, 84, 8400]
+        boxes = []
+        preds = outputs[0].T  # [8400, 84]
+        for pred in preds:
+            cx, cy, bw, bh = pred[:4]
+            scores = pred[4:]
+            cls_id = int(np.argmax(scores))
+            conf = float(scores[cls_id])
+            if conf < self._conf:
+                continue
+            # Денормализация в пиксели исходного кадра
+            x1 = int((cx - bw / 2) / self._imgsz * w)
+            y1 = int((cy - bh / 2) / self._imgsz * h)
+            x2 = int((cx + bw / 2) / self._imgsz * w)
+            y2 = int((cy + bh / 2) / self._imgsz * h)
+            boxes.append((max(0, x1), max(0, y1), min(w, x2), min(h, y2), conf, cls_id))
+        return boxes
+
+    def _image_cb(self, msg: CompressedImage):
+        np_arr = np.frombuffer(bytes(msg.data), np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+
+        raw_boxes = self._infer(frame)
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         annotated = frame.copy()
         all_detections = []
 
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                conf = float(box.conf[0])
-                cls_id = int(box.cls[0])
-                cls_name = self._model.names.get(cls_id, 'unknown')
+        for (x1, y1, x2, y2, conf, cls_id) in raw_boxes:
+            cls_name = self._names.get(cls_id, 'unknown')
+            w = x2 - x1
+            h = y2 - y1
 
-                w = x2 - x1
-                h = y2 - y1
+            # Classify colour via HSV
+            roi_hsv = hsv_frame[y1:y2, x1:x2]
+            colour = self._classify_colour(roi_hsv)
 
-                # Classify colour via HSV
-                roi_hsv = hsv_frame[y1:y2, x1:x2]
-                colour = self._classify_colour(roi_hsv)
+            # Estimate distance from apparent size
+            apparent_px = max(w, h)
+            dist_est = -1.0
+            if apparent_px > 10:
+                dist_est = (BALL_DIAMETER_M * FOCAL_LENGTH_PX) / apparent_px
 
-                # Estimate distance from apparent size
-                apparent_px = max(w, h)
-                dist_est = -1.0
-                if apparent_px > 10:
-                    dist_est = (BALL_DIAMETER_M * FOCAL_LENGTH_PX) / apparent_px
+            det = {
+                'colour': colour,
+                'class': cls_name,
+                'x': x1, 'y': y1, 'w': w, 'h': h,
+                'conf': round(conf, 3),
+                'distance': round(dist_est, 3),
+            }
 
-                det = {
-                    'colour': colour,
-                    'class': cls_name,
-                    'x': x1, 'y': y1, 'w': w, 'h': h,
-                    'conf': round(conf, 3),
-                    'distance': round(dist_est, 3),
-                }
+            # Publish ball detection (backward compatible)
+            det_msg = String()
+            det_msg.data = json.dumps(det)
+            self._det_pub.publish(det_msg)
 
-                # Publish ball detection (backward compatible)
-                det_msg = String()
-                det_msg.data = json.dumps(det)
-                self._det_pub.publish(det_msg)
+            all_detections.append(det)
 
-                # Collect for all-detections list
-                all_detections.append(det)
-
-                # Annotate frame
-                label = f'{cls_name} {colour} {conf:.2f} {dist_est:.2f}m'
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(annotated, label, (x1, y1 - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            # Annotate frame
+            label = f'{cls_name} {colour} {conf:.2f} {dist_est:.2f}m'
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(annotated, label, (x1, y1 - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # Publish all detections list
         all_msg = String()
         all_msg.data = json.dumps(all_detections)
         self._all_det_pub.publish(all_msg)
 
-        # Publish annotated image
-        ann_msg = self._bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
-        ann_msg.header = msg.header
-        self._ann_pub.publish(ann_msg)
+        # Publish annotated image as CompressedImage (JPEG, same quality as input)
+        ok, enc = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if ok:
+            ann_msg = CompressedImage()
+            ann_msg.header = msg.header
+            ann_msg.format = 'jpeg'
+            ann_msg.data = enc.tobytes()
+            self._ann_pub.publish(ann_msg)
 
     def _classify_colour(self, roi_hsv: np.ndarray) -> str:
         if roi_hsv.size == 0:

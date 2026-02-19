@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.samurai.robotcontrol.api.RobotApiClient
+import com.samurai.robotcontrol.api.RobotSocketClient
 import com.samurai.robotcontrol.mqtt.RobotMqttClient
 import com.samurai.robotcontrol.ui.screens.*
 import com.samurai.robotcontrol.voice.VoskRecognizer
@@ -35,9 +36,10 @@ fun MainScreen(applicationContext: Context) {
     val scope = rememberCoroutineScope()
 
     // Services
-    val mqttClient = remember { RobotMqttClient() }
-    val apiClient  = remember { RobotApiClient() }
-    val vosk       = remember { VoskRecognizer(applicationContext) }
+    val mqttClient   = remember { RobotMqttClient() }
+    val apiClient    = remember { RobotApiClient() }
+    val socketClient = remember { RobotSocketClient() }
+    val vosk         = remember { VoskRecognizer(applicationContext) }
 
     // Connection state
     var connectionMode by remember { mutableStateOf(ConnectionMode.SIMULATOR) }
@@ -45,27 +47,36 @@ fun MainScreen(applicationContext: Context) {
     var serverPort by remember { mutableStateOf("5000") }
     var robotId    by remember { mutableStateOf("robot1") }
 
-    val mqttConnected by mqttClient.connected.collectAsState()
-    val apiConnected  by apiClient.connected.collectAsState()
-    val robotState    by apiClient.state.collectAsState()
-    val robotStatus   by mqttClient.robotStatus.collectAsState()
-    val recognisedText by vosk.recognisedText.collectAsState()
-    val isListening   by vosk.isListening.collectAsState()
-    val modelReady    by vosk.modelReady.collectAsState()
+    val mqttConnected    by mqttClient.connected.collectAsState()
+    val apiConnected     by apiClient.connected.collectAsState()
+    val socketConnected  by socketClient.connected.collectAsState()
+    // В режиме робота — состояние из Socket.IO push; симулятор — из REST polling
+    val apiState         by apiClient.state.collectAsState()
+    val socketState      by socketClient.state.collectAsState()
+    val robotStatus      by mqttClient.robotStatus.collectAsState()
+    val recognisedText   by vosk.recognisedText.collectAsState()
+    val isListening      by vosk.isListening.collectAsState()
+    val modelReady       by vosk.modelReady.collectAsState()
+
+    val isRealRobot = connectionMode == ConnectionMode.ROBOT
+
+    // В режиме робота используем push-состояние от сокета, иначе — REST polling
+    val robotState = if (isRealRobot) socketState else apiState
 
     var commandLog  by remember { mutableStateOf(listOf<String>()) }
     var selectedTab by remember { mutableStateOf(AppTab.CONTROL) }
 
-    // Camera & Map images
+    // Camera & Map images (polling остаётся — binary данные не через Socket.IO)
     var cameraFrame by remember { mutableStateOf<Bitmap?>(null) }
     var mapImage    by remember { mutableStateOf<Bitmap?>(null) }
 
-    // Connection status — API is always used for data; MQTT for voice in robot mode
+    // Connection status
     val isApiConnected  = apiConnected
     val isMqttConnected = mqttConnected
-    val isConnected = isApiConnected || (connectionMode == ConnectionMode.ROBOT && isMqttConnected)
-
-    val isRealRobot = connectionMode == ConnectionMode.ROBOT
+    val isConnected = when (connectionMode) {
+        ConnectionMode.ROBOT     -> socketConnected || isMqttConnected
+        ConnectionMode.SIMULATOR -> isApiConnected
+    }
 
     // Init Vosk
     LaunchedEffect(Unit) { vosk.initModel() }
@@ -77,7 +88,6 @@ fun MainScreen(applicationContext: Context) {
                 ConnectionMode.SIMULATOR -> apiClient.sendCommand(recognisedText)
                 ConnectionMode.ROBOT     -> {
                     mqttClient.sendVoiceCommand(recognisedText)
-                    // Also send via API so FSM log captures it
                     if (isApiConnected) apiClient.sendCommand(recognisedText)
                 }
             }
@@ -85,19 +95,19 @@ fun MainScreen(applicationContext: Context) {
         }
     }
 
-    // Poll state (runs in both modes — real robot needs API URL set too)
+    // Симулятор: polling состояния через REST API (сервер симулятора без Socket.IO push)
     LaunchedEffect(connectionMode, apiConnected) {
-        if (_baseUrl_isSet(apiClient)) {
+        if (connectionMode == ConnectionMode.SIMULATOR && _baseUrl_isSet(apiClient)) {
             while (isActive) {
-                apiClient.pollState(isRealRobot = isRealRobot)
+                apiClient.pollState(isRealRobot = false)
                 delay(250) // 4 Hz
             }
         }
     }
 
-    // Poll camera frame (active when Camera tab open)
+    // Poll camera frame (только симулятор, Camera вкладка)
     LaunchedEffect(connectionMode, apiConnected, selectedTab) {
-        if (selectedTab == AppTab.CAMERA && apiConnected) {
+        if (selectedTab == AppTab.CAMERA && connectionMode == ConnectionMode.SIMULATOR && apiConnected) {
             while (isActive) {
                 cameraFrame = apiClient.getCameraFrame()
                 delay(100) // ~10 fps
@@ -105,9 +115,9 @@ fun MainScreen(applicationContext: Context) {
         }
     }
 
-    // Poll map image (active when Map tab open)
-    LaunchedEffect(connectionMode, apiConnected, selectedTab) {
-        if (selectedTab == AppTab.MAP && apiConnected) {
+    // Poll map image (Map вкладка — binary, не через сокет)
+    LaunchedEffect(connectionMode, isConnected, selectedTab) {
+        if (selectedTab == AppTab.MAP && isConnected && _baseUrl_isSet(apiClient)) {
             while (isActive) {
                 mapImage = apiClient.getMapImage()
                 delay(300) // ~3 fps
@@ -263,19 +273,25 @@ fun MainScreen(applicationContext: Context) {
                     onServerPortChange= { serverPort = it },
                     onRobotIdChange   = { robotId = it },
                     onConnect = {
-                        // Always set API URL for both modes
-                        apiClient.setBaseUrl("http://$serverIp:$serverPort")
+                        val baseUrl = "http://$serverIp:$serverPort"
+                        apiClient.setBaseUrl(baseUrl)
                         when (connectionMode) {
                             ConnectionMode.SIMULATOR -> scope.launch { apiClient.pollState() }
                             ConnectionMode.ROBOT     -> {
+                                // Подключаем Socket.IO для push-обновлений (вместо polling)
+                                socketClient.connect(baseUrl)
                                 mqttClient.connect(serverIp, robotId)
+                                // Первоначальный запрос списков карт/путей через REST
                                 scope.launch { apiClient.pollState(isRealRobot = true) }
                             }
                         }
                     },
                     onDisconnect = {
                         apiClient.setBaseUrl("")
-                        if (connectionMode == ConnectionMode.ROBOT) mqttClient.disconnect()
+                        if (connectionMode == ConnectionMode.ROBOT) {
+                            socketClient.disconnect()
+                            mqttClient.disconnect()
+                        }
                     },
                 )
             }
@@ -285,6 +301,7 @@ fun MainScreen(applicationContext: Context) {
     DisposableEffect(Unit) {
         onDispose {
             vosk.destroy()
+            socketClient.disconnect()
             mqttClient.disconnect()
         }
     }

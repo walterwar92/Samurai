@@ -26,15 +26,21 @@ picamera2                       # CSI camera
 
 # --- Computer Vision ---
 opencv-python>=4.8.0
-ultralytics>=8.0.0              # YOLOv8n / YOLO11n
-numpy>=1.24.0
+ultralytics>=8.0.0              # YOLOv8n / YOLO11n (для экспорта в ONNX)
+onnxruntime>=1.17.0             # Быстрее PyTorch CPU на ~50%, RAM -500MB
+numpy>=1.24.0,<2.0              # numpy<2 нужен для совместимости ROS2
 
 # --- Speech Recognition ---
 vosk>=0.3.45
 pyaudio
+webrtcvad>=2.0.10               # VAD: пропуск тишины, CPU voice -70%
 
-# --- Communication ---
+# --- Communication (API сервер) ---
 paho-mqtt>=1.6.0
+fastapi>=0.110.0                # Заменяет Flask: async, меньше CPU
+uvicorn[standard]>=0.27.0       # ASGI сервер для FastAPI
+python-multipart>=0.0.9         # Для form-data в FastAPI
+# flask и flask-socketio оставлены для совместимости (simulator.py)
 flask>=3.0.0
 flask-cors
 flask-socketio>=5.3.0

@@ -65,6 +65,7 @@ Publishes:
     /map_manager/load       (std_msgs/String) — load SLAM map
 """
 
+import asyncio
 import base64
 import json
 import math
@@ -91,16 +92,17 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, Range, Imu, LaserScan
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+from sensor_msgs.msg import CompressedImage, Range, Imu, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
-from cv_bridge import CvBridge
 
-from flask import Flask, Response, jsonify, request, send_from_directory
-from flask_socketio import SocketIO
-from flask_cors import CORS
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import Response, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 
 # =============================================================
@@ -114,7 +116,6 @@ class DashboardNode(Node):
         self.declare_parameter('port', 5000)
         self._port = self.get_parameter('port').value
 
-        self._bridge = CvBridge()
         self._lock = threading.Lock()
 
         # ── Shared state ────────────────────────────────────
@@ -144,19 +145,25 @@ class DashboardNode(Node):
         self._claw_open = False
         self._laser_on  = False
 
-        # ── QoS for map ──────────────────────────────────────
+        # ── QoS: надёжная доставка карты (transient_local) ───
         map_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+        # ── QoS: сенсоры — BEST_EFFORT, только последнее ─────
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
 
         # ── Subscriptions ────────────────────────────────────
-        self.create_subscription(Image,         '/yolo/annotated',       self._image_cb,         5)
+        self.create_subscription(CompressedImage, '/yolo/annotated/compressed', self._image_cb, 5)
         self.create_subscription(String,        '/robot_status',         self._status_cb,        10)
         self.create_subscription(String,        '/ball_detection',       self._detection_cb,     10)
-        self.create_subscription(Range,         '/range',                self._range_cb,         10)
-        self.create_subscription(Imu,           '/imu/data',             self._imu_cb,           10)
+        self.create_subscription(Range,         '/range',                self._range_cb,     sensor_qos)
+        self.create_subscription(Imu,           '/imu/data',             self._imu_cb,       sensor_qos)
         self.create_subscription(OccupancyGrid, '/map',                  self._map_cb,     map_qos)
         self.create_subscription(Odometry,      '/odometry/filtered',    self._odom_cb,          10)
         self.create_subscription(String,        '/voice_command',        self._voice_cb,         10)
@@ -185,11 +192,10 @@ class DashboardNode(Node):
 
     # ── ROS2 Callbacks ─────────────────────────────────────────────
 
-    def _image_cb(self, msg: Image):
-        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    def _image_cb(self, msg: CompressedImage):
+        # Кадр уже JPEG от yolo_detector — передаём напрямую без decode+encode
         with self._lock:
-            self._latest_frame = jpeg.tobytes()
+            self._latest_frame = bytes(msg.data)
 
     def _status_cb(self, msg: String):
         try:
@@ -427,7 +433,7 @@ class DashboardNode(Node):
 
 
 # =============================================================
-# Flask Application
+# FastAPI Application
 # =============================================================
 
 def _find_static_dir() -> str:
@@ -441,240 +447,244 @@ def _find_static_dir() -> str:
 
 
 def _ok(**kwargs):
-    return jsonify({'ok': True, **kwargs})
+    return {'ok': True, **kwargs}
 
 
-def _err(message: str, code: int = 400):
-    return jsonify({'ok': False, 'error': message}), code
+def _err(message: str):
+    return JSONResponse({'ok': False, 'error': message}, status_code=400)
 
 
-def create_app(ros_node: DashboardNode):
-    base_dir    = _find_static_dir()
-    static_dir  = os.path.join(base_dir, 'static')
-    template_dir = os.path.join(base_dir, 'templates')
+def create_app(ros_node: DashboardNode) -> FastAPI:
+    base_dir   = _find_static_dir()
+    static_dir = os.path.join(base_dir, 'static')
 
-    app = Flask(__name__, static_folder=static_dir,
-                template_folder=template_dir, static_url_path='')
-    CORS(app)
-    socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+    app = FastAPI(title='Samurai Dashboard')
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=['*'],
+        allow_methods=['*'],
+        allow_headers=['*'],
+    )
 
-    # ── SPA ──────────────────────────────────────────────────────
+    # Список активных WebSocket соединений для state_update push
+    _ws_clients: list[WebSocket] = []
+    _ws_lock = threading.Lock()
 
-    @app.route('/')
-    @app.route('/dashboard')
-    @app.route('/admin')
-    def serve_spa():
-        return send_from_directory(static_dir, 'index.html')
+    # ── Background: push state to all WS clients (4 Hz) ──────────
+    async def _ws_push_loop():
+        while True:
+            await asyncio.sleep(0.25)
+            state_json = json.dumps(ros_node.get_state())
+            dead = []
+            with _ws_lock:
+                clients = list(_ws_clients)
+            for ws in clients:
+                try:
+                    await ws.send_text(state_json)
+                except Exception:
+                    dead.append(ws)
+            if dead:
+                with _ws_lock:
+                    for ws in dead:
+                        _ws_clients.remove(ws)
 
-    # ── Streams ───────────────────────────────────────────────────
+    @app.on_event('startup')
+    async def startup():
+        asyncio.create_task(_ws_push_loop())
 
-    @app.route('/video_feed')
-    def video_feed():
-        def generate():
-            while True:
-                frame = ros_node.get_frame()
-                if frame:
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-                else:
-                    time.sleep(0.1)
-                time.sleep(0.033)
-        return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    # ── SPA ───────────────────────────────────────────────────────
+    index_html = os.path.join(static_dir, 'index.html')
 
-    @app.route('/map.png')
-    def map_image_legacy():
+    @app.get('/')
+    @app.get('/dashboard')
+    @app.get('/admin')
+    async def serve_spa():
+        return FileResponse(index_html)
+
+    # ── MJPEG video stream ────────────────────────────────────────
+    async def _mjpeg_generator():
+        while True:
+            frame = ros_node.get_frame()
+            if frame:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            await asyncio.sleep(0.033)  # ~30fps cap
+
+    @app.get('/video_feed')
+    async def video_feed():
+        from starlette.responses import StreamingResponse
+        return StreamingResponse(_mjpeg_generator(),
+                                 media_type='multipart/x-mixed-replace; boundary=frame')
+
+    @app.get('/map.png')
+    async def map_image_legacy():
         png = ros_node.get_map_png()
-        return Response(png or b'\x89PNG\r\n\x1a\n', mimetype='image/png')
+        return Response(content=png or b'\x89PNG\r\n\x1a\n', media_type='image/png')
+
+    # ── WebSocket state push (совместим с Socket.IO клиентом) ─────
+    @app.websocket('/ws/state')
+    async def ws_state(ws: WebSocket):
+        await ws.accept()
+        with _ws_lock:
+            _ws_clients.append(ws)
+        try:
+            while True:
+                await ws.receive_text()  # держим соединение живым
+        except WebSocketDisconnect:
+            with _ws_lock:
+                if ws in _ws_clients:
+                    _ws_clients.remove(ws)
 
     # ==========================================================
     # REST API — GET
     # ==========================================================
 
-    @app.route('/api/')
-    def api_index():
-        """All available endpoints."""
+    @app.get('/api/')
+    async def api_index():
         return _ok(endpoints={
-            'GET': [
-                '/api/status', '/api/robot/pose', '/api/robot/velocity',
-                '/api/sensors', '/api/sensors/ultrasonic', '/api/sensors/imu',
-                '/api/detection', '/api/detection/closest',
-                '/api/fsm', '/api/actuators', '/api/battery', '/api/speed_profile',
-                '/api/camera/frame', '/api/camera/frame.json',
-                '/api/map/image', '/api/map/info', '/api/map/list',
-                '/api/path_recorder/list', '/api/log',
-            ],
-            'POST': [
-                '/api/fsm/command', '/api/actuators/claw', '/api/actuators/laser',
-                '/api/speed_profile', '/api/patrol/command', '/api/patrol/waypoints',
-                '/api/follow_me', '/api/path_recorder/command',
-                '/api/map/save', '/api/map/load',
-            ],
+            'GET': ['/api/status', '/api/robot/pose', '/api/robot/velocity',
+                    '/api/sensors', '/api/sensors/ultrasonic', '/api/sensors/imu',
+                    '/api/detection', '/api/detection/closest',
+                    '/api/fsm', '/api/actuators', '/api/battery', '/api/speed_profile',
+                    '/api/camera/frame', '/api/camera/frame.json',
+                    '/api/map/image', '/api/map/info', '/api/map/list',
+                    '/api/path_recorder/list', '/api/log'],
+            'POST': ['/api/fsm/command', '/api/actuators/claw', '/api/actuators/laser',
+                     '/api/speed_profile', '/api/patrol/command', '/api/patrol/waypoints',
+                     '/api/follow_me', '/api/path_recorder/command',
+                     '/api/map/save', '/api/map/load'],
         })
 
-    @app.route('/api/status')
-    def api_status():
-        """Full robot snapshot — all data in one call."""
-        return jsonify(ros_node._snapshot())
+    @app.get('/api/status')
+    async def api_status():
+        return ros_node._snapshot()
 
-    @app.route('/api/robot/pose')
-    def api_pose():
-        """Current position (x, y metres) and heading (yaw radians)."""
+    @app.get('/api/robot/pose')
+    async def api_pose():
         with ros_node._lock:
             return _ok(**ros_node._robot_pose)
 
-    @app.route('/api/robot/velocity')
-    def api_velocity():
-        """Estimated (from odometry) and commanded velocity."""
+    @app.get('/api/robot/velocity')
+    async def api_velocity():
         with ros_node._lock:
-            return _ok(
-                estimated=dict(ros_node._robot_velocity),
-                commanded=dict(ros_node._cmd_velocity),
-            )
+            return _ok(estimated=dict(ros_node._robot_velocity),
+                       commanded=dict(ros_node._cmd_velocity))
 
-    @app.route('/api/sensors')
-    def api_sensors():
-        """All sensor readings."""
+    @app.get('/api/sensors')
+    async def api_sensors():
         with ros_node._lock:
             return _ok(
                 ultrasonic={'range_m': ros_node._range_m},
-                imu={
-                    'yaw': ros_node._imu_ypr[0], 'pitch': ros_node._imu_ypr[1], 'roll': ros_node._imu_ypr[2],
-                    'gyro':  {'x': ros_node._imu_gyro[0],  'y': ros_node._imu_gyro[1],  'z': ros_node._imu_gyro[2]},
-                    'accel': {'x': ros_node._imu_accel[0], 'y': ros_node._imu_accel[1], 'z': ros_node._imu_accel[2]},
-                },
+                imu={'yaw': ros_node._imu_ypr[0], 'pitch': ros_node._imu_ypr[1], 'roll': ros_node._imu_ypr[2],
+                     'gyro':  {'x': ros_node._imu_gyro[0],  'y': ros_node._imu_gyro[1],  'z': ros_node._imu_gyro[2]},
+                     'accel': {'x': ros_node._imu_accel[0], 'y': ros_node._imu_accel[1], 'z': ros_node._imu_accel[2]}},
             )
 
-    @app.route('/api/sensors/ultrasonic')
-    def api_ultrasonic():
-        """Ultrasonic distance only."""
+    @app.get('/api/sensors/ultrasonic')
+    async def api_ultrasonic():
         with ros_node._lock:
             return _ok(range_m=ros_node._range_m)
 
-    @app.route('/api/sensors/imu')
-    def api_imu():
-        """IMU: orientation (deg), gyro (rad/s), accel (m/s²)."""
+    @app.get('/api/sensors/imu')
+    async def api_imu():
         with ros_node._lock:
-            return _ok(
-                yaw=ros_node._imu_ypr[0], pitch=ros_node._imu_ypr[1], roll=ros_node._imu_ypr[2],
-                gyro ={'x': ros_node._imu_gyro[0],  'y': ros_node._imu_gyro[1],  'z': ros_node._imu_gyro[2]},
-                accel={'x': ros_node._imu_accel[0], 'y': ros_node._imu_accel[1], 'z': ros_node._imu_accel[2]},
-            )
+            return _ok(yaw=ros_node._imu_ypr[0], pitch=ros_node._imu_ypr[1], roll=ros_node._imu_ypr[2],
+                       gyro ={'x': ros_node._imu_gyro[0],  'y': ros_node._imu_gyro[1],  'z': ros_node._imu_gyro[2]},
+                       accel={'x': ros_node._imu_accel[0], 'y': ros_node._imu_accel[1], 'z': ros_node._imu_accel[2]})
 
-    @app.route('/api/detection')
-    def api_detection():
-        """All objects currently detected by YOLO."""
+    @app.get('/api/detection')
+    async def api_detection():
         with ros_node._lock:
             return _ok(detection=ros_node._ball_detection)
 
-    @app.route('/api/detection/closest')
-    def api_detection_closest():
-        """
-        Closest detected object.
-        Optional query param: ?color=red
-        """
-        color_filter = request.args.get('color', '').lower().strip()
+    @app.get('/api/detection/closest')
+    async def api_detection_closest(color: str = ''):
+        color_filter = color.lower().strip()
         with ros_node._lock:
             det = ros_node._ball_detection
-
         objects = det.get('objects', det.get('balls', []))
         if color_filter:
             objects = [o for o in objects
                        if str(o.get('color', o.get('class', ''))).lower() == color_filter]
-
         if not objects:
             return _ok(found=False, object=None)
-
         def _sort_key(o):
             if 'distance' in o:
                 return o['distance']
             b = o.get('bbox', [0, 0, 0, 0])
             return -((b[2] - b[0]) * (b[3] - b[1])) if len(b) >= 4 else 0
-
         return _ok(found=True, object=sorted(objects, key=_sort_key)[0])
 
-    @app.route('/api/fsm')
-    def api_fsm():
-        """Current FSM state."""
+    @app.get('/api/fsm')
+    async def api_fsm():
         with ros_node._lock:
             status = ros_node._robot_status
         state = status.get('state', status.get('fsm_state', 'unknown'))
         return _ok(state=state, details=status)
 
-    @app.route('/api/actuators')
-    def api_actuators():
-        """Claw and laser states."""
+    @app.get('/api/actuators')
+    async def api_actuators():
         with ros_node._lock:
-            return _ok(
-                claw ='open' if ros_node._claw_open else 'closed',
-                laser='on'   if ros_node._laser_on  else 'off',
-            )
+            return _ok(claw='open' if ros_node._claw_open else 'closed',
+                       laser='on'  if ros_node._laser_on  else 'off')
 
-    @app.route('/api/battery')
-    def api_battery():
-        """Battery status."""
+    @app.get('/api/battery')
+    async def api_battery():
         with ros_node._lock:
-            return jsonify({'ok': True, **ros_node._battery})
+            return {'ok': True, **ros_node._battery}
 
-    @app.route('/api/speed_profile')
-    def api_speed_profile_get():
-        """Current speed profile."""
+    @app.get('/api/speed_profile')
+    async def api_speed_profile_get():
         with ros_node._lock:
             return _ok(profile=ros_node._speed_profile)
 
-    @app.route('/api/camera/frame')
-    def api_camera_frame():
-        """Latest annotated camera frame as JPEG binary."""
+    @app.get('/api/camera/frame')
+    async def api_camera_frame():
         frame = ros_node.get_frame()
         if not frame:
-            return _err('No frame available yet', 503)
-        return Response(frame, mimetype='image/jpeg')
+            return JSONResponse({'ok': False, 'error': 'No frame available yet'}, status_code=503)
+        return Response(content=frame, media_type='image/jpeg')
 
-    @app.route('/api/camera/frame.json')
-    def api_camera_frame_json():
-        """Latest camera frame as base64 JSON."""
+    @app.get('/api/camera/frame.json')
+    async def api_camera_frame_json():
         frame = ros_node.get_frame()
         if not frame:
-            return _err('No frame available yet', 503)
+            return JSONResponse({'ok': False, 'error': 'No frame available yet'}, status_code=503)
         return _ok(jpeg_b64=base64.b64encode(frame).decode())
 
-    @app.route('/api/map/image')
-    def api_map_image():
-        """Current SLAM map as PNG binary."""
+    @app.get('/api/map/image')
+    async def api_map_image():
         png = ros_node.get_map_png()
         if not png:
-            return _err('Map not available yet', 503)
-        return Response(png, mimetype='image/png')
+            return JSONResponse({'ok': False, 'error': 'Map not available yet'}, status_code=503)
+        return Response(content=png, media_type='image/png')
 
-    @app.route('/api/map/info')
-    def api_map_info():
-        """SLAM map metadata: size, resolution, origin."""
+    @app.get('/api/map/info')
+    async def api_map_info():
         with ros_node._lock:
             info = dict(ros_node._map_info)
         if not info:
-            return _err('Map not available yet', 503)
+            return JSONResponse({'ok': False, 'error': 'Map not available yet'}, status_code=503)
         return _ok(**info)
 
-    @app.route('/api/map/list')
-    def api_map_list():
-        """List saved SLAM maps."""
+    @app.get('/api/map/list')
+    async def api_map_list():
         maps_dir = os.path.expanduser('~/maps')
         if not os.path.isdir(maps_dir):
             return _ok(maps=[])
         maps = sorted(f.replace('.yaml', '') for f in os.listdir(maps_dir) if f.endswith('.yaml'))
         return _ok(maps=maps)
 
-    @app.route('/api/path_recorder/list')
-    def api_path_list():
-        """List saved recorded paths."""
+    @app.get('/api/path_recorder/list')
+    async def api_path_list():
         paths_dir = os.path.expanduser('~/paths')
         if not os.path.isdir(paths_dir):
             return _ok(paths=[])
         paths = sorted(f.replace('.json', '') for f in os.listdir(paths_dir) if f.endswith('.json'))
         return _ok(paths=paths)
 
-    @app.route('/api/log')
-    def api_log():
-        """Voice command and API event log."""
-        limit = min(int(request.args.get('limit', 50)), 100)
+    @app.get('/api/log')
+    async def api_log(limit: int = 50):
+        limit = min(limit, 100)
         with ros_node._lock:
             log = list(ros_node._event_log)[-limit:]
         return _ok(log=log, count=len(log))
@@ -683,26 +693,18 @@ def create_app(ros_node: DashboardNode):
     # REST API — POST
     # ==========================================================
 
-    @app.route('/api/fsm/command', methods=['POST'])
-    def api_fsm_command():
-        """
-        Send a voice/text command to the FSM.
-        Body: {"command": "найди красный мяч"}
-        """
-        body    = request.get_json(silent=True) or {}
-        command = body.get('command', '').strip()
+    @app.post('/api/fsm/command')
+    async def api_fsm_command(req: Request):
+        body = await req.json()
+        command = body.get('command', body.get('text', '')).strip()
         if not command:
             return _err('"command" field is required')
         ros_node.send_command(command)
         return _ok(sent=command)
 
-    @app.route('/api/actuators/claw', methods=['POST'])
-    def api_claw():
-        """
-        Control the claw.
-        Body: {"state": "open"} or {"state": "close"}
-        """
-        body  = request.get_json(silent=True) or {}
+    @app.post('/api/actuators/claw')
+    async def api_claw(req: Request):
+        body  = await req.json()
         state = body.get('state', '').lower().strip()
         if state not in ('open', 'close', 'closed'):
             return _err('state must be "open" or "close"')
@@ -710,170 +712,83 @@ def create_app(ros_node: DashboardNode):
         ros_node.set_claw(cmd)
         return _ok(claw='open' if cmd == 'open' else 'closed')
 
-    @app.route('/api/actuators/laser', methods=['POST'])
-    def api_laser():
-        """
-        Control the laser.
-        Body: {"state": "on"} or {"state": "off"}
-        """
-        body  = request.get_json(silent=True) or {}
+    @app.post('/api/actuators/laser')
+    async def api_laser(req: Request):
+        body  = await req.json()
         state = body.get('state', '').lower().strip()
         if state not in ('on', 'off'):
             return _err('state must be "on" or "off"')
         ros_node.set_laser(state)
         return _ok(laser=state)
 
-    @app.route('/api/speed_profile', methods=['POST'])
-    def api_speed_profile_set():
-        """
-        Change speed profile.
-        Body: {"profile": "slow"} | "normal" | "fast"
-        """
-        body    = request.get_json(silent=True) or {}
+    @app.post('/api/speed_profile')
+    async def api_speed_profile_set(req: Request):
+        body    = await req.json()
         profile = body.get('profile', '').lower().strip()
         if profile not in ('slow', 'normal', 'fast'):
             return _err('profile must be "slow", "normal", or "fast"')
         ros_node.set_speed_profile(profile)
         return _ok(profile=profile)
 
-    @app.route('/api/patrol/command', methods=['POST'])
-    def api_patrol_command():
-        """
-        Start or stop patrol mode.
-        Body: {"command": "start"} or {"command": "stop"}
-        """
-        body    = request.get_json(silent=True) or {}
+    @app.post('/api/patrol/command')
+    async def api_patrol_command(req: Request):
+        body    = await req.json()
         command = body.get('command', '').lower().strip()
         if command not in ('start', 'stop'):
             return _err('command must be "start" or "stop"')
         ros_node.set_patrol_command(command)
         return _ok(patrol=command)
 
-    @app.route('/api/patrol/waypoints', methods=['POST'])
-    def api_patrol_waypoints():
-        """
-        Set patrol waypoints.
-        Body: {"waypoints": [[x1, y1], [x2, y2], ...]}
-        """
-        body      = request.get_json(silent=True) or {}
+    @app.post('/api/patrol/waypoints')
+    async def api_patrol_waypoints(req: Request):
+        body      = await req.json()
         waypoints = body.get('waypoints', [])
         if not isinstance(waypoints, list) or not waypoints:
             return _err('waypoints must be a non-empty list of [x, y] pairs')
         ros_node.set_patrol_waypoints(waypoints)
         return _ok(waypoints_set=len(waypoints))
 
-    @app.route('/api/follow_me', methods=['POST'])
-    def api_follow_me():
-        """
-        Start or stop follow-me mode.
-        Body: {"command": "start"} or {"command": "stop"}
-        """
-        body    = request.get_json(silent=True) or {}
+    @app.post('/api/follow_me')
+    async def api_follow_me(req: Request):
+        body    = await req.json()
         command = body.get('command', '').lower().strip()
         if command not in ('start', 'stop'):
             return _err('command must be "start" or "stop"')
         ros_node.set_follow_me(command)
         return _ok(follow_me=command)
 
-    @app.route('/api/path_recorder/command', methods=['POST'])
-    def api_path_recorder():
-        """
-        Control path recording/playback.
-        Body: {"command": "start", "name": "my_path"}
-               {"command": "stop"}
-               {"command": "play",  "name": "my_path"}
-        """
-        body    = request.get_json(silent=True) or {}
+    @app.post('/api/path_recorder/command')
+    async def api_path_recorder(req: Request):
+        body    = await req.json()
         command = body.get('command', '').lower().strip()
         if command not in ('start', 'stop', 'play'):
             return _err('command must be "start", "stop", or "play"')
         ros_node.set_path_recorder(body)
         return _ok(path_recorder=command)
 
-    @app.route('/api/map/save', methods=['POST'])
-    def api_map_save():
-        """
-        Save current SLAM map.
-        Body: {"name": "my_map"}
-        """
-        body = request.get_json(silent=True) or {}
+    @app.post('/api/map/save')
+    async def api_map_save(req: Request):
+        body = await req.json()
         name = body.get('name', 'map').strip()
         if not name:
             return _err('"name" is required')
         ros_node.save_map(name)
         return _ok(saved=name)
 
-    @app.route('/api/map/load', methods=['POST'])
-    def api_map_load():
-        """
-        Load a saved SLAM map.
-        Body: {"name": "my_map"}
-        """
-        body = request.get_json(silent=True) or {}
+    @app.post('/api/map/load')
+    async def api_map_load(req: Request):
+        body = await req.json()
         name = body.get('name', '').strip()
         if not name:
             return _err('"name" is required')
         ros_node.load_map(name)
         return _ok(loaded=name)
 
-    # ── SocketIO events ────────────────────────────────────────────
+    # ── Static files (SPA assets) ─────────────────────────────────
+    if os.path.isdir(static_dir):
+        app.mount('/', StaticFiles(directory=static_dir, html=True), name='static')
 
-    @socketio.on('send_command')
-    def on_ws_command(data):
-        cmd = data.get('command', '') if isinstance(data, dict) else str(data)
-        if cmd:
-            ros_node.send_command(cmd)
-
-    @socketio.on('set_speed_profile')
-    def on_ws_speed(data):
-        p = data.get('profile', '') if isinstance(data, dict) else str(data)
-        if p in ('slow', 'normal', 'fast'):
-            ros_node.set_speed_profile(p)
-
-    @socketio.on('patrol_command')
-    def on_ws_patrol(data):
-        cmd = data.get('command', '') if isinstance(data, dict) else str(data)
-        if cmd in ('start', 'stop'):
-            ros_node.set_patrol_command(cmd)
-
-    @socketio.on('patrol_waypoints')
-    def on_ws_patrol_wp(data):
-        wps = data.get('waypoints', []) if isinstance(data, dict) else data
-        if wps:
-            ros_node.set_patrol_waypoints(wps)
-
-    @socketio.on('follow_me_command')
-    def on_ws_follow(data):
-        cmd = data.get('command', '') if isinstance(data, dict) else str(data)
-        if cmd in ('start', 'stop'):
-            ros_node.set_follow_me(cmd)
-
-    @socketio.on('path_recorder_command')
-    def on_ws_path_rec(data):
-        if isinstance(data, dict):
-            ros_node.set_path_recorder(data)
-
-    @socketio.on('map_save')
-    def on_ws_map_save(data):
-        name = data.get('name', 'map') if isinstance(data, dict) else str(data)
-        ros_node.save_map(name)
-
-    @socketio.on('map_load')
-    def on_ws_map_load(data):
-        name = data.get('name', '') if isinstance(data, dict) else str(data)
-        if name:
-            ros_node.load_map(name)
-
-    # ── Background state push (4 Hz) ──────────────────────────────
-
-    def _emit_state():
-        while True:
-            socketio.emit('state_update', ros_node.get_state())
-            socketio.sleep(0.25)
-
-    socketio.start_background_task(_emit_state)
-
-    return app, socketio
+    return app
 
 
 # =============================================================
@@ -887,9 +802,9 @@ def main(args=None):
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
-    app, socketio = create_app(node)
+    app = create_app(node)
     try:
-        socketio.run(app, host='0.0.0.0', port=node._port, allow_unsafe_werkzeug=True)
+        uvicorn.run(app, host='0.0.0.0', port=node._port, log_level='warning')
     except KeyboardInterrupt:
         pass
     finally:

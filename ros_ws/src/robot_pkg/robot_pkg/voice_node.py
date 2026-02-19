@@ -9,6 +9,9 @@ Commands:
   Any other phrase         — published as-is for FSM interpretation
 
 Vosk model path: ~/vosk-model-ru  (download vosk-model-small-ru-0.22)
+
+VAD (Voice Activity Detection) via webrtcvad:
+  Тишина пропускается до передачи в Vosk — экономия ~70% CPU.
 """
 
 import json
@@ -24,9 +27,17 @@ try:
 except ImportError:
     _HW = False
 
+try:
+    import webrtcvad
+    _VAD = True
+except ImportError:
+    _VAD = False
+
 VOSK_MODEL_PATH = '/home/pi/vosk-model-ru'
 SAMPLE_RATE = 16000
-CHUNK_SIZE = 4000
+CHUNK_SIZE = 4000          # сэмплов за чтение (250ms)
+VAD_FRAME_BYTES = 960      # 30ms фрейм при 16kHz int16 (480 сэмплов × 2 байта)
+VAD_AGGRESSIVENESS = 2     # 0=мягкий, 3=строгий
 
 
 class VoiceNode(Node):
@@ -40,6 +51,14 @@ class VoiceNode(Node):
         if not _HW:
             self.get_logger().error('vosk/pyaudio not available — voice disabled')
             return
+
+        # VAD для фильтрации тишины
+        if _VAD:
+            self._vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+            self.get_logger().info('VAD enabled (webrtcvad) — silence will be skipped')
+        else:
+            self._vad = None
+            self.get_logger().warn('webrtcvad not installed — VAD disabled (pip install webrtcvad)')
 
         self.get_logger().info(f'Loading Vosk model from {model_path} ...')
         self._model = vosk.Model(model_path)
@@ -60,9 +79,23 @@ class VoiceNode(Node):
         self._thread.start()
         self.get_logger().info('Voice recognition started (Russian, offline)')
 
+    def _has_speech(self, data: bytes) -> bool:
+        """Проверяет наличие речи в чанке через webrtcvad."""
+        if self._vad is None:
+            return True
+        # Разбиваем на 30ms фреймы и проверяем каждый
+        for i in range(0, len(data) - VAD_FRAME_BYTES + 1, VAD_FRAME_BYTES):
+            frame = data[i:i + VAD_FRAME_BYTES]
+            if len(frame) == VAD_FRAME_BYTES and self._vad.is_speech(frame, SAMPLE_RATE):
+                return True
+        return False
+
     def _listen_loop(self):
         while self._running:
             data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            # Пропускаем тишину — экономим CPU Vosk
+            if not self._has_speech(data):
+                continue
             if self._recognizer.AcceptWaveform(data):
                 result = json.loads(self._recognizer.Result())
                 text = result.get('text', '').strip()

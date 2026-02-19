@@ -8,6 +8,7 @@ Publishes: /range  (sensor_msgs/Range)  @ 20 Hz
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Range
 
 try:
@@ -44,7 +45,13 @@ class UltrasonicNode(Node):
             self._simulated = True
             self.get_logger().warn('gpiozero unavailable — ultrasonic simulated')
 
-        self._pub = self.create_publisher(Range, '/range', 10)
+        # BEST_EFFORT + depth=1: дальномер 20Hz — старые значения не нужны
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._pub = self.create_publisher(Range, '/range', sensor_qos)
         self.create_timer(0.05, self._publish)  # 20 Hz
 
     def _publish(self):

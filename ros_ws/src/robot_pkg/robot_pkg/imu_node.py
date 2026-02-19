@@ -12,6 +12,7 @@ import math
 import struct
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Imu
 
 try:
@@ -43,7 +44,13 @@ class IMUNode(Node):
             self._bus = None
             self.get_logger().warn('smbus2 unavailable — IMU simulated')
 
-        self._pub = self.create_publisher(Imu, '/imu/data', 10)
+        # BEST_EFFORT + depth=1: IMU 50Hz — только последнее значение важно
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._pub = self.create_publisher(Imu, '/imu/data', sensor_qos)
         self.create_timer(0.02, self._read_and_publish)  # 50 Hz
 
     def _read_raw(self):

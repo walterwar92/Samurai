@@ -44,6 +44,7 @@ setup(
             'path_recorder_node = robot_pkg.path_recorder_node:main',
             'qr_detector_node = robot_pkg.qr_detector_node:main',
             'gesture_node = robot_pkg.gesture_node:main',
+            'fallback_nav_node = robot_pkg.fallback_nav_node:main',
         ],
     },
 )
