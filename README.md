@@ -47,33 +47,43 @@ Samurai/
 ├── start_laptop_sim.sh          # 🎮 Запуск симулятора на ноутбуке (без ROS2)
 │
 ├── ros_ws/                      # ROS2 workspace
-│   └── src/robot_pkg/           # Основной ROS2 пакет
-│       ├── robot_pkg/           # Python ноды
-│       │   ├── hardware/        # Драйверы для PCA9685, моторов, серво
-│       │   ├── motor_node.py
-│       │   ├── camera_node.py
-│       │   ├── voice_node.py
-│       │   ├── imu_node.py
-│       │   └── mqtt_bridge_node.py
-│       ├── launch/              # Launch файлы
-│       ├── config/              # Конфигурация nav2, SLAM, localization
-│       └── msg/                 # Пользовательские ROS2 сообщения
+│   └── src/
+│       ├── robot_pkg/           # Python ноды (Raspberry Pi)
+│       │   ├── robot_pkg/
+│       │   │   ├── hardware/        # Драйверы PCA9685, моторов, серво
+│       │   │   ├── motor_node.py    # (Python fallback)
+│       │   │   ├── imu_node.py      # (Python fallback)
+│       │   │   ├── camera_node.py   # CompressedImage JPEG → DDS -20x трафик
+│       │   │   ├── voice_node.py    # Vosk ASR + webrtcvad VAD
+│       │   │   ├── fallback_nav_node.py  # Автономность при отключении ноутбука
+│       │   │   └── mqtt_bridge_node.py
+│       │   ├── launch/
+│       │   ├── config/
+│       │   └── msg/
+│       └── robot_pkg_cpp/       # C++ ноды (реальное время)
+│           ├── src/
+│           │   ├── imu_node.cpp     # MPU6050 via Linux ioctl @ 50 Hz
+│           │   └── motor_node.cpp   # PCA9685 via Linux ioctl @ 20 Hz
+│           ├── CMakeLists.txt
+│           └── package.xml
 │
-├── compute_node/                # Вычислительные ноды (запускаются на ноутбуке)
-│   ├── yolo_detector_node.py   # YOLO детектор (CPU/GPU)
+├── compute_node/                # Вычислительные ноды (ноутбук, Docker)
+│   ├── yolo_detector_node.py   # YOLO → ONNX Runtime (без PyTorch)
 │   ├── depth_to_scan_node.py   # Конвертация depth -> LaserScan
 │   ├── geofence_map_publisher.py
 │   ├── simulator.py            # 🎮 Симулятор с Flask REST API
-│   └── dashboard_node.py       # Web dashboard + REST API
+│   └── dashboard_node.py       # FastAPI + WebSocket /ws/state @ 4 Hz
 │
 ├── Diagnostic/                  # Диагностика оборудования
 │   ├── diagnostic.py           # Полная проверка железа Raspberry Pi
-│   └── setup_robot.sh          # Установка всех зависимостей на Pi
+│   └── setup_robot.sh          # Зависимости + сборка C++ нод на Pi
 │
 ├── android_app/                 # Android приложение (Kotlin + Jetpack Compose)
-│   └── app/src/main/           # Управление через REST API и MQTT
+│   └── app/src/main/
+│       └── ...api/
+│           └── RobotSocketClient.kt  # Socket.IO push-клиент (вместо polling)
 │
-├── Dockerfile                   # Docker образ для ноутбука (ROS2 + SLAM + Nav2 + YOLO)
+├── Dockerfile                   # ros:humble-ros-base + onnxruntime + fastapi
 ├── requirements.txt             # Python зависимости
 ├── API_REFERENCE.md            # Документация REST API
 └── README.md                   # Этот файл
@@ -125,7 +135,7 @@ cd ~/Samurai
 sudo bash Diagnostic/setup_robot.sh
 ```
 
-Скрипт установит: Python библиотеки (gpiozero, smbus2, adafruit-pca9685, rpi_ws281x, opencv, picamera2), включит I2C/SPI интерфейсы и настроит GPIO daemon.
+Скрипт установит: Python библиотеки (gpiozero, smbus2, adafruit-pca9685, rpi_ws281x, opencv, picamera2, webrtcvad, onnxruntime), включит I2C/SPI интерфейсы, настроит GPIO daemon и **соберёт C++ ноды** (`robot_pkg_cpp`) через colcon.
 
 > Vosk (распознавание речи) на Raspberry Pi **не устанавливается** — голосовые команды поступают с Android-устройства по MQTT или REST API.
 
@@ -325,41 +335,44 @@ curl -X POST http://localhost:5000/api/robot/velocity \
 ### Топология системы
 
 ```
-Raspberry Pi (Robot)                    Ноутбук (Compute Node, Docker)
-├── motor_node      → DRV8833 моторы    ├── ekf_node           → EKF одометрия
-├── camera_node     → CSI камера        ├── slam_toolbox       → картографирование
-├── voice_node      → Vosk ASR          ├── nav2_bringup       → навигация
-├── fsm_node        → конечный автомат  ├── yolo_detector_node → YOLO v8
-├── imu_node        → MPU6050           ├── dashboard_node     → REST API :5000
-├── mqtt_bridge     → MQTT ↔ Android    ├── patrol_node        → автопатруль
-├── battery_node    → заряд батареи     ├── follow_me_node     → следование
-├── watchdog_node   → watchdog          ├── path_recorder_node → запись маршрутов
-└── Сенсоры: HC-SR04, WS2812, line...  └── map_manager_node   → управление картами
+Raspberry Pi (Robot)                      Ноутбук (Compute Node, Docker)
+├── motor_node (C++) → PCA9685 I2C ioctl  ├── ekf_node           → EKF одометрия
+├── imu_node (C++)   → MPU6050 I2C ioctl  ├── slam_toolbox       → картографирование
+├── camera_node      → CSI → Compressed   ├── nav2_bringup       → навигация
+├── voice_node       → Vosk ASR + VAD     ├── yolo_detector_node → YOLO ONNX Runtime
+├── fsm_node         → конечный автомат   ├── dashboard_node     → FastAPI :5000
+├── mqtt_bridge      → MQTT ↔ Android     ├── patrol_node        → автопатруль
+├── battery_node     → заряд батареи      ├── follow_me_node     → следование
+├── fallback_nav_node → автономность Pi   ├── path_recorder_node → запись маршрутов
+└── watchdog_node    → watchdog           └── map_manager_node   → управление картами
 
-         ↕ ROS2 DDS (Multicast/Unicast по WiFi)
+     ↕ ROS2 DDS — CompressedImage JPEG (×20 меньше трафика), BEST_EFFORT QoS
 
 Android приложение
-├── RobotApiClient  → HTTP → REST API :5000
-├── RobotMqttClient → MQTT ↔ Pi напрямую (режим Robot)
-└── VoskRecognizer  → офлайн распознавание речи
+├── RobotSocketClient → Socket.IO push (4 Гц, вместо HTTP-поллинга)
+├── RobotMqttClient   → MQTT ↔ Pi напрямую (режим Robot)
+└── VoskRecognizer    → офлайн распознавание речи
 ```
 
 ### ROS2 Топики
 
-| Топик | Тип сообщения | Описание |
-|-------|---------------|----------|
-| `/cmd_vel` | `geometry_msgs/Twist` | Команды скорости для моторов |
-| `/camera/image_raw` | `sensor_msgs/Image` | Видеопоток с камеры |
-| `/yolo/annotated` | `sensor_msgs/Image` | Видео с YOLO-разметкой |
-| `/scan` | `sensor_msgs/LaserScan` | Данные лидара (эмулированные) |
-| `/imu/data` | `sensor_msgs/Imu` | Данные IMU (MPU6050) |
-| `/range` | `sensor_msgs/Range` | Ультразвуковой датчик |
-| `/ball_detection` | `std_msgs/String` | Результаты YOLO детектора |
-| `/voice_command` | `std_msgs/String` | Распознанные голосовые команды |
-| `/robot_status` | `std_msgs/String` | FSM состояние (JSON) |
-| `/odometry/filtered` | `nav_msgs/Odometry` | Поза и скорость (EKF) |
-| `/battery_status` | `std_msgs/String` | Заряд батареи (JSON) |
-| `/speed_profile/active` | `std_msgs/String` | Текущий профиль скорости |
+| Топик | Тип сообщения | QoS | Описание |
+|-------|---------------|-----|----------|
+| `/cmd_vel` | `geometry_msgs/Twist` | RELIABLE | Команды скорости для моторов |
+| `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | BEST_EFFORT | Видеопоток JPEG (~40 KB/кадр вместо 900 KB) |
+| `/yolo/annotated/compressed` | `sensor_msgs/CompressedImage` | BEST_EFFORT | Видео с YOLO-разметкой (JPEG) |
+| `/yolo/detections` | `std_msgs/String` | RELIABLE | JSON список всех детекций (heartbeat ноутбука) |
+| `/scan` | `sensor_msgs/LaserScan` | RELIABLE | Данные лидара (эмулированные) |
+| `/imu/data` | `sensor_msgs/Imu` | BEST_EFFORT depth=1 | Данные IMU @ 50 Hz (только последний кадр) |
+| `/range` | `sensor_msgs/Range` | BEST_EFFORT depth=1 | Ультразвуковой датчик |
+| `/ball_detection` | `std_msgs/String` | RELIABLE | Одиночная YOLO детекция (JSON) |
+| `/voice_command` | `std_msgs/String` | RELIABLE | Распознанные голосовые команды |
+| `/robot_status` | `std_msgs/String` | RELIABLE | FSM состояние (JSON) |
+| `/odom` | `nav_msgs/Odometry` | RELIABLE | Открытая одометрия (motor_node) |
+| `/odometry/filtered` | `nav_msgs/Odometry` | RELIABLE | Поза и скорость (EKF) |
+| `/battery_status` | `std_msgs/String` | RELIABLE | Заряд батареи (JSON) |
+| `/speed_profile` | `std_msgs/String` | RELIABLE | Команда смены профиля скорости |
+| `/speed_profile/active` | `std_msgs/String` | RELIABLE | Текущий профиль скорости |
 
 ### Конечный автомат (FSM)
 

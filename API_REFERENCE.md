@@ -143,31 +143,47 @@ await fetch(`${BASE}/api/fsm/command`, {
 });
 ```
 
-### WebSocket (SocketIO) — реальный робот
+### WebSocket — реальный робот
 
-Подключение к `http://<ip>:5000`, событие `state_update` приходит **4 раза в секунду**.
+Dashboard (`compute_node/dashboard_node.py`) работает на **FastAPI + uvicorn**.
+Используется нативный WebSocket (не Socket.IO).
+
+**Endpoint:** `ws://<ip>:5000/ws/state`
+Сервер пушит полный JSON-снапшот **4 раза в секунду** (250 мс).
 
 ```python
-from socketio import Client
+import asyncio
+import json
+import websockets
 
-sio = Client()
+async def watch():
+    async with websockets.connect("ws://192.168.1.42:5000/ws/state") as ws:
+        async for msg in ws:
+            data = json.loads(msg)
+            print(data["pose"])           # {'x': 0.5, 'y': 1.2, 'yaw': 0.31}
+            print(data["velocity"])       # {'linear_x': 0.1, 'angular_z': 0.0}
+            print(data["imu"])            # {'yaw': 12.3, 'pitch': 0.1, 'roll': -0.2}
+            print(data["status"])         # {'state': 'IDLE', 'target_colour': ''}
+            print(data["actuators"])      # {'claw': 'closed', 'laser': 'off'}
+            print(data["battery"])        # {'voltage': 7.8, 'percentage': 82}
+            print(data["speed_profile"])  # 'normal'
 
-@sio.on("state_update")
-def on_state(data):
-    print(data["pose"])        # позиция
-    print(data["range_m"])     # дальномер
-    print(data["actuators"])   # {'claw': 'closed', 'laser': 'off'}
-    print(data["battery"])     # заряд батареи
-    print(data["speed_profile"])
-
-sio.connect("http://192.168.1.42:5000")
-
-# Отправить команду через WebSocket
-sio.emit("send_command", {"command": "найди синий мяч"})
-sio.emit("set_speed_profile", {"profile": "slow"})
-sio.emit("patrol_command",    {"command": "start"})
-sio.emit("follow_me_command", {"command": "start"})
+asyncio.run(watch())
 ```
+
+```javascript
+// JavaScript
+const ws = new WebSocket("ws://192.168.1.42:5000/ws/state");
+ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    console.log(data.pose);          // {x, y, yaw}
+    console.log(data.status.state);  // 'IDLE'
+};
+```
+
+> **Примечание:** Симулятор (`simulator.py`) по-прежнему использует Socket.IO.
+> Команды роботу отправляются через REST API (`POST /api/fsm/command`).
+> Android-приложение подключается к `/ws/state` через `RobotSocketClient.kt`.
 
 ---
 

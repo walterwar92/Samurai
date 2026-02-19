@@ -45,11 +45,15 @@ REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo pi)}"
 REAL_HOME=$(eval echo "~$REAL_USER")
 log_info "Пользователь: $REAL_USER, домашняя директория: $REAL_HOME"
 
+# Путь к проекту (скрипт лежит в Diagnostic/, workspace — на уровень выше)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+ROS_WS="$PROJECT_DIR/ros_ws"
+
 # ── Phase 1: System packages ──────────────────────────────────────────
 log_info "Updating package lists..."
 apt-get update
 
-# Все apt-пакеты — каждый устанавливается отдельно, ошибка не останавливает скрипт
 log_info "Installing system dependencies..."
 for pkg in \
     python3-full \
@@ -63,7 +67,11 @@ for pkg in \
     python3-picamera2 \
     python3-libcamera \
     python3-lgpio \
-    python3-gpiozero; do
+    python3-gpiozero \
+    build-essential \
+    cmake \
+    python3-colcon-common-extensions \
+    portaudio19-dev; do
     apt_install "$pkg"
 done
 
@@ -102,7 +110,7 @@ log_info "Enabling SPI and Camera interfaces..."
 raspi-config nonint do_spi 0
 raspi-config nonint do_camera 0 2>/dev/null || true
 
-# ── Phase 3: Pip packages (with --break-system-packages) ─────────────
+# ── Phase 3: Pip packages ─────────────────────────────────────────────
 log_info "Installing pip packages (hardware drivers)..."
 for pkg in \
     adafruit-circuitpython-pca9685 \
@@ -114,7 +122,24 @@ for pkg in \
     pip_install "$pkg"
 done
 
-# ── Phase 4: GPIO daemon (для точных измерений HC-SR04) ──────────────
+log_info "Installing pip packages (ROS2 node dependencies)..."
+# webrtcvad: VAD для voice_node — пропуск тишины, -70% CPU на Vosk
+# transforms3d: для вычислений ориентации (ekf, nav)
+for pkg in \
+    webrtcvad \
+    transforms3d; do
+    pip_install "$pkg"
+done
+
+# onnxruntime на Pi — ARM-сборка (опционально, если нет PyTorch)
+if pip3 install --break-system-packages "onnxruntime" 2>/dev/null; then
+    log_info "  onnxruntime — установлен (YOLO без PyTorch)"
+else
+    log_warn "  onnxruntime — ARM-сборка не найдена, пропуск"
+    log_warn "  YOLO будет использовать PyTorch (если установлен)"
+fi
+
+# ── Phase 4: GPIO daemon ──────────────────────────────────────────────
 # pigpiod — на Bookworm, lgpio — на Trixie
 if command -v pigpiod &>/dev/null; then
     log_info "Enabling pigpio daemon..."
@@ -122,6 +147,45 @@ if command -v pigpiod &>/dev/null; then
     systemctl start pigpiod
 else
     log_info "pigpiod не найден (Trixie использует lgpio) — пропуск"
+fi
+
+# ── Phase 5: Build C++ ROS2 nodes (robot_pkg_cpp) ─────────────────────
+# Компилирует imu_node и motor_node — прямой доступ к I2C без Python/GIL
+# Требует: ROS2 Humble, build-essential, cmake (установлены выше)
+log_info "Building ROS2 C++ package (robot_pkg_cpp)..."
+
+ROS_SETUP="/opt/ros/humble/setup.bash"
+if [ ! -f "$ROS_SETUP" ]; then
+    log_warn "ROS2 Humble не найден ($ROS_SETUP) — пропуск сборки C++ нод"
+    log_warn "После установки ROS2 выполните:"
+    log_warn "  source /opt/ros/humble/setup.bash"
+    log_warn "  cd $ROS_WS && colcon build --packages-select robot_pkg_cpp"
+elif [ ! -d "$ROS_WS/src/robot_pkg_cpp" ]; then
+    log_warn "Пакет robot_pkg_cpp не найден в $ROS_WS/src/ — пропуск"
+else
+    log_info "Сборка robot_pkg_cpp в $ROS_WS ..."
+    sudo -u "$REAL_USER" bash -c "
+        set -e
+        source '$ROS_SETUP'
+        cd '$ROS_WS'
+        colcon build \
+            --packages-select robot_pkg_cpp \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            2>&1
+    "
+    BUILD_EXIT=$?
+    if [ $BUILD_EXIT -eq 0 ]; then
+        log_info "robot_pkg_cpp собран успешно"
+        log_info "Бинарники: $ROS_WS/install/robot_pkg_cpp/lib/robot_pkg_cpp/"
+        log_info "  imu_node   — MPU6050 via direct I2C ioctl @ 50 Hz"
+        log_info "  motor_node — PCA9685 via direct I2C ioctl @ 20 Hz"
+    else
+        log_warn "Сборка robot_pkg_cpp завершилась с ошибкой (код $BUILD_EXIT)"
+        log_warn "Попробуйте вручную:"
+        log_warn "  source /opt/ros/humble/setup.bash"
+        log_warn "  cd $ROS_WS && colcon build --packages-select robot_pkg_cpp"
+        INSTALL_FAILED=$((INSTALL_FAILED + 1))
+    fi
 fi
 
 # ── Phase 6: Verify installation ─────────────────────────────────────
@@ -148,6 +212,12 @@ check_package "busio"
 check_package "adafruit_pca9685"
 check_package "adafruit_motor"
 check_package "rpi_ws281x"
+check_package "webrtcvad"
+
+# onnxruntime — опционально
+python3 -c "import onnxruntime" 2>/dev/null && \
+    log_info "  onnxruntime — OK" || \
+    log_warn "  onnxruntime — не установлен (опционально)"
 
 echo ""
 if [ $INSTALL_FAILED -gt 0 ]; then
@@ -163,6 +233,7 @@ fi
 # ── Phase 7: I2C device check ────────────────────────────────────────
 log_info "Scanning I2C bus..."
 i2cdetect -y 1 2>/dev/null || log_warn "I2C scan failed — reboot may be required"
+log_info "  Expected: 0x5F (PCA9685 моторы/серво), 0x68 (MPU6050 IMU)"
 
 echo ""
 log_info "Setup complete! Reboot recommended: sudo reboot"
