@@ -258,8 +258,8 @@ class RobotApiClient {
 
     suspend fun sendCommand(text: String) = withContext(Dispatchers.IO) {
         val base = _baseUrl.value.ifEmpty { return@withContext }
-        // Both simulator and real robot accept "command" key
-        httpPost("$base/api/fsm/command", mapOf("command" to text))
+        // Simulator expects "text", real robot accepts "command"
+        httpPost("$base/api/fsm/command", mapOf("text" to text, "command" to text))
     }
 
     suspend fun setVelocity(linear: Double, angular: Double) = withContext(Dispatchers.IO) {
@@ -360,7 +360,10 @@ class RobotApiClient {
                 val bytes = resp.body?.bytes() ?: return@withContext null
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
-        } catch (e: Exception) { null }
+        } catch (e: Throwable) {
+            Log.e(TAG, "getCameraFrame failed: ${e.message}")
+            null
+        }
     }
 
     suspend fun getMapImage(): Bitmap? = withContext(Dispatchers.IO) {
@@ -372,7 +375,10 @@ class RobotApiClient {
                 val bytes = resp.body?.bytes() ?: return@withContext null
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
-        } catch (e: Exception) { null }
+        } catch (e: Throwable) {
+            Log.e(TAG, "getMapImage failed: ${e.message}")
+            null
+        }
     }
 
     fun getCameraStreamUrl(): String {
