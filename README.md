@@ -91,7 +91,6 @@ Samurai/
   - MPU6050 (IMU)
   - HC-SR04 (ультразвуковой датчик)
   - Raspberry Pi Camera Module (CSI)
-  - Микрофон USB
   - Моторы с драйверами
 
 - **Software**:
@@ -126,7 +125,9 @@ cd ~/Samurai
 sudo bash Diagnostic/setup_robot.sh
 ```
 
-Скрипт установит: ROS2 пакеты, Python библиотеки (gpiozero, smbus2, adafruit-pca9685, vosk, opencv, paho-mqtt), настроит I2C и скачает модель Vosk (~50 МБ).
+Скрипт установит: Python библиотеки (gpiozero, smbus2, adafruit-pca9685, rpi_ws281x, opencv, picamera2), включит I2C/SPI интерфейсы и настроит GPIO daemon.
+
+> Vosk (распознавание речи) на Raspberry Pi **не устанавливается** — голосовые команды поступают с Android-устройства по MQTT или REST API.
 
 #### b) Установка ROS2 Humble вручную (если нужно)
 

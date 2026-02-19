@@ -1273,7 +1273,8 @@ The Android app supports two connection modes:
 - Voice commands sent via `samurai/<robotId>/voice_command` MQTT topic
 - Status received from `samurai/<robotId>/status` MQTT topic
 - REST API also used for dashboard data (set IP to compute node address)
-- Voice recognition via Vosk (offline, Russian)
+- Voice recognition via Vosk runs on the **Android device** (robot has no microphone)
+- Recognised text is sent to the robot via MQTT and/or `POST /api/fsm/command`
 - Default server address: `raspberrypi.local` (mDNS, requires avahi on laptop)
 
 ### App Tabs

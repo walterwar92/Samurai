@@ -59,12 +59,9 @@ for pkg in \
     python3-smbus \
     libcap-dev \
     i2c-tools \
-    libasound2-dev \
-    portaudio19-dev \
     python3-opencv \
     python3-picamera2 \
     python3-libcamera \
-    python3-pyaudio \
     python3-lgpio \
     python3-gpiozero; do
     apt_install "$pkg"
@@ -117,31 +114,7 @@ for pkg in \
     pip_install "$pkg"
 done
 
-# ── Phase 4: Vosk (speech recognition) ───────────────────────────────
-log_info "Installing Vosk..."
-pip_install vosk
-
-VOSK_MODEL_DIR="${REAL_HOME}/vosk-model-ru"
-if [ ! -d "$VOSK_MODEL_DIR" ]; then
-    log_info "Downloading Vosk Russian model..."
-    VOSK_URL="https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
-    cd /tmp
-    if wget -q "$VOSK_URL" -O vosk-model-ru.zip; then
-        unzip -q vosk-model-ru.zip -d "${REAL_HOME}/" && \
-        mv "${REAL_HOME}/vosk-model-small-ru-0.22" "$VOSK_MODEL_DIR" && \
-        rm vosk-model-ru.zip && \
-        chown -R "${REAL_USER}:${REAL_USER}" "$VOSK_MODEL_DIR" && \
-        log_info "Vosk model installed to $VOSK_MODEL_DIR" || \
-        log_error "Ошибка распаковки Vosk модели, пропуск"
-    else
-        log_error "Не удалось скачать Vosk модель (нет интернета?), пропуск"
-        rm -f vosk-model-ru.zip
-    fi
-else
-    log_info "Vosk model already exists at $VOSK_MODEL_DIR"
-fi
-
-# ── Phase 5: GPIO daemon (для точных измерений HC-SR04) ──────────────
+# ── Phase 4: GPIO daemon (для точных измерений HC-SR04) ──────────────
 # pigpiod — на Bookworm, lgpio — на Trixie
 if command -v pigpiod &>/dev/null; then
     log_info "Enabling pigpio daemon..."
@@ -168,8 +141,6 @@ check_package() {
 check_package "picamera2"
 check_package "cv2"
 check_package "numpy"
-check_package "pyaudio"
-check_package "vosk"
 check_package "smbus2"
 check_package "gpiozero"
 check_package "board"
