@@ -1,3 +1,176 @@
+# Samurai — REST API Reference
+
+> Документ описывает два варианта API:
+> - **Реальный робот** — `compute_node/dashboard_node.py`, порт **5000**
+> - **Симулятор** — `compute_node/simulator.py`, порт **5000**
+>
+> Оба используют один базовый URL: `http://<ip>:5000`
+
+---
+
+## Реальный робот — API
+
+### Запуск
+
+```bash
+# Через скрипт (рекомендуется) — запускает Docker-контейнер с полным стеком
+./start_laptop_robot.sh
+
+# Или напрямую через ROS2 (внутри Docker или нативного окружения)
+ros2 launch robot_pkg compute_bringup.launch.py
+```
+
+### Таблица эндпоинтов (реальный робот)
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/api/status` | Полный снапшот робота |
+| GET | `/api/robot/pose` | Позиция и угол (x, y, yaw) |
+| GET | `/api/robot/velocity` | Скорость (одометрия + команда) |
+| GET | `/api/sensors` | Все сенсоры |
+| GET | `/api/sensors/ultrasonic` | Только дальномер |
+| GET | `/api/sensors/imu` | Гироскоп, акселерометр, углы |
+| GET | `/api/detection` | Все объекты от YOLO |
+| GET | `/api/detection/closest` | Ближайший объект (`?color=red`) |
+| GET | `/api/fsm` | Текущее состояние FSM |
+| GET | `/api/actuators` | Состояние клешни и лазера |
+| GET | `/api/battery` | Заряд батареи |
+| GET | `/api/speed_profile` | Текущий профиль скорости |
+| GET | `/api/camera/frame` | Кадр с камеры (JPEG) |
+| GET | `/api/camera/frame.json` | Кадр с камеры (base64 JSON) |
+| GET | `/api/map/image` | SLAM-карта (PNG) |
+| GET | `/api/map/info` | Метаданные карты |
+| GET | `/api/map/list` | Список сохранённых карт |
+| GET | `/api/path_recorder/list` | Список записанных маршрутов |
+| GET | `/api/log` | Лог команд и событий |
+| POST | `/api/fsm/command` | Голосовая/текстовая команда FSM |
+| POST | `/api/actuators/claw` | Управление клешнёй |
+| POST | `/api/actuators/laser` | Управление лазером |
+| POST | `/api/speed_profile` | Смена профиля скорости |
+| POST | `/api/patrol/command` | Старт/стоп патруля |
+| POST | `/api/patrol/waypoints` | Задать точки патруля |
+| POST | `/api/follow_me` | Старт/стоп следования |
+| POST | `/api/path_recorder/command` | Запись/воспроизведение маршрута |
+| POST | `/api/map/save` | Сохранить SLAM-карту |
+| POST | `/api/map/load` | Загрузить SLAM-карту |
+
+### Примеры — реальный робот
+
+```python
+import requests
+
+BASE = "http://192.168.1.42:5000"  # IP вашего compute-ноута
+
+# Полный снапшот
+state = requests.get(f"{BASE}/api/status").json()
+print(state["pose"])         # {'x': 0.5, 'y': 1.2, 'yaw': 0.31}
+print(state["speed_profile"])  # 'normal'
+
+# Текущее состояние FSM
+fsm = requests.get(f"{BASE}/api/fsm").json()
+print(fsm["state"])          # 'IDLE'
+
+# Дальномер
+rng = requests.get(f"{BASE}/api/sensors/ultrasonic").json()
+print(rng["range_m"])        # 0.45
+
+# IMU
+imu = requests.get(f"{BASE}/api/sensors/imu").json()
+print(imu["yaw"], imu["pitch"], imu["roll"])
+
+# Что видит YOLO
+det = requests.get(f"{BASE}/api/detection").json()
+
+# Ближайший красный объект
+closest = requests.get(f"{BASE}/api/detection/closest?color=red").json()
+if closest["found"]:
+    print(closest["object"])
+
+# Отправить команду FSM
+requests.post(f"{BASE}/api/fsm/command",
+              json={"command": "найди красный мяч"})
+
+# Управление клешнёй
+requests.post(f"{BASE}/api/actuators/claw",  json={"state": "open"})
+requests.post(f"{BASE}/api/actuators/claw",  json={"state": "close"})
+
+# Лазер
+requests.post(f"{BASE}/api/actuators/laser", json={"state": "on"})
+requests.post(f"{BASE}/api/actuators/laser", json={"state": "off"})
+
+# Профиль скорости
+requests.post(f"{BASE}/api/speed_profile",   json={"profile": "fast"})
+
+# Патруль
+requests.post(f"{BASE}/api/patrol/waypoints",
+              json={"waypoints": [[0.5, 0.5], [1.0, 0.0], [0.0, 0.0]]})
+requests.post(f"{BASE}/api/patrol/command",  json={"command": "start"})
+
+# Следование за человеком
+requests.post(f"{BASE}/api/follow_me",       json={"command": "start"})
+
+# Запись маршрута
+requests.post(f"{BASE}/api/path_recorder/command",
+              json={"command": "start", "name": "route_1"})
+requests.post(f"{BASE}/api/path_recorder/command",
+              json={"command": "stop"})
+
+# Воспроизведение маршрута
+requests.post(f"{BASE}/api/path_recorder/command",
+              json={"command": "play", "name": "route_1"})
+
+# Сохранить карту
+requests.post(f"{BASE}/api/map/save", json={"name": "arena_map"})
+
+# Получить кадр камеры
+import base64
+resp = requests.get(f"{BASE}/api/camera/frame.json").json()
+img_bytes = base64.b64decode(resp["jpeg_b64"])
+```
+
+```javascript
+// JavaScript / fetch
+const BASE = "http://192.168.1.42:5000";
+
+// Полный статус
+const state = await fetch(`${BASE}/api/status`).then(r => r.json());
+
+// Команда FSM
+await fetch(`${BASE}/api/fsm/command`, {
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({command: "стоп"})
+});
+```
+
+### WebSocket (SocketIO) — реальный робот
+
+Подключение к `http://<ip>:5000`, событие `state_update` приходит **4 раза в секунду**.
+
+```python
+from socketio import Client
+
+sio = Client()
+
+@sio.on("state_update")
+def on_state(data):
+    print(data["pose"])        # позиция
+    print(data["range_m"])     # дальномер
+    print(data["actuators"])   # {'claw': 'closed', 'laser': 'off'}
+    print(data["battery"])     # заряд батареи
+    print(data["speed_profile"])
+
+sio.connect("http://192.168.1.42:5000")
+
+# Отправить команду через WebSocket
+sio.emit("send_command", {"command": "найди синий мяч"})
+sio.emit("set_speed_profile", {"profile": "slow"})
+sio.emit("patrol_command",    {"command": "start"})
+sio.emit("follow_me_command", {"command": "start"})
+```
+
+---
+
 # Samurai Simulator — REST API Reference
 
 ## Overview
@@ -1096,14 +1269,22 @@ The Android app supports two connection modes:
 - Commands sent via `POST /api/fsm/command`
 - Full control: velocity, actuators, FSM transitions, zones
 
-### Robot Mode (MQTT)
-- Commands sent via `samurai/<robotId>/voice_command` topic
-- Status received from `samurai/<robotId>/status` topic
+### Robot Mode (MQTT + REST API)
+- Voice commands sent via `samurai/<robotId>/voice_command` MQTT topic
+- Status received from `samurai/<robotId>/status` MQTT topic
+- REST API also used for dashboard data (set IP to compute node address)
 - Voice recognition via Vosk (offline, Russian)
+- Default server address: `raspberrypi.local` (mDNS, requires avahi on laptop)
 
 ### App Tabs
 1. **Управление** — FSM state, quick commands, actuators, joystick, voice input
-2. **Камера** — live camera feed with detection list
-3. **Карта** — arena map, ball positions, zones, robot path
+2. **Камера** — live camera feed with YOLO detection list
+3. **Карта** — SLAM map, ball positions, forbidden zones, robot path
 4. **Датчики** — ultrasonic, IMU, velocity, pose, actuator state, event log
-5. **Настройки** — connection mode (simulator/robot), IP, port, robot ID
+5. **Авто** — autonomous control:
+   - **Профиль скорости** — slow (0.10 m/s) / normal (0.20 m/s) / fast (0.30 m/s)
+   - **Патрулирование** — set waypoints (X, Y), start/stop patrol with progress bar
+   - **Следование за человеком** — start/stop, tracking status and distance display
+   - **Запись маршрута** — record route by name, stop, play back saved routes
+   - **Управление картами** — save SLAM map by name, load from saved list
+6. **Настройки** — connection mode (simulator/robot), IP, port, robot ID

@@ -8,6 +8,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,26 +33,26 @@ private val FSM_STATES = listOf(
 )
 
 private val FSM_COLORS = mapOf(
-    "IDLE" to Color(0xFF607D8B),
-    "SEARCHING" to Color(0xFF4CAF50),
-    "TARGETING" to Color(0xFFFF9800),
+    "IDLE"       to Color(0xFF607D8B),
+    "SEARCHING"  to Color(0xFF4CAF50),
+    "TARGETING"  to Color(0xFFFF9800),
     "APPROACHING" to Color(0xFFE65100),
-    "GRABBING" to Color(0xFF9C27B0),
-    "BURNING" to Color(0xFFF44336),
-    "CALLING" to Color(0xFF2196F3),
-    "RETURNING" to Color(0xFF8BC34A),
+    "GRABBING"   to Color(0xFF9C27B0),
+    "BURNING"    to Color(0xFFF44336),
+    "CALLING"    to Color(0xFF2196F3),
+    "RETURNING"  to Color(0xFF8BC34A),
 )
 
 private val COLOUR_MAP = mapOf(
-    "red" to Color(0xFFEF5350), "blue" to Color(0xFF42A5F5),
-    "green" to Color(0xFF66BB6A), "yellow" to Color(0xFFFFEB3B),
-    "orange" to Color(0xFFFF9800), "white" to Color(0xFFFAFAFA),
-    "black" to Color(0xFF424242),
+    "red"    to Color(0xFFEF5350), "blue"   to Color(0xFF42A5F5),
+    "green"  to Color(0xFF66BB6A), "yellow" to Color(0xFFFFEB3B),
+    "orange" to Color(0xFFFF9800),
 )
 
 private val COLOUR_RU = mapOf(
-    "red" to "красный", "blue" to "синий", "green" to "зелёный",
-    "yellow" to "жёлтый", "orange" to "оранжевый",
+    "red"    to "красный", "blue"   to "синий",
+    "green"  to "зелёный","yellow" to "жёлтый",
+    "orange" to "оранжевый",
 )
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
@@ -74,6 +76,8 @@ fun ControlScreen(
     onForceState: (String) -> Unit,
 ) {
     var manualCommand by remember { mutableStateOf("") }
+    val state = robotState.fsm.state
+    val color = FSM_COLORS[state] ?: Color.Gray
 
     Column(
         modifier = Modifier
@@ -82,14 +86,30 @@ fun ControlScreen(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // ── FSM State ──
+
+        // ── Emergency Stop ────────────────────────────────────────
+        Button(
+            onClick = onStop,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+            shape = RoundedCornerShape(8.dp),
+            enabled = isConnected
+        ) {
+            Icon(Icons.Default.Emergency, contentDescription = null,
+                modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("ЭКСТРЕННАЯ ОСТАНОВКА", fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp)
+        }
+
+        // ── FSM State ─────────────────────────────────────────────
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("Состояние FSM", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
 
-                val state = robotState.fsm.state
-                val color = FSM_COLORS[state] ?: Color.Gray
                 Surface(
                     color = color.copy(alpha = 0.2f),
                     shape = RoundedCornerShape(6.dp),
@@ -133,7 +153,7 @@ fun ControlScreen(
                     }
                 }
 
-                // Force transition buttons
+                // Force transition (simulator)
                 if (connectionMode == ConnectionMode.SIMULATOR) {
                     Spacer(Modifier.height(8.dp))
                     Text("Принудительный переход", fontSize = 10.sp, color = Color.Gray)
@@ -143,9 +163,8 @@ fun ControlScreen(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         FSM_STATES.forEach { s ->
-                            val isCurrent = s == state
                             FilterChip(
-                                selected = isCurrent,
+                                selected = s == state,
                                 onClick = { onForceState(s) },
                                 label = { Text(s, fontSize = 10.sp) },
                             )
@@ -155,13 +174,12 @@ fun ControlScreen(
             }
         }
 
-        // ── Quick Commands ──
+        // ── Quick Commands ────────────────────────────────────────
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("Быстрые команды", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
 
-                // Colour search buttons
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -169,6 +187,7 @@ fun ControlScreen(
                     COLOUR_RU.forEach { (en, ru) ->
                         Button(
                             onClick = { sendCommand("найди $ru мяч") },
+                            enabled = isConnected,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = (COLOUR_MAP[en] ?: Color.Gray).copy(alpha = 0.2f),
                                 contentColor = COLOUR_MAP[en] ?: Color.Gray
@@ -182,19 +201,22 @@ fun ControlScreen(
                 }
 
                 Spacer(Modifier.height(6.dp))
-
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Button(
-                        onClick = onStop,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935)),
+                    OutlinedButton(
+                        onClick = { sendCommand("домой") },
+                        enabled = isConnected,
                         modifier = Modifier.weight(1f)
-                    ) { Text("СТОП") }
-                    OutlinedButton(onClick = { sendCommand("домой") }, modifier = Modifier.weight(1f)) {
-                        Text("Домой")
-                    }
-                    OutlinedButton(onClick = { sendCommand("сожги лазером") }, modifier = Modifier.weight(1f)) {
-                        Text("Лазер")
-                    }
+                    ) { Text("Домой") }
+                    OutlinedButton(
+                        onClick = { sendCommand("сожги лазером") },
+                        enabled = isConnected,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Лазер") }
+                    OutlinedButton(
+                        onClick = { sendCommand("вызови вторую машину") },
+                        enabled = isConnected,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Вызов") }
                 }
 
                 if (connectionMode == ConnectionMode.SIMULATOR) {
@@ -208,68 +230,95 @@ fun ControlScreen(
             }
         }
 
-        // ── Actuators ──
-        if (connectionMode == ConnectionMode.SIMULATOR) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Актуаторы", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { onSetClaw(!robotState.actuators.claw_open) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (robotState.actuators.claw_open)
-                                    Color(0xFF4CAF50).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = if (robotState.actuators.claw_open)
-                                    Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Клешня: ${if (robotState.actuators.claw_open) "ОТКР" else "ЗАКР"}")
-                        }
-                        Button(
-                            onClick = { onSetLaser(!robotState.actuators.laser_on) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (robotState.actuators.laser_on)
-                                    Color(0xFFF44336).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = if (robotState.actuators.laser_on)
-                                    Color(0xFFF44336) else MaterialTheme.colorScheme.onSurface
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Лазер: ${if (robotState.actuators.laser_on) "ВКЛ" else "ВЫКЛ"}")
-                        }
+        // ── Actuators (available in both modes) ───────────────────
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Актуаторы", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val clawOpen = robotState.actuators.isClawOpen
+                    Button(
+                        onClick = { onSetClaw(!clawOpen) },
+                        enabled = isConnected,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (clawOpen) Color(0xFF4CAF50).copy(alpha = 0.2f)
+                                            else MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor   = if (clawOpen) Color(0xFF4CAF50)
+                                            else MaterialTheme.colorScheme.onSurface
+                        ),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.PanTool, null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Клешня: ${if (clawOpen) "ОТКР" else "ЗАКР"}", fontSize = 12.sp)
+                    }
+
+                    val laserOn = robotState.actuators.isLaserOn
+                    Button(
+                        onClick = { onSetLaser(!laserOn) },
+                        enabled = isConnected,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (laserOn) Color(0xFFF44336).copy(alpha = 0.2f)
+                                            else MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor   = if (laserOn) Color(0xFFF44336)
+                                            else MaterialTheme.colorScheme.onSurface
+                        ),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.FlashOn, null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Лазер: ${if (laserOn) "ВКЛ" else "ВЫКЛ"}", fontSize = 12.sp)
                     }
                 }
             }
         }
 
-        // ── Joystick Velocity Control ──
-        if (connectionMode == ConnectionMode.SIMULATOR) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("Управление скоростью", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(8.dp))
-                    JoystickControl(onSetVelocity = onSetVelocity, onStop = onStop)
-                }
+        // ── Joystick (available in both modes) ────────────────────
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Управление скоростью", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                JoystickControl(
+                    enabled = isConnected,
+                    onSetVelocity = onSetVelocity,
+                    onStop = onStop
+                )
             }
         }
 
-        // ── Voice Recognition ──
+        // ── Voice Recognition ─────────────────────────────────────
+        val modelError       by vosk.modelError.collectAsState()
+        val downloadProgress by vosk.downloadProgress.collectAsState()
+        val isDownloading = downloadProgress in 0..100
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("Голосовое управление", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = if (!modelReady) "Загрузка модели..."
-                    else if (isListening) "Слушаю..."
-                    else "Готов",
-                    color = if (isListening) Color(0xFF4CAF50) else Color.Gray,
+                    text = when {
+                        modelError != null -> "Ошибка: $modelError"
+                        isDownloading      -> "Скачивание модели... $downloadProgress%"
+                        !modelReady        -> "Инициализация..."
+                        isListening        -> "Слушаю..."
+                        else               -> "Готов"
+                    },
+                    color = when {
+                        modelError != null -> Color(0xFFEF5350)
+                        isListening        -> Color(0xFF4CAF50)
+                        else               -> Color.Gray
+                    },
                     fontSize = 13.sp
                 )
+                if (isDownloading) {
+                    Spacer(Modifier.height(4.dp))
+                    LinearProgressIndicator(
+                        progress = downloadProgress / 100f,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -288,7 +337,7 @@ fun ControlScreen(
             }
         }
 
-        // ── Manual Command ──
+        // ── Manual Command ────────────────────────────────────────
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("Ручная команда", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -315,10 +364,11 @@ fun ControlScreen(
             }
         }
 
-        // ── Log ──
+        // ── Command Log ───────────────────────────────────────────
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("Лог команд (${commandLog.size})", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("Лог команд (${commandLog.size})", fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 if (commandLog.isEmpty()) {
                     Text("Пусто", fontSize = 12.sp, color = Color.Gray)
@@ -336,6 +386,7 @@ fun ControlScreen(
 
 @Composable
 private fun JoystickControl(
+    enabled: Boolean,
     onSetVelocity: (Double, Double) -> Unit,
     onStop: () -> Unit,
 ) {
@@ -343,17 +394,17 @@ private fun JoystickControl(
     var offsetY by remember { mutableFloatStateOf(0f) }
     val maxRadius = 180f
 
-    Box(
-        modifier = Modifier.size(200.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        // Background circle
+    Box(modifier = Modifier.size(200.dp), contentAlignment = Alignment.Center) {
         Box(
             modifier = Modifier
                 .size(200.dp)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .pointerInput(Unit) {
+                .background(
+                    if (enabled) MaterialTheme.colorScheme.surfaceVariant
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                )
+                .pointerInput(enabled) {
+                    if (!enabled) return@pointerInput
                     detectDragGestures(
                         onDragStart = { },
                         onDrag = { change, dragAmount ->
@@ -369,47 +420,32 @@ private fun JoystickControl(
                             val ang = (-offsetX / maxRadius * 2.0).coerceIn(-2.0, 2.0)
                             onSetVelocity(lin, ang)
                         },
-                        onDragEnd = {
-                            offsetX = 0f
-                            offsetY = 0f
-                            onStop()
-                        },
-                        onDragCancel = {
-                            offsetX = 0f
-                            offsetY = 0f
-                            onStop()
-                        },
+                        onDragEnd = { offsetX = 0f; offsetY = 0f; onStop() },
+                        onDragCancel = { offsetX = 0f; offsetY = 0f; onStop() },
                     )
                 }
         ) {
-            // Center marker
             Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
+                modifier = Modifier.size(8.dp).clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.3f))
                     .align(Alignment.Center)
             )
         }
 
-        // Knob
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .offset(
-                    x = (offsetX / 3).dp,
-                    y = (offsetY / 3).dp,
-                )
+                .offset(x = (offsetX / 3).dp, y = (offsetY / 3).dp)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                .background(
+                    if (enabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                )
         )
     }
 
     Spacer(Modifier.height(4.dp))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly
-    ) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
         val lin = if (abs(offsetY) > 0.01f) (-offsetY / maxRadius * 0.3) else 0.0
         val ang = if (abs(offsetX) > 0.01f) (-offsetX / maxRadius * 2.0) else 0.0
         Text("Lin: ${"%.2f".format(lin)} м/с", fontSize = 11.sp, color = Color.Gray)

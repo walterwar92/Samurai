@@ -4,7 +4,7 @@ compute_bringup.launch.py — Launch SLAM, Nav2, and YOLO on the laptop.
 Runs on the laptop (i9-13900H) with the same ROS_DOMAIN_ID as the Pi.
 Receives /camera/image_raw, /range, /imu/data, /odom over WiFi DDS.
 
-Usage:
+Usage (обычный режим — multicast):
     docker build -t samurai /home/rs/Projects/Samurai
     docker run -it --net=host -v /home/rs/Projects/Samurai:/root/Samurai samurai bash
     # Inside container:
@@ -13,15 +13,88 @@ Usage:
     source install/setup.bash
     export ROS_DOMAIN_ID=42
     ros2 launch robot_pkg compute_bringup.launch.py
+
+Usage (через мобильный хотспот — unicast, указать IP Raspberry Pi):
+    export ROS_DOMAIN_ID=42
+    ros2 launch robot_pkg compute_bringup.launch.py peer_ip:=192.168.43.XXX
 """
 
 import os
+import socket
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+
+
+def _get_local_ip() -> str:
+    """Auto-detect local network IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+
+def _setup_fastdds_unicast(context, *args, **kwargs):
+    """
+    Если задан peer_ip — генерирует XML конфиг unicast DDS и устанавливает
+    переменную окружения FASTRTPS_DEFAULT_PROFILES_FILE.
+    Вызывается через OpaqueFunction перед стартом нод.
+    """
+    peer_ip = LaunchConfiguration('peer_ip').perform(context)
+    if not peer_ip:
+        print('[DDS] peer_ip не задан — используется стандартный multicast DDS')
+        return []
+
+    local_ip = _get_local_ip()
+    config_path = '/tmp/fastdds_samurai_compute.xml'
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <transport_descriptors>
+        <transport_descriptor>
+            <transport_id>UnicastUDP</transport_id>
+            <type>UDPv4</type>
+        </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="default_participant" is_default_profile="true">
+        <rtps>
+            <useBuiltinTransports>false</useBuiltinTransports>
+            <userTransports>
+                <transport_id>UnicastUDP</transport_id>
+            </userTransports>
+            <builtin>
+                <discovery_config>
+                    <initialPeersList>
+                        <locator>
+                            <udpv4>
+                                <address>{local_ip}</address>
+                            </udpv4>
+                        </locator>
+                        <locator>
+                            <udpv4>
+                                <address>{peer_ip}</address>
+                            </udpv4>
+                        </locator>
+                    </initialPeersList>
+                </discovery_config>
+            </builtin>
+        </rtps>
+    </participant>
+</profiles>"""
+
+    with open(config_path, 'w') as f:
+        f.write(xml)
+
+    os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = config_path
+    print(f'[DDS Unicast] Ноутбук IP: {local_ip} | Pi IP: {peer_ip} | Конфиг: {config_path}')
+    return []
 
 
 def generate_launch_description():
@@ -30,6 +103,16 @@ def generate_launch_description():
 
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', default_value='false')
+
+    peer_ip_arg = DeclareLaunchArgument(
+        'peer_ip', default_value='',
+        description=(
+            'IP Raspberry Pi в сети хотспота для unicast DDS. '
+            'Оставь пустым если оба устройства в одной LAN с multicast. '
+            'Пример: peer_ip:=192.168.43.100'))
+
+    # Настройка unicast DDS (выполняется до старта нод)
+    unicast_setup = OpaqueFunction(function=_setup_fastdds_unicast)
 
     # ── robot_localization (EKF: fuse wheel odom + IMU) ──────
     ekf_node = Node(
@@ -146,7 +229,12 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Аргументы
         use_sim_time_arg,
+        peer_ip_arg,
+        # Unicast DDS (если задан peer_ip)
+        unicast_setup,
+        # Ноды
         ekf_node,
         depth_to_scan_node,
         slam_toolbox_node,

@@ -85,23 +85,42 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = serverIp,
                     onValueChange = onServerIpChange,
-                    label = { Text("IP-адрес сервера") },
+                    label = { Text("IP-адрес или hostname") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                 )
 
-                if (connectionMode == ConnectionMode.SIMULATOR) {
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = serverPort,
-                        onValueChange = onServerPortChange,
-                        label = { Text("Порт") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                // Быстрый выбор хоста
+                Spacer(Modifier.height(6.dp))
+                Text("Быстрый выбор:", fontSize = 11.sp, color = Color.Gray)
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SuggestionChip(
+                        onClick = { onServerIpChange("raspberrypi.local") },
+                        label = { Text("raspberrypi.local", fontSize = 11.sp) }
+                    )
+                    SuggestionChip(
+                        onClick = { onServerIpChange("192.168.43.1") },
+                        label = { Text("192.168.43.1", fontSize = 11.sp) }
                     )
                 }
+                Text(
+                    "Совет: raspberrypi.local работает через mDNS — не нужно знать IP.",
+                    fontSize = 10.sp,
+                    color = Color.Gray,
+                    lineHeight = 14.sp
+                )
+
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = serverPort,
+                    onValueChange = onServerPortChange,
+                    label = { Text("Порт") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                )
 
                 Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
