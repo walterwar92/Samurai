@@ -22,14 +22,22 @@ from collections import deque
 
 
 def _get_local_ip() -> str:
-    """Auto-detect local network IP address."""
+    """Auto-detect local network IP address.
+
+    Uses a non-routed UDP connect trick (no packets sent).
+    2-second timeout prevents hanging when network is unavailable.
+    """
+    import logging
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            'IP auto-detection failed (%s) — falling back to 127.0.0.1', exc)
         return '127.0.0.1'
 
 import cv2

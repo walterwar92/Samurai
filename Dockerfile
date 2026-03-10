@@ -1,6 +1,15 @@
 # ros-base вместо humble-desktop → образ ~800MB вместо ~2.5GB (−1.7GB)
 # Без GUI компонентов (Rviz, Qt), которые не нужны в headless режиме
-FROM ros:humble-ros-base
+#
+# Пинируем к конкретной платформе (jammy = Ubuntu 22.04) для
+# детерминированных сборок. Не используем floating tag :humble-ros-base,
+# который может получать breaking-changes при обновлении базового образа.
+FROM ros:humble-ros-base-jammy
+
+# Применяем security-патчи из upstream (часть уязвимостей базового образа
+# закрывается обновлением системных пакетов)
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 # Только нужные ROS2 пакеты
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,6 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-tf2-ros \
     python3-pip \
     python3-colcon-common-extensions \
+    avahi-daemon \
+    avahi-utils \
+    libnss-mdns \
+    dbus \
     && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости:

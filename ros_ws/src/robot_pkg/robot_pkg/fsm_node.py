@@ -36,11 +36,29 @@ Publishes:
 
 import json
 import math
+import re
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Bool, Float32
 from sensor_msgs.msg import Range
 from geometry_msgs.msg import Twist, PoseStamped
+
+# Maximum voice command length — discard abnormally long strings that could
+# indicate a runaway TTS or injection attempt.
+_MAX_CMD_LEN = 200
+
+# Precompiled patterns for voice command parsing.
+# Using re.search() with word-stem anchors handles both nominative and
+# inflected forms without repeated O(n) string scans.
+_P_CALLING  = re.compile(r'вызови.{0,20}машин')
+_P_GRAB     = re.compile(r'получи|возьми|найди')
+_P_BURN     = re.compile(r'сожги|прожги|лазер')
+_P_STOP     = re.compile(r'стоп|остановись')
+_P_HOME     = re.compile(r'домой|вернись')
+_P_PATROL   = re.compile(r'патрул|обход')
+_P_FOLLOW   = re.compile(r'следуй|за мной')
+_P_RECORD   = re.compile(r'запиши путь|запись')
+_P_REPLAY   = re.compile(r'воспроизведи|повтори путь')
 
 
 class State:
@@ -98,14 +116,23 @@ class FSMNode(Node):
 
     # ── Voice command parser ─────────────────────────────────
     def _voice_cb(self, msg: String):
-        text = msg.data.lower().strip()
+        raw = msg.data
+
+        # Input validation: reject empty or suspiciously long strings
+        if not raw or len(raw) > _MAX_CMD_LEN:
+            self.get_logger().warning(
+                f'Voice command rejected: length={len(raw)} '
+                f'(max={_MAX_CMD_LEN})')
+            return
+
+        text = raw.lower().strip()
         self.get_logger().info(f'Voice: "{text}"')
 
-        if 'вызови' in text and 'машин' in text:
+        if _P_CALLING.search(text):
             self._transition(State.CALLING)
             return
 
-        if 'получи' in text or 'возьми' in text or 'найди' in text:
+        if _P_GRAB.search(text):
             self._target_action = 'grab'
             self._target_colour = self._extract_colour(text)
             self.get_logger().info(
@@ -113,34 +140,34 @@ class FSMNode(Node):
             self._transition(State.SEARCHING)
             return
 
-        if 'сожги' in text or 'прожги' in text or 'лазер' in text:
+        if _P_BURN.search(text):
             self._target_action = 'burn'
             self._target_colour = self._extract_colour(text)
             self._transition(State.SEARCHING)
             return
 
-        if 'стоп' in text or 'остановись' in text:
+        if _P_STOP.search(text):
             self._transition(State.IDLE)
             return
 
-        if 'домой' in text or 'вернись' in text:
+        if _P_HOME.search(text):
             self._transition(State.RETURNING)
             return
 
-        if 'патрул' in text or 'обход' in text:
+        if _P_PATROL.search(text):
             self._transition(State.PATROLLING)
             return
 
-        if 'следуй' in text or 'за мной' in text:
+        if _P_FOLLOW.search(text):
             self._transition(State.FOLLOWING)
             return
 
-        if 'запиши путь' in text or 'запись' in text:
+        if _P_RECORD.search(text):
             self._pub_string(self._path_cmd_pub, 'record')
             self.get_logger().info('Path recording started')
             return
 
-        if 'воспроизведи' in text or 'повтори путь' in text:
+        if _P_REPLAY.search(text):
             self._transition(State.PATH_REPLAY)
             return
 

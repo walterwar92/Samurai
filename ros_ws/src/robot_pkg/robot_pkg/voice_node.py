@@ -15,6 +15,7 @@ VAD (Voice Activity Detection) via webrtcvad:
 """
 
 import json
+import os
 import threading
 import rclpy
 from rclpy.node import Node
@@ -33,7 +34,9 @@ try:
 except ImportError:
     _VAD = False
 
-VOSK_MODEL_PATH = '/home/pi/vosk-model-ru'
+# Default model path uses ~ so it works for any username (not just 'pi').
+# Override via ROS2 parameter: --ros-args -p model_path:=/custom/path/model
+VOSK_MODEL_PATH = os.path.expanduser('~/vosk-model-ru')
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 4000          # сэмплов за чтение (250ms)
 VAD_FRAME_BYTES = 960      # 30ms фрейм при 16kHz int16 (480 сэмплов × 2 байта)
@@ -44,7 +47,7 @@ class VoiceNode(Node):
     def __init__(self):
         super().__init__('voice_node')
         self.declare_parameter('model_path', VOSK_MODEL_PATH)
-        model_path = self.get_parameter('model_path').value
+        model_path = os.path.expanduser(self.get_parameter('model_path').value)
 
         self._pub = self.create_publisher(String, '/voice_command', 10)
 
@@ -92,12 +95,20 @@ class VoiceNode(Node):
 
     def _listen_loop(self):
         while self._running:
-            data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            try:
+                data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            except OSError as exc:
+                self.get_logger().warning(f'Audio read error: {exc}')
+                continue
             # Пропускаем тишину — экономим CPU Vosk
             if not self._has_speech(data):
                 continue
             if self._recognizer.AcceptWaveform(data):
-                result = json.loads(self._recognizer.Result())
+                try:
+                    result = json.loads(self._recognizer.Result())
+                except json.JSONDecodeError as exc:
+                    self.get_logger().warning(f'Vosk JSON parse error: {exc}')
+                    continue
                 text = result.get('text', '').strip()
                 if text:
                     self.get_logger().info(f'Heard: "{text}"')
@@ -107,6 +118,10 @@ class VoiceNode(Node):
 
     def destroy_node(self):
         self._running = False
+        # Wait up to 2 s for the recognition thread to notice _running=False
+        # and exit cleanly before we tear down the audio device.
+        if hasattr(self, '_thread') and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
         if _HW:
             self._stream.stop_stream()
             self._stream.close()

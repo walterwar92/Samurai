@@ -77,14 +77,22 @@ from collections import deque
 
 
 def _get_local_ip() -> str:
-    """Auto-detect local network IP address."""
+    """Auto-detect local network IP address.
+
+    Uses a non-routed UDP connect trick (no packets sent).
+    2-second timeout prevents hanging when network is unavailable.
+    """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except OSError as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            'IP auto-detection failed (%s) — falling back to 127.0.0.1', exc)
         return '127.0.0.1'
 
 
@@ -466,27 +474,52 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
         allow_headers=['*'],
     )
 
-    # Список активных WebSocket соединений для state_update push
+    # Список активных WebSocket соединений для state_update push.
+    # asyncio.Lock используется вместо threading.Lock — все операции
+    # с этим списком происходят внутри одного event loop (coroutines).
     _ws_clients: list[WebSocket] = []
-    _ws_lock = threading.Lock()
+    _ws_lock = asyncio.Lock()
 
     # ── Background: push state to all WS clients (4 Hz) ──────────
     async def _ws_push_loop():
+        _last_json: str = ''
         while True:
             await asyncio.sleep(0.25)
+
+            async with _ws_lock:
+                if not _ws_clients:
+                    continue  # нет клиентов — пропускаем сериализацию
+
+            # Сериализуем один раз вне lock
             state_json = json.dumps(ros_node.get_state())
-            dead = []
-            with _ws_lock:
+
+            # Пропускаем отправку если состояние не изменилось (экономим CPU)
+            nonlocal_state = _ws_push_loop.__dict__
+            if state_json == nonlocal_state.get('_last_json', ''):
+                continue
+            nonlocal_state['_last_json'] = state_json
+
+            dead: list[WebSocket] = []
+            async with _ws_lock:
                 clients = list(_ws_clients)
+
             for ws in clients:
                 try:
                     await ws.send_text(state_json)
-                except Exception:
+                except (WebSocketDisconnect, RuntimeError):
                     dead.append(ws)
+                except Exception as exc:
+                    # Unexpected error — log and mark dead
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        'WebSocket send error: %s', exc)
+                    dead.append(ws)
+
             if dead:
-                with _ws_lock:
+                async with _ws_lock:
                     for ws in dead:
-                        _ws_clients.remove(ws)
+                        if ws in _ws_clients:
+                            _ws_clients.remove(ws)
 
     @app.on_event('startup')
     async def startup():
@@ -524,13 +557,15 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
     @app.websocket('/ws/state')
     async def ws_state(ws: WebSocket):
         await ws.accept()
-        with _ws_lock:
+        async with _ws_lock:
             _ws_clients.append(ws)
         try:
             while True:
                 await ws.receive_text()  # держим соединение живым
         except WebSocketDisconnect:
-            with _ws_lock:
+            pass
+        finally:
+            async with _ws_lock:
                 if ws in _ws_clients:
                     _ws_clients.remove(ws)
 
@@ -548,7 +583,8 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
                     '/api/camera/frame', '/api/camera/frame.json',
                     '/api/map/image', '/api/map/info', '/api/map/list',
                     '/api/path_recorder/list', '/api/log'],
-            'POST': ['/api/fsm/command', '/api/actuators/claw', '/api/actuators/laser',
+            'POST': ['/api/emergency_stop', '/api/fsm/command',
+                     '/api/actuators/claw', '/api/actuators/laser',
                      '/api/speed_profile', '/api/patrol/command', '/api/patrol/waypoints',
                      '/api/follow_me', '/api/path_recorder/command',
                      '/api/map/save', '/api/map/load'],
@@ -693,12 +729,21 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
     # REST API — POST
     # ==========================================================
 
+    @app.post('/api/emergency_stop')
+    async def api_emergency_stop():
+        """Immediate stop — publishes 'стоп' command regardless of FSM state."""
+        ros_node.send_command('стоп')
+        return _ok(action='emergency_stop')
+
     @app.post('/api/fsm/command')
     async def api_fsm_command(req: Request):
         body = await req.json()
         command = body.get('command', body.get('text', '')).strip()
         if not command:
             return _err('"command" field is required')
+        # Reject unreasonably long strings (max 200 chars)
+        if len(command) > 200:
+            return _err('command too long (max 200 characters)')
         ros_node.send_command(command)
         return _ok(sent=command)
 

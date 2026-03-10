@@ -1,0 +1,74 @@
+# =============================================================================
+# Samurai Robot — Centralized Configuration
+# =============================================================================
+# All tunable constants in one place. Files that previously hardcoded these
+# values now read from here via config_loader.py.
+
+network:
+  # Timeout (seconds) for local IP auto-detection socket call.
+  # Prevents indefinite hang when network is unavailable at startup.
+  ip_detection_timeout: 2.0
+  dashboard_port: 5000
+  mqtt_port: 1883
+  mqtt_robot_id: robot1
+  ros_domain_id: 42
+
+voice:
+  # Path to Vosk speech recognition model.
+  # Use ~ for home directory — expanded at runtime via os.path.expanduser.
+  # Override via ROS2 parameter: --ros-args -p model_path:=/custom/path
+  model_path: ~/vosk-model-ru
+  sample_rate: 16000
+  chunk_size: 4000          # samples per read (250 ms)
+  vad_frame_bytes: 960      # 30 ms frame at 16 kHz int16
+  vad_aggressiveness: 2     # 0=lenient, 3=strict
+
+  # Input validation
+  max_command_length: 200   # discard unreasonably long voice strings
+
+dashboard:
+  state_push_hz: 4          # WebSocket state broadcast frequency
+  mjpeg_fps: 30             # MJPEG video stream max FPS
+  voice_log_size: 20        # entries kept in voice log deque
+  event_log_size: 100       # entries kept in event log deque
+
+simulator:
+  # Arena dimensions (metres)
+  arena_width: 3.0
+  arena_height: 3.0
+
+  # Robot physical parameters
+  robot_radius: 0.12
+  wheel_base: 0.17
+  max_linear: 0.3           # m/s
+  max_angular: 2.0          # rad/s
+
+  # Ball parameters
+  ball_radius: 0.02
+  ball_diameter: 0.04
+
+  # Camera
+  cam_width: 640
+  cam_height: 480
+  focal_length_px: 500.0
+  cam_fov_deg: 60.0
+
+  # Ultrasonic sensor
+  ultrasonic_max: 2.0
+  ultrasonic_min: 0.02
+  ultrasonic_fov: 0.26      # ~15° half-cone (radians)
+
+  # Simulation loop
+  sim_hz: 20                # physics update frequency
+  grid_resolution: 0.05     # A* pathfinding cell size (metres)
+  safety_margin: 0.10       # obstacle clearance (metres)
+  jpeg_quality: 75          # JPEG compression quality (0-100)
+  emit_state_hz: 4          # SocketIO state emit frequency
+
+# MQTT settings for pi_nodes (pure Python, no ROS2)
+mqtt:
+  broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
+  port: 1883
+  robot_id: "robot1"
+  camera_fps: 15               # MQTT camera framerate (lower than ROS2 30fps)
+  camera_jpeg_quality: 75

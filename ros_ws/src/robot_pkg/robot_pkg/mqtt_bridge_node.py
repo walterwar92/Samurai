@@ -24,18 +24,29 @@ import paho.mqtt.client as mqtt
 
 
 def _get_local_ip() -> str:
-    """Auto-detect local network IP address."""
+    """Auto-detect local network IP address.
+
+    Uses a non-routed UDP connect trick (no packets sent).
+    2-second timeout prevents hanging when network is unavailable.
+    Called inside __init__ (not at module level) to avoid blocking on import.
+    """
+    import logging
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            'IP auto-detection failed (%s) — falling back to 127.0.0.1', exc)
         return '127.0.0.1'
 
 
-MQTT_BROKER = _get_local_ip()
+# Default broker: resolved lazily inside __init__ to avoid blocking on import.
+# Override via ROS2 parameter: --ros-args -p broker:=192.168.1.100
+MQTT_BROKER = '127.0.0.1'
 MQTT_PORT = 1883
 ROBOT_ID = 'robot1'
 
@@ -44,7 +55,11 @@ class MqttBridgeNode(Node):
     def __init__(self):
         super().__init__('mqtt_bridge_node')
 
-        self.declare_parameter('broker', MQTT_BROKER)
+        # Resolve default broker IP at startup (inside __init__, not at module
+        # level) so the blocking call happens in a controlled context with a
+        # timeout already set inside _get_local_ip().
+        default_broker = _get_local_ip()
+        self.declare_parameter('broker', default_broker)
         self.declare_parameter('port', MQTT_PORT)
         self.declare_parameter('robot_id', ROBOT_ID)
 

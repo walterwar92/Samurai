@@ -228,10 +228,30 @@ def generate_launch_description():
         output='screen',
     )
 
+    # ── MQTT ↔ ROS2 Bridge (connects to Pi via MQTT) ─────────
+    # Pi runs pure Python + MQTT (no ROS2), so this bridge
+    # translates MQTT sensor data → ROS2 topics and vice versa.
+    mqtt_broker_arg = DeclareLaunchArgument(
+        'mqtt_broker', default_value='',
+        description='MQTT broker IP (Pi address). Uses peer_ip if empty.')
+
+    mqtt_bridge_compute_node = Node(
+        package='robot_pkg',
+        executable='mqtt_bridge_compute',
+        name='mqtt_bridge_compute',
+        output='screen',
+        parameters=[{
+            'mqtt_broker': LaunchConfiguration('mqtt_broker'),
+            'mqtt_port': 1883,
+            'robot_id': 'robot1',
+        }],
+    )
+
     return LaunchDescription([
         # Аргументы
         use_sim_time_arg,
         peer_ip_arg,
+        mqtt_broker_arg,
         # Unicast DDS (если задан peer_ip)
         unicast_setup,
         # Ноды
@@ -247,4 +267,5 @@ def generate_launch_description():
         path_recorder_node,
         qr_detector_node,
         gesture_node,
+        mqtt_bridge_compute_node,
     ])

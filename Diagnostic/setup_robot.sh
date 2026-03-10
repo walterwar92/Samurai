@@ -70,8 +70,10 @@ for pkg in \
     python3-gpiozero \
     build-essential \
     cmake \
+    linux-libc-dev \
     python3-colcon-common-extensions \
-    portaudio19-dev; do
+    ros-humble-tf2-ros \
+    ros-humble-tf2-geometry-msgs; do
     apt_install "$pkg"
 done
 
@@ -123,10 +125,9 @@ for pkg in \
 done
 
 log_info "Installing pip packages (ROS2 node dependencies)..."
-# webrtcvad: VAD для voice_node — пропуск тишины, -70% CPU на Vosk
 # transforms3d: для вычислений ориентации (ekf, nav)
+# Голосовое управление — на телефоне (VoskRecognizer.kt) через MQTT
 for pkg in \
-    webrtcvad \
     transforms3d; do
     pip_install "$pkg"
 done
@@ -212,7 +213,6 @@ check_package "busio"
 check_package "adafruit_pca9685"
 check_package "adafruit_motor"
 check_package "rpi_ws281x"
-check_package "webrtcvad"
 
 # onnxruntime — опционально
 python3 -c "import onnxruntime" 2>/dev/null && \

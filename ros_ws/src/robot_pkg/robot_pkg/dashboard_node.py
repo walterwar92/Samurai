@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
 dashboard_node — Web dashboard for Samurai robot monitoring.
+*** ON-ROBOT (Flask/SocketIO) version — runs directly on Raspberry Pi. ***
+
+NOTE: The primary/recommended dashboard is compute_node/dashboard_node.py
+(FastAPI + uvicorn), which runs on the compute laptop with full API coverage,
+async WebSocket push, and better performance. Use this Flask version only when
+running the robot standalone without a compute laptop.
 
 Runs on the compute laptop alongside YOLO/SLAM/Nav2.
 Provides a real-time web interface at http://localhost:5000
@@ -37,13 +43,22 @@ from collections import deque
 
 
 def _get_local_ip() -> str:
+    """Auto-detect local network IP address.
+
+    Uses a non-routed UDP connect trick (no packets sent).
+    2-second timeout prevents hanging when network is unavailable.
+    """
+    import logging
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            'IP auto-detection failed (%s) — falling back to 127.0.0.1', exc)
         return '127.0.0.1'
 
 import cv2

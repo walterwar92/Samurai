@@ -106,7 +106,7 @@ check_packages() {
     fi
 
     log_info "Устанавливаю: ${missing[*]}"
-    python3 -m pip install --user "${missing[@]}" \
+    python3 -m pip install --user --break-system-packages "${missing[@]}" \
         || die "Ошибка установки пакетов"
 
     # Повторная проверка
