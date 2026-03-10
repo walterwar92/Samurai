@@ -232,8 +232,8 @@ def generate_launch_description():
     # Pi runs pure Python + MQTT (no ROS2), so this bridge
     # translates MQTT sensor data → ROS2 topics and vice versa.
     mqtt_broker_arg = DeclareLaunchArgument(
-        'mqtt_broker', default_value='',
-        description='MQTT broker IP (Pi address). Uses peer_ip if empty.')
+        'mqtt_broker', default_value='raspberrypi.local',
+        description='MQTT broker IP (Pi address). Default: raspberrypi.local (mDNS).')
 
     mqtt_bridge_compute_node = Node(
         package='robot_pkg',

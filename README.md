@@ -137,7 +137,7 @@ Samurai/
   - Adeept Robot HAT V3.1 (PCA9685 I2C 0x5F)
   - MPU6050 (IMU, I2C 0x68)
   - ADS7830 (АЦП батареи, I2C 0x48)
-  - HC-SR04 (ультразвук, GPIO Trig=27, Echo=22)
+  - HC-SR04 (ультразвук, GPIO Trig=23, Echo=24)
   - Raspberry Pi Camera Module (CSI)
   - Лазер (GPIO17)
   - Моторы с драйверами
