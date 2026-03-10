@@ -54,6 +54,7 @@ class MqttBridgeCompute(Node):
         self._mqtt = mqtt.Client(client_id=f'samurai_compute_bridge')
         self._mqtt.on_connect = self._on_mqtt_connect
         self._mqtt.on_message = self._on_mqtt_message
+        self._mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
         self._mqtt.connect_async(broker, port)
         self._mqtt.loop_start()
 
@@ -109,7 +110,7 @@ class MqttBridgeCompute(Node):
             t.transform.translation.x = x
             t.transform.translation.y = y
             t.transform.translation.z = z
-            # Euler → quaternion (simplified for small angles)
+            # Euler → quaternion
             cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
             cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
             cr, sr = math.cos(roll / 2), math.sin(roll / 2)
