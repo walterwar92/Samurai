@@ -1,0 +1,35 @@
+# =============================================================================
+# Dockerfile.cpp_builder — кросс-компиляция robot_pkg_cpp для ARM64 (Raspberry Pi 4)
+#
+# Используется только для сборки C++ нод на ноутбуке.
+# Запускать через build_cpp_for_pi.sh, не напрямую.
+#
+# Результат: бинарники imu_node и motor_node для ARM64 Linux
+# =============================================================================
+FROM --platform=linux/arm64 ros:humble-ros-base-jammy
+
+# Применяем security-патчи из upstream
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# Зависимости для сборки (те же, что в setup_robot.sh)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    linux-libc-dev \
+    python3-colcon-common-extensions \
+    ros-humble-tf2-ros \
+    ros-humble-tf2-geometry-msgs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Копируем исходники C++ пакета
+WORKDIR /ros_ws
+COPY ros_ws/src/robot_pkg_cpp src/robot_pkg_cpp/
+
+# Собираем
+RUN /bin/bash -c "\
+    source /opt/ros/humble/setup.bash && \
+    colcon build \
+        --packages-select robot_pkg_cpp \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+        2>&1"

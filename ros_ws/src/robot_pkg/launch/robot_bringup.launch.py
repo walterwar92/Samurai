@@ -1,19 +1,30 @@
 """
-robot_bringup.launch.py — Launch all onboard nodes on Raspberry Pi.
+robot_bringup.launch.py — [DEPRECATED] Launch all onboard nodes on Raspberry Pi.
+
+╔══════════════════════════════════════════════════════════════════════╗
+║  УСТАРЕЛ — Pi теперь использует чистый Python + MQTT (без ROS2)    ║
+║  Новый способ: ./start_robot_mqtt.sh                               ║
+║  Launcher:     python3 -m pi_nodes.robot_launcher                  ║
+╚══════════════════════════════════════════════════════════════════════╝
 
 Runs: motor, ultrasonic, camera, laser, servo, imu, voice, fsm, mqtt_bridge.
 SLAM / Nav2 / YOLO run on the laptop (compute_bringup.launch.py).
 Both machines share ROS_DOMAIN_ID for transparent DDS communication.
 
-Usage:
+Usage (обычный режим — multicast, работает если роутер не блокирует):
   export ROS_DOMAIN_ID=42
   ros2 launch robot_pkg robot_bringup.launch.py
+
+Usage (через мобильный хотспот — unicast, указать IP ноутбука):
+  export ROS_DOMAIN_ID=42
+  ros2 launch robot_pkg robot_bringup.launch.py peer_ip:=192.168.43.XXX
 """
 
+import os
 import socket
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -30,17 +41,79 @@ def _get_local_ip() -> str:
         return '127.0.0.1'
 
 
+def _setup_fastdds_unicast(context, *args, **kwargs):
+    """
+    Если задан peer_ip — генерирует XML конфиг unicast DDS и устанавливает
+    переменную окружения FASTRTPS_DEFAULT_PROFILES_FILE.
+    Вызывается через OpaqueFunction перед стартом нод.
+    """
+    peer_ip = LaunchConfiguration('peer_ip').perform(context)
+    if not peer_ip:
+        print('[DDS] peer_ip не задан — используется стандартный multicast DDS')
+        return []
+
+    local_ip = _get_local_ip()
+    config_path = '/tmp/fastdds_samurai_robot.xml'
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <transport_descriptors>
+        <transport_descriptor>
+            <transport_id>UnicastUDP</transport_id>
+            <type>UDPv4</type>
+        </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="default_participant" is_default_profile="true">
+        <rtps>
+            <useBuiltinTransports>false</useBuiltinTransports>
+            <userTransports>
+                <transport_id>UnicastUDP</transport_id>
+            </userTransports>
+            <builtin>
+                <discovery_config>
+                    <initialPeersList>
+                        <locator>
+                            <udpv4>
+                                <address>{local_ip}</address>
+                            </udpv4>
+                        </locator>
+                        <locator>
+                            <udpv4>
+                                <address>{peer_ip}</address>
+                            </udpv4>
+                        </locator>
+                    </initialPeersList>
+                </discovery_config>
+            </builtin>
+        </rtps>
+    </participant>
+</profiles>"""
+
+    with open(config_path, 'w') as f:
+        f.write(xml)
+
+    os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = config_path
+    print(f'[DDS Unicast] Pi IP: {local_ip} | Ноутбук IP: {peer_ip} | Конфиг: {config_path}')
+    return []
+
+
 def generate_launch_description():
-    # Declare arguments
+    # ── Аргументы запуска ────────────────────────────────────
     broker_arg = DeclareLaunchArgument(
         'mqtt_broker', default_value=_get_local_ip(),
         description='MQTT broker IP address (auto-detected)')
     robot_id_arg = DeclareLaunchArgument(
         'robot_id', default_value='robot1',
         description='Unique robot identifier')
-    vosk_model_arg = DeclareLaunchArgument(
-        'vosk_model', default_value='/home/pi/vosk-model-ru',
-        description='Path to Vosk Russian language model')
+    peer_ip_arg = DeclareLaunchArgument(
+        'peer_ip', default_value='',
+        description=(
+            'IP ноутбука (compute node) в сети хотспота для unicast DDS. '
+            'Оставь пустым если оба устройства в одной LAN с multicast. '
+            'Пример: peer_ip:=192.168.43.50'))
+
+    # Настройка unicast DDS (выполняется до старта нод)
+    unicast_setup = OpaqueFunction(function=_setup_fastdds_unicast)
 
     # ── Sensor / actuator nodes ──────────────────────────────
     motor_node = Node(
@@ -77,13 +150,8 @@ def generate_launch_description():
     )
 
     # ── High-level nodes ─────────────────────────────────────
-    voice_node = Node(
-        package='robot_pkg', executable='voice_node',
-        name='voice_node', output='screen',
-        parameters=[{
-            'model_path': LaunchConfiguration('vosk_model'),
-        }],
-    )
+    # voice_node убран: распознавание речи работает на телефоне (VoskRecognizer.kt)
+    # и передаётся через MQTT → mqtt_bridge_node → /voice_command
 
     fsm_node = Node(
         package='robot_pkg', executable='fsm_node',
@@ -146,10 +214,14 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        broker_arg, robot_id_arg, vosk_model_arg,
+        # Аргументы
+        broker_arg, robot_id_arg, peer_ip_arg,
+        # Unicast DDS (если задан peer_ip)
+        unicast_setup,
+        # Ноды
         motor_node, ultrasonic_node, camera_node,
         laser_node, servo_node, imu_node,
-        voice_node, fsm_node, mqtt_bridge_node,
+        fsm_node, mqtt_bridge_node,
         battery_node, temperature_node, watchdog_node,
         tf_ultrasonic, tf_camera, tf_imu, tf_laser,
     ])

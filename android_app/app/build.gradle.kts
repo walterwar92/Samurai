@@ -52,8 +52,13 @@ dependencies {
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
     implementation("org.eclipse.paho:org.eclipse.paho.android.service:1.1.1")
 
-    // OkHttp for REST API
+    // OkHttp for REST API + WebSocket
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Socket.IO client for push-based state updates (eliminates HTTP polling loop)
+    implementation("io.socket:socket.io-client:2.1.0") {
+        exclude(group = "org.json", module = "json")
+    }
 
     // Gson for JSON parsing
     implementation("com.google.code.gson:gson:2.10.1")

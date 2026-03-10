@@ -11,11 +11,12 @@
 - [Требования](#требования)
 - [Установка](#установка)
   - [1. Raspberry Pi (робот)](#1-raspberry-pi-робот)
-  - [2. Вычислительный узел (опционально)](#2-вычислительный-узел-опционально)
+  - [2. Ноутбук (вычислительный узел)](#2-ноутбук-вычислительный-узел)
   - [3. Android приложение](#3-android-приложение)
 - [Запуск](#запуск)
   - [Симулятор (для разработки)](#симулятор-для-разработки)
-  - [Реальный робот](#реальный-робот)
+  - [Реальный робот — Raspberry Pi](#реальный-робот--raspberry-pi)
+  - [Реальный робот — ноутбук (compute node)](#реальный-робот--ноутбук-compute-node)
   - [Android приложение](#android-приложение)
 - [API Reference](#api-reference)
 - [Архитектура](#архитектура)
@@ -41,31 +42,50 @@
 
 ```
 Samurai/
-├── ros_ws/                      # ROS2 workspace
-│   └── src/robot_pkg/           # Основной ROS2 пакет
-│       ├── robot_pkg/           # Python ноды
-│       │   ├── hardware/        # Драйверы для PCA9685, моторов, серво
-│       │   ├── motor_node.py
-│       │   ├── camera_node.py
-│       │   ├── voice_node.py
-│       │   ├── imu_node.py
-│       │   └── mqtt_bridge_node.py
-│       ├── launch/              # Launch файлы
-│       ├── config/              # Конфигурация nav2, SLAM, localization
-│       └── msg/                 # Пользовательские ROS2 сообщения
+├── start_robot.sh               # 🤖 Запуск всех нод на Raspberry Pi
+├── start_laptop_robot.sh        # 💻 Запуск compute node (ноутбук → реальный робот, Docker)
+├── start_laptop_sim.sh          # 🎮 Запуск симулятора на ноутбуке (без ROS2)
 │
-├── compute_node/                # Вычислительные ноды (можно запускать отдельно)
-│   ├── yolo_detector_node.py   # YOLO детектор (CPU/GPU)
+├── ros_ws/                      # ROS2 workspace
+│   └── src/
+│       ├── robot_pkg/           # Python ноды (Raspberry Pi)
+│       │   ├── robot_pkg/
+│       │   │   ├── hardware/        # Драйверы PCA9685, моторов, серво
+│       │   │   ├── motor_node.py    # (Python fallback)
+│       │   │   ├── imu_node.py      # (Python fallback)
+│       │   │   ├── camera_node.py   # CompressedImage JPEG → DDS -20x трафик
+│       │   │   ├── voice_node.py    # Vosk ASR + webrtcvad VAD
+│       │   │   ├── fallback_nav_node.py  # Автономность при отключении ноутбука
+│       │   │   └── mqtt_bridge_node.py
+│       │   ├── launch/
+│       │   ├── config/
+│       │   └── msg/
+│       └── robot_pkg_cpp/       # C++ ноды (реальное время)
+│           ├── src/
+│           │   ├── imu_node.cpp     # MPU6050 via Linux ioctl @ 50 Hz
+│           │   └── motor_node.cpp   # PCA9685 via Linux ioctl @ 20 Hz
+│           ├── CMakeLists.txt
+│           └── package.xml
+│
+├── compute_node/                # Вычислительные ноды (ноутбук, Docker)
+│   ├── yolo_detector_node.py   # YOLO → ONNX Runtime (без PyTorch)
 │   ├── depth_to_scan_node.py   # Конвертация depth -> LaserScan
 │   ├── geofence_map_publisher.py
 │   ├── simulator.py            # 🎮 Симулятор с Flask REST API
-│   └── dashboard_node.py       # Web dashboard
+│   └── dashboard_node.py       # FastAPI + WebSocket /ws/state @ 4 Hz
+│
+├── Diagnostic/                  # Диагностика оборудования
+│   ├── diagnostic.py           # Полная проверка железа Raspberry Pi
+│   └── setup_robot.sh          # Зависимости + сборка C++ нод на Pi
 │
 ├── android_app/                 # Android приложение (Kotlin + Jetpack Compose)
-│   └── app/src/main/           # Управление через MQTT
+│   └── app/src/main/
+│       └── ...api/
+│           └── RobotSocketClient.kt  # Socket.IO push-клиент (вместо polling)
 │
+├── Dockerfile                   # ros:humble-ros-base + onnxruntime + fastapi
 ├── requirements.txt             # Python зависимости
-├── API_REFERENCE.md            # Документация REST API симулятора
+├── API_REFERENCE.md            # Документация REST API
 └── README.md                   # Этот файл
 ```
 
@@ -81,18 +101,21 @@ Samurai/
   - MPU6050 (IMU)
   - HC-SR04 (ультразвуковой датчик)
   - Raspberry Pi Camera Module (CSI)
-  - Микрофон USB
   - Моторы с драйверами
 
 - **Software**:
-  - Ubuntu 22.04 Server (64-bit) для Raspberry Pi
-  - ROS2 Humble Desktop
+  - Raspberry Pi OS (Debian Bookworm / Trixie, 64-bit)
+  - ROS2 Humble (ros-base)
   - Python 3.10+
 
-### Вычислительный узел (опционально, для YOLO)
+### Ноутбук (вычислительный узел)
 
-- Python 3.10+
-- CUDA (для GPU ускорения YOLO, опционально)
+- **Software**:
+  - Linux (проверено на Arch Linux)
+  - Docker + Docker daemon
+  - avahi / nss-mdns (для доступа к Pi по `raspberrypi.local`)
+
+> Docker-образ содержит ROS2 Humble, SLAM Toolbox, Nav2, YOLO и все зависимости — ничего устанавливать отдельно не нужно.
 
 ### Android приложение
 
@@ -105,7 +128,18 @@ Samurai/
 
 ### 1. Raspberry Pi (робот)
 
-#### a) Установка ROS2 Humble
+#### a) Установка зависимостей (одной командой)
+
+```bash
+cd ~/Samurai
+sudo bash Diagnostic/setup_robot.sh
+```
+
+Скрипт установит: Python библиотеки (gpiozero, smbus2, adafruit-pca9685, rpi_ws281x, opencv, picamera2, webrtcvad, onnxruntime), включит I2C/SPI интерфейсы, настроит GPIO daemon и **соберёт C++ ноды** (`robot_pkg_cpp`) через colcon.
+
+> Vosk (распознавание речи) на Raspberry Pi **не устанавливается** — голосовые команды поступают с Android-устройства по MQTT или REST API.
+
+#### b) Установка ROS2 Humble вручную (если нужно)
 
 ```bash
 # Добавить ROS2 репозиторий
@@ -116,64 +150,43 @@ sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
 
-# Установить ROS2 Humble Desktop
+# Установить ROS2 Humble (base достаточно для Pi)
 sudo apt update
-sudo apt install ros-humble-desktop -y
-
-# Установить ROS2 пакеты для навигации и SLAM
-sudo apt install \
-  ros-humble-slam-toolbox \
-  ros-humble-navigation2 \
-  ros-humble-nav2-smac-planner \
-  ros-humble-cartographer-ros \
-  ros-humble-robot-localization \
-  ros-humble-cv-bridge \
-  ros-humble-image-transport -y
+sudo apt install ros-humble-ros-base python3-colcon-common-extensions -y
 
 # Настроить окружение
 echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-#### b) Установка Python зависимостей
-
-```bash
-cd ~/Samurai
-pip3 install -r requirements.txt
-```
-
-#### c) Сборка ROS2 пакета
-
-```bash
-cd ~/Samurai/ros_ws
-colcon build --symlink-install
-source install/setup.bash
-
-# Добавить в .bashrc для автозагрузки
-echo "source ~/Samurai/ros_ws/install/setup.bash" >> ~/.bashrc
-```
-
-#### d) Скачать модель Vosk (для распознавания речи)
-
-```bash
-cd ~/Samurai
-wget https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
-unzip vosk-model-small-ru-0.22.zip
-rm vosk-model-small-ru-0.22.zip
-```
-
 ---
 
-### 2. Вычислительный узел (опционально)
+### 2. Ноутбук (вычислительный узел)
 
-Если у вас есть отдельный компьютер с GPU для запуска YOLO:
+#### a) Установка Docker (Arch Linux)
 
 ```bash
-cd ~/Samurai
-pip3 install -r requirements.txt
+sudo pacman -S docker
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER && newgrp docker
+```
 
-# Для GPU поддержки установите PyTorch с CUDA
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#### b) Установка avahi (mDNS для raspberrypi.local)
+
+```bash
+sudo pacman -S avahi nss-mdns
+sudo systemctl enable --now avahi-daemon
+```
+
+Добавить `mdns_minimal` в `/etc/nsswitch.conf` строку `hosts`:
+```
+hosts: mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] files myhostname dns
+```
+
+#### c) Для симулятора (без Docker)
+
+```bash
+pip install flask flask-cors flask-socketio opencv-python numpy paho-mqtt
 ```
 
 ---
@@ -181,7 +194,7 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu11
 ### 3. Android приложение
 
 1. Откройте `android_app/` в Android Studio
-2. Скачайте модель Vosk для Android (если нужно локальное распознавание):
+2. Скачайте модель Vosk для Android (локальное распознавание речи):
    ```bash
    cd android_app/app/src/main/assets/
    wget https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
@@ -197,12 +210,15 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu11
 
 ### Симулятор (для разработки)
 
-Симулятор — это полнофункциональный 2D симулятор робота с REST API для тестирования алгоритмов без реального железа.
+Симулятор — полнофункциональный 2D симулятор робота с REST API. **ROS2 и железо не нужны.**
 
 ```bash
 cd ~/Samurai
-python3 compute_node/simulator.py
+chmod +x start_laptop_sim.sh
+./start_laptop_sim.sh
 ```
+
+Скрипт автоматически проверит Python, установит недостающие зависимости и запустит симулятор.
 
 Откройте браузер: [http://localhost:5000](http://localhost:5000)
 
@@ -217,51 +233,54 @@ python3 compute_node/simulator.py
 
 ---
 
-### Реальный робот
+### Реальный робот — Raspberry Pi
 
-#### a) Запуск всех нод (на Raspberry Pi)
-
-```bash
-cd ~/Samurai/ros_ws
-source install/setup.bash
-
-# Запустить все ноды робота
-ros2 launch robot_pkg robot_bringup.launch.py
-```
-
-Это запустит:
-- Ноды управления моторами, серво
-- Камеру, ультразвуковой датчик, IMU
-- MQTT мост для Android приложения
-- Голосовой интерфейс (Vosk)
-
-#### b) Запуск вычислительных нод (на отдельном ПК, опционально)
+Запускает все аппаратные ноды: моторы, камеру, IMU, голос (Vosk), MQTT мост, FSM.
 
 ```bash
-cd ~/Samurai/compute_node
-
-# YOLO детектор (требует камеры или ROS топика /camera/image_raw)
-python3 yolo_detector_node.py
-
-# Depth to LaserScan конвертер
-python3 depth_to_scan_node.py
-
-# Geofence publisher
-python3 geofence_map_publisher.py
+cd ~/Samurai
+chmod +x start_robot.sh
+./start_robot.sh
 ```
 
-#### c) Запуск SLAM (картографирование)
+Скрипт выполнит:
+1. Проверку ROS2 Humble
+2. Сборку ROS2 workspace (если нужно)
+3. Проверку I2C шины (включит автоматически если выключена)
+4. Проверку камеры
+5. Проверку Python зависимостей
+6. Загрузку модели Vosk (если не скачана)
+7. Запуск системных служб (pigpiod, avahi-daemon)
+8. Выбор режима сети (LAN multicast или мобильный хотспот unicast)
+9. Запуск `robot_bringup.launch.py`
+
+**Первый запуск** (установка всех зависимостей):
+```bash
+sudo bash Diagnostic/setup_robot.sh
+```
+
+---
+
+### Реальный робот — ноутбук (compute node)
+
+Запускает SLAM, Nav2, YOLO и Web Dashboard в Docker-контейнере.
 
 ```bash
-ros2 launch robot_pkg slam.launch.py
+cd ~/Samurai
+chmod +x start_laptop_robot.sh
+./start_laptop_robot.sh
 ```
 
-#### d) Запуск навигации (Nav2)
+Скрипт выполнит:
+1. Проверку и запуск Docker daemon
+2. Сборку Docker-образа (первый раз: 10–20 минут)
+3. Сборку ROS2 workspace внутри Docker
+4. Проверку mDNS (avahi для `raspberrypi.local`)
+5. Выбор режима сети (LAN или мобильный хотспот)
+6. Проверку доступности Raspberry Pi
+7. Запуск контейнера с `compute_bringup.launch.py`
 
-```bash
-# Сначала загрузите карту
-ros2 launch robot_pkg navigation.launch.py map:=/path/to/map.yaml
-```
+После запуска Dashboard доступен по адресу: **http://localhost:5000**
 
 ---
 
@@ -269,20 +288,25 @@ ros2 launch robot_pkg navigation.launch.py map:=/path/to/map.yaml
 
 1. Установите APK на Android устройство
 2. Подключитесь к той же Wi-Fi сети, что и робот
-3. В настройках приложения укажите IP адрес MQTT брокера (адрес Raspberry Pi)
-4. Управляйте роботом через джойстик или голосовые команды
+3. Откройте вкладку **Настройки**:
+   - **Режим**: Симулятор или Реальный робот
+   - **IP**: `raspberrypi.local` (или IP адрес) для реального робота, IP ноутбука для симулятора
+   - **Порт**: 5000
+4. Нажмите **Подключить**
 
-**Функции:**
-- Виртуальный джойстик для ручного управления
-- Голосовые команды
-- Просмотр видеопотока с камеры
-- Отображение телеметрии (датчики, координаты)
+**Вкладки приложения:**
+1. **Управление** — FSM состояние, быстрые команды, джойстик, голосовое управление, актуаторы
+2. **Камера** — видеопоток с YOLO детекцией
+3. **Карта** — SLAM карта, позиция робота, зоны, маршрут
+4. **Датчики** — ультразвук, IMU, скорость, поза, лог событий
+5. **Авто** — профиль скорости, патруль, следование за человеком, запись маршрутов, управление картами
+6. **Настройки** — режим подключения, адрес, Robot ID
 
 ---
 
 ## 📖 API Reference
 
-Симулятор предоставляет REST API на порту 5000. Полная документация доступна в [API_REFERENCE.md](API_REFERENCE.md).
+Полная документация API: [API_REFERENCE.md](API_REFERENCE.md)
 
 **Примеры:**
 
@@ -308,17 +332,47 @@ curl -X POST http://localhost:5000/api/robot/velocity \
 
 ## 🏗️ Архитектура
 
+### Топология системы
+
+```
+Raspberry Pi (Robot)                      Ноутбук (Compute Node, Docker)
+├── motor_node (C++) → PCA9685 I2C ioctl  ├── ekf_node           → EKF одометрия
+├── imu_node (C++)   → MPU6050 I2C ioctl  ├── slam_toolbox       → картографирование
+├── camera_node      → CSI → Compressed   ├── nav2_bringup       → навигация
+├── voice_node       → Vosk ASR + VAD     ├── yolo_detector_node → YOLO ONNX Runtime
+├── fsm_node         → конечный автомат   ├── dashboard_node     → FastAPI :5000
+├── mqtt_bridge      → MQTT ↔ Android     ├── patrol_node        → автопатруль
+├── battery_node     → заряд батареи      ├── follow_me_node     → следование
+├── fallback_nav_node → автономность Pi   ├── path_recorder_node → запись маршрутов
+└── watchdog_node    → watchdog           └── map_manager_node   → управление картами
+
+     ↕ ROS2 DDS — CompressedImage JPEG (×20 меньше трафика), BEST_EFFORT QoS
+
+Android приложение
+├── RobotSocketClient → Socket.IO push (4 Гц, вместо HTTP-поллинга)
+├── RobotMqttClient   → MQTT ↔ Pi напрямую (режим Robot)
+└── VoskRecognizer    → офлайн распознавание речи
+```
+
 ### ROS2 Топики
 
-| Топик | Тип сообщения | Описание |
-|-------|---------------|----------|
-| `/cmd_vel` | `geometry_msgs/Twist` | Команды скорости для моторов |
-| `/camera/image_raw` | `sensor_msgs/Image` | Видеопоток с камеры |
-| `/scan` | `sensor_msgs/LaserScan` | Данные лидара (или эмулированные) |
-| `/imu/data` | `sensor_msgs/Imu` | Данные IMU (MPU6050) |
-| `/ultrasonic` | `sensor_msgs/Range` | Ультразвуковой датчик |
-| `/ball_detection` | `robot_pkg/BallDetection` | Результаты YOLO детектора |
-| `/voice/command` | `std_msgs/String` | Распознанные голосовые команды |
+| Топик | Тип сообщения | QoS | Описание |
+|-------|---------------|-----|----------|
+| `/cmd_vel` | `geometry_msgs/Twist` | RELIABLE | Команды скорости для моторов |
+| `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | BEST_EFFORT | Видеопоток JPEG (~40 KB/кадр вместо 900 KB) |
+| `/yolo/annotated/compressed` | `sensor_msgs/CompressedImage` | BEST_EFFORT | Видео с YOLO-разметкой (JPEG) |
+| `/yolo/detections` | `std_msgs/String` | RELIABLE | JSON список всех детекций (heartbeat ноутбука) |
+| `/scan` | `sensor_msgs/LaserScan` | RELIABLE | Данные лидара (эмулированные) |
+| `/imu/data` | `sensor_msgs/Imu` | BEST_EFFORT depth=1 | Данные IMU @ 50 Hz (только последний кадр) |
+| `/range` | `sensor_msgs/Range` | BEST_EFFORT depth=1 | Ультразвуковой датчик |
+| `/ball_detection` | `std_msgs/String` | RELIABLE | Одиночная YOLO детекция (JSON) |
+| `/voice_command` | `std_msgs/String` | RELIABLE | Распознанные голосовые команды |
+| `/robot_status` | `std_msgs/String` | RELIABLE | FSM состояние (JSON) |
+| `/odom` | `nav_msgs/Odometry` | RELIABLE | Открытая одометрия (motor_node) |
+| `/odometry/filtered` | `nav_msgs/Odometry` | RELIABLE | Поза и скорость (EKF) |
+| `/battery_status` | `std_msgs/String` | RELIABLE | Заряд батареи (JSON) |
+| `/speed_profile` | `std_msgs/String` | RELIABLE | Команда смены профиля скорости |
+| `/speed_profile/active` | `std_msgs/String` | RELIABLE | Текущий профиль скорости |
 
 ### Конечный автомат (FSM)
 
@@ -355,7 +409,7 @@ IDLE → SEARCHING → TARGETING → APPROACHING → GRABBING/BURNING → RETURN
 - `домой` / `вернись` — вернуться на базу
 - `вызови вторую машину` — вызвать второго робота (мультиагент)
 
-#### Ручное управление (новое! 🆕)
+#### Ручное управление
 - `развернись` / `разворот` — развернуться на 180°
 - `повернись 90 градусов` — повернуть на N градусов (влево если положительное, вправо если отрицательное)
 - `поверни 45` — короткая форма команды поворота
@@ -376,6 +430,15 @@ IDLE → SEARCHING → TARGETING → APPROACHING → GRABBING/BURNING → RETURN
 
 ## 🐛 Отладка
 
+### Диагностика оборудования
+
+```bash
+# Полная проверка всего железа на Raspberry Pi
+python3 Diagnostic/diagnostic.py
+```
+
+Проверяет: I2C устройства (PCA9685, ADS7830), DC моторы, сервоприводы, ультразвук, line tracking, WS2812 LED, камеру.
+
 ### Логи ROS2
 
 ```bash
@@ -389,7 +452,7 @@ ros2 topic echo /rosout
 ros2 topic list
 
 # Посмотреть сообщения в топике
-ros2 topic echo /camera/image_raw
+ros2 topic echo /robot_status
 ```
 
 ### Проверка нод

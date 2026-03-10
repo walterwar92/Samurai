@@ -9,8 +9,6 @@ import time
 import os
 import platform
 import json
-import struct
-import wave
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -286,7 +284,7 @@ def diagnose_python_packages():
     packages = [
         "adafruit_pca9685", "adafruit_motor", "board", "busio",
         "gpiozero", "picamera2", "cv2", "numpy",
-        "pyaudio", "vosk", "smbus2",
+        "smbus2",
         "rpi_ws281x",
         "rclpy", "sensor_msgs", "geometry_msgs", "std_msgs", "cv_bridge",
     ]
@@ -895,13 +893,33 @@ def diagnose_servos(pca):
     MAX_PULSE = 2400
     ACTUATION_RANGE = 180
 
+    # Для клешни: открытие (30°) → закрытие (130°) → исходное (90°)
+    # Для остальных: отклонение вперёд (70°) → назад (110°) → исходное (90°)
     SERVO_CONFIG = {
-        0: {"name": "Servo0 (клешня / gripper)", "init": 90, "test_angles": [30, 130, 90]},
-        1: {"name": "Servo1 (рука / arm joint 1)", "init": 90, "test_angles": [70, 110, 90]},
-        2: {"name": "Servo2 (рука / arm joint 2)", "init": 90, "test_angles": [70, 110, 90]},
-        3: {"name": "Servo3 (рука / arm joint 3)", "init": 90, "test_angles": [70, 110, 90]},
-        4: {"name": "Servo4 (рука / arm joint 4)", "init": 90, "test_angles": [70, 110, 90]},
-        5: {"name": "Servo5 (рука / arm joint 5)", "init": 90, "test_angles": [70, 110, 90]},
+        0: {"name": "Servo0 (клешня / gripper)", "init": 90,
+            "test_steps": [(30,  "ОТКРЫТИЕ клешни"),
+                           (130, "ЗАКРЫТИЕ клешни"),
+                           (90,  "возврат в исходное")]},
+        1: {"name": "Servo1 (рука / arm joint 1)", "init": 90,
+            "test_steps": [(70,  "отклонение −20°"),
+                           (110, "отклонение +20°"),
+                           (90,  "возврат в исходное")]},
+        2: {"name": "Servo2 (рука / arm joint 2)", "init": 90,
+            "test_steps": [(70,  "отклонение −20°"),
+                           (110, "отклонение +20°"),
+                           (90,  "возврат в исходное")]},
+        3: {"name": "Servo3 (рука / arm joint 3)", "init": 90,
+            "test_steps": [(70,  "отклонение −20°"),
+                           (110, "отклонение +20°"),
+                           (90,  "возврат в исходное")]},
+        4: {"name": "Servo4 (рука / arm joint 4)", "init": 90,
+            "test_steps": [(70,  "отклонение −20°"),
+                           (110, "отклонение +20°"),
+                           (90,  "возврат в исходное")]},
+        5: {"name": "Servo5 (рука / arm joint 5)", "init": 90,
+            "test_steps": [(70,  "отклонение −20°"),
+                           (110, "отклонение +20°"),
+                           (90,  "возврат в исходное")]},
     }
 
     is_smbus = isinstance(pca, PCA9685Smbus)
@@ -915,6 +933,30 @@ def diagnose_servos(pca):
     try:
         servo_results = {}
 
+        # Adafruit: создаём объекты Servo ОДИН РАЗ на канал и держим живыми весь тест.
+        # Иначе __del__ вызывает _pwm.deinit() и PWM-сигнал обрывается сразу после
+        # каждого set_angle — серво двигается и тут же отпускается.
+        adafruit_servos = {}
+        if not is_smbus:
+            try:
+                from adafruit_motor import servo as adafruit_servo
+                for ch in SERVO_CONFIG:
+                    adafruit_servos[ch] = adafruit_servo.Servo(
+                        pca.channels[ch],
+                        min_pulse=MIN_PULSE,
+                        max_pulse=MAX_PULSE,
+                        actuation_range=ACTUATION_RANGE,
+                    )
+            except Exception as e:
+                logger.error(f"  Не удалось создать объекты Servo: {e}")
+
+        def set_angle(ch, angle):
+            if is_smbus:
+                pca.set_servo_angle(ch, angle, MIN_PULSE, MAX_PULSE)
+            else:
+                if ch in adafruit_servos:
+                    adafruit_servos[ch].angle = angle
+
         for ch, cfg in SERVO_CONFIG.items():
             name = cfg["name"]
             try:
@@ -922,36 +964,25 @@ def diagnose_servos(pca):
                 logger.info(f"      PCA9685 канал: {ch}")
                 logger.info(f"      Пульс: {MIN_PULSE}-{MAX_PULSE} мкс")
 
-                def set_angle(angle):
-                    if is_smbus:
-                        pca.set_servo_angle(ch, angle, MIN_PULSE, MAX_PULSE)
-                    else:
-                        from adafruit_motor import servo as adafruit_servo
-                        srv = adafruit_servo.Servo(
-                            pca.channels[ch],
-                            min_pulse=MIN_PULSE,
-                            max_pulse=MAX_PULSE,
-                            actuation_range=ACTUATION_RANGE,
-                        )
-                        srv.angle = angle
-
                 init_angle = cfg["init"]
-                set_angle(init_angle)
+                set_angle(ch, init_angle)
                 logger.info(f"      INIT → {init_angle}° (установлен)")
                 time.sleep(0.5)
 
                 tested_angles = []
-                for angle in cfg["test_angles"]:
+                for angle, label in cfg["test_steps"]:
                     try:
-                        set_angle(angle)
-                        tested_angles.append({"angle": angle, "status": "OK"})
-                        logger.info(f"      → {angle}° — OK (установлен)")
-                        time.sleep(0.5)
+                        set_angle(ch, angle)
+                        tested_angles.append({"angle": angle, "label": label, "status": "OK"})
+                        logger.info(f"      → {angle}°  [{label}] — OK")
+                        time.sleep(0.6)
                     except Exception as e:
-                        tested_angles.append({"angle": angle, "status": "ERROR", "error": str(e)})
-                        logger.error(f"      → {angle}° — ОШИБКА: {e}")
+                        tested_angles.append({"angle": angle, "label": label,
+                                              "status": "ERROR", "error": str(e)})
+                        logger.error(f"      → {angle}°  [{label}] — ОШИБКА: {e}")
 
-                set_angle(init_angle)
+                # Явный возврат в исходное (на случай если последний шаг упал)
+                set_angle(ch, init_angle)
                 time.sleep(0.3)
 
                 servo_results[f"ch{ch}"] = {
@@ -1312,134 +1343,6 @@ def diagnose_camera():
         record("camera", status="ERROR", details={"error": str(e)})
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  14. USB-МИКРОФОН (PyAudio)
-# ══════════════════════════════════════════════════════════════════════
-
-def diagnose_microphone():
-    section("USB-МИКРОФОН (PyAudio)")
-
-    try:
-        import pyaudio
-
-        pa = pyaudio.PyAudio()
-
-        host_api_count = pa.get_host_api_count()
-        logger.info(f"  Host API count: {host_api_count}")
-        for i in range(host_api_count):
-            api_info = pa.get_host_api_info_by_index(i)
-            logger.info(f"    Host API {i}: {api_info['name']}, "
-                        f"devices: {api_info['deviceCount']}")
-
-        device_count = pa.get_device_count()
-        logger.info(f"  Аудиоустройств всего: {device_count}")
-
-        input_devices = []
-        for i in range(device_count):
-            try:
-                dev = pa.get_device_info_by_index(i)
-                logger.info(f"    Устройство {i}: {dev['name']}")
-                logger.info(f"      maxInputChannels:  {dev['maxInputChannels']}")
-                logger.info(f"      maxOutputChannels: {dev['maxOutputChannels']}")
-                logger.info(f"      defaultSampleRate: {dev['defaultSampleRate']}")
-                if dev["maxInputChannels"] > 0:
-                    input_devices.append({
-                        "index": i,
-                        "name": dev["name"],
-                        "channels": dev["maxInputChannels"],
-                        "sample_rate": dev["defaultSampleRate"],
-                    })
-            except Exception as e:
-                logger.warning(f"    Устройство {i}: ошибка — {e}")
-
-        logger.info(f"  Устройств ввода (микрофоны): {len(input_devices)}")
-        for d in input_devices:
-            logger.info(f"    [{d['index']}] {d['name']} "
-                        f"(ch={d['channels']}, rate={d['sample_rate']})")
-
-        if input_devices:
-            test_dev = input_devices[0]
-            RATE = 16000
-            CHUNK = 4000
-            RECORD_SEC = 2
-
-            logger.info(f"  >>> Тест: запись {RECORD_SEC}с с [{test_dev['index']}]...")
-            try:
-                stream = pa.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=RATE,
-                    input=True,
-                    input_device_index=test_dev["index"],
-                    frames_per_buffer=CHUNK,
-                )
-
-                frames = []
-                for _ in range(int(RATE / CHUNK * RECORD_SEC)):
-                    data = stream.read(CHUNK, exception_on_overflow=False)
-                    frames.append(data)
-
-                stream.stop_stream()
-                stream.close()
-
-                total_samples = 0
-                total_abs = 0
-                max_sample = 0
-                for frame_data in frames:
-                    samples = struct.unpack(f"<{len(frame_data)//2}h", frame_data)
-                    for s in samples:
-                        total_abs += abs(s)
-                        total_samples += 1
-                        if abs(s) > max_sample:
-                            max_sample = abs(s)
-
-                avg_amplitude = total_abs / total_samples if total_samples else 0
-                logger.info(f"  <<< Запись OK")
-                logger.info(f"    Записано сэмплов:    {total_samples}")
-                logger.info(f"    Средняя амплитуда:   {avg_amplitude:.0f}")
-                logger.info(f"    Макс. амплитуда:     {max_sample}")
-                logger.info(f"    (тишина ~0-200, голос ~500-5000, макс=32767)")
-
-                # Сохраняем запись в WAV-файл
-                wav_path = LOG_DIR / f"mic_test_{timestamp}.wav"
-                try:
-                    with wave.open(str(wav_path), "wb") as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)  # 16-bit = 2 bytes
-                        wf.setframerate(RATE)
-                        wf.writeframes(b"".join(frames))
-                    saved_files.append(str(wav_path))
-                    wav_size = wav_path.stat().st_size
-                    logger.info(f"  Аудио сохранено: {wav_path}")
-                    logger.info(f"  Размер WAV: {wav_size} байт ({wav_size/1024:.1f} KB)")
-                except Exception as e:
-                    logger.warning(f"  Не удалось сохранить WAV: {e}")
-
-            except Exception as e:
-                logger.error(f"  <<< Запись ОШИБКА: {e}")
-
-        pa.terminate()
-
-        mic_details = {
-            "host_api_count": host_api_count,
-            "total_devices": device_count,
-            "input_devices": input_devices,
-        }
-        if input_devices:
-            mic_details["test_recording"] = {
-                "duration_sec": RECORD_SEC,
-                "sample_rate": RATE,
-            }
-        record("microphone", status="OK" if input_devices else "WARNING",
-               details=mic_details)
-
-    except ImportError:
-        logger.error("  PyAudio не установлен — микрофон не проверен")
-        record("microphone", status="ERROR", details={"error": "pyaudio not installed"})
-    except Exception as e:
-        logger.error(f"  Микрофон ОШИБКА: {e}")
-        record("microphone", status="ERROR", details={"error": str(e)})
-
 
 # ══════════════════════════════════════════════════════════════════════
 #  15. ADEEPT ROBOT HAT V3.1
@@ -1470,45 +1373,6 @@ def diagnose_robot_hat():
         "chips": ["PCA9685", "DRV8833 x2", "ADS7830", "LM324"],
     })
 
-
-# ══════════════════════════════════════════════════════════════════════
-#  16. VOSK — РАСПОЗНАВАНИЕ РЕЧИ
-# ══════════════════════════════════════════════════════════════════════
-
-def diagnose_vosk():
-    section("VOSK — РАСПОЗНАВАНИЕ РЕЧИ")
-
-    vosk_model_path = Path.home() / "vosk-model-ru"
-
-    try:
-        import vosk
-        logger.info(f"  Vosk версия: "
-                     f"{vosk.__version__ if hasattr(vosk, '__version__') else 'N/A'}")
-        logger.info(f"  Путь к модели: {vosk_model_path}")
-
-        if vosk_model_path.exists():
-            logger.info(f"  Модель найдена — OK")
-            try:
-                model = vosk.Model(str(vosk_model_path))
-                logger.info(f"  Модель загружена успешно")
-                record("vosk", status="OK", details={
-                    "model_path": str(vosk_model_path),
-                    "model_exists": True,
-                })
-            except Exception as e:
-                logger.error(f"  Ошибка загрузки модели: {e}")
-                record("vosk", status="ERROR", details={"error": str(e)})
-        else:
-            logger.warning(f"  Модель НЕ НАЙДЕНА по пути {vosk_model_path}")
-            logger.warning(f"  Скачайте: vosk-model-small-ru-0.22")
-            record("vosk", status="WARNING", details={
-                "model_path": str(vosk_model_path),
-                "model_exists": False,
-            })
-
-    except ImportError:
-        logger.warning("  Vosk не установлен")
-        record("vosk", status="WARNING", details={"error": "vosk not installed"})
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1582,7 +1446,7 @@ def print_summary():
 def main():
     logger.info("╔════════════════════════════════════════════════════════════╗")
     logger.info("║   SAMURAI — Полная диагностика оборудования робота        ║")
-    logger.info("║   Пропуск: Лазер (GPIO17), IMU MPU6050 (I2C 0x68)        ║")
+    logger.info("║   Пропуск: Лазер (GPIO17), IMU MPU6050, микрофон, Vosk   ║")
     logger.info("╚════════════════════════════════════════════════════════════╝")
     logger.info(f"  Лог: {LOG_FILE}")
     logger.info("")
@@ -1638,14 +1502,8 @@ def main():
     # 13. Камера CSI
     diagnose_camera()
 
-    # 14. USB-микрофон
-    diagnose_microphone()
-
-    # 15. Adeept Robot HAT — сводка
+    # 14. Adeept Robot HAT — сводка
     diagnose_robot_hat()
-
-    # 16. Vosk — распознавание речи
-    diagnose_vosk()
 
     # Закрываем PCA9685
     if pca is not None:

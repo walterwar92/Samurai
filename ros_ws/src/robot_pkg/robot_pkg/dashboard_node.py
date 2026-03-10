@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
 dashboard_node — Web dashboard for Samurai robot monitoring.
+*** ON-ROBOT (Flask/SocketIO) version — runs directly on Raspberry Pi. ***
+
+NOTE: The primary/recommended dashboard is compute_node/dashboard_node.py
+(FastAPI + uvicorn), which runs on the compute laptop with full API coverage,
+async WebSocket push, and better performance. Use this Flask version only when
+running the robot standalone without a compute laptop.
 
 Runs on the compute laptop alongside YOLO/SLAM/Nav2.
 Provides a real-time web interface at http://localhost:5000
@@ -37,13 +43,22 @@ from collections import deque
 
 
 def _get_local_ip() -> str:
+    """Auto-detect local network IP address.
+
+    Uses a non-routed UDP connect trick (no packets sent).
+    2-second timeout prevents hanging when network is unavailable.
+    """
+    import logging
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            'IP auto-detection failed (%s) — falling back to 127.0.0.1', exc)
         return '127.0.0.1'
 
 import cv2
@@ -51,10 +66,9 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, Range, Imu, LaserScan
+from sensor_msgs.msg import CompressedImage, Range, Imu, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import String, Float32
-from cv_bridge import CvBridge
 
 from flask import Flask, Response, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
@@ -68,7 +82,6 @@ class DashboardNode(Node):
         self.declare_parameter('port', 5000)
         self._port = self.get_parameter('port').value
 
-        self._bridge = CvBridge()
         self._lock = threading.Lock()
 
         # --- Shared state ---
@@ -103,7 +116,7 @@ class DashboardNode(Node):
         )
 
         # --- Original subscriptions ---
-        self.create_subscription(Image, '/yolo/annotated', self._image_cb, 5)
+        self.create_subscription(CompressedImage, '/yolo/annotated/compressed', self._image_cb, 5)
         self.create_subscription(String, '/robot_status', self._status_cb, 10)
         self.create_subscription(String, '/ball_detection', self._detection_cb, 10)
         self.create_subscription(Range, '/range', self._range_cb, 10)
@@ -146,11 +159,10 @@ class DashboardNode(Node):
 
     # ── Original ROS2 Callbacks ────────────────────────────────────
 
-    def _image_cb(self, msg: Image):
-        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    def _image_cb(self, msg: CompressedImage):
+        # Кадр уже JPEG от yolo_detector — передаём напрямую без decode+encode
         with self._lock:
-            self._latest_frame = jpeg.tobytes()
+            self._latest_frame = bytes(msg.data)
 
     def _status_cb(self, msg: String):
         try:
