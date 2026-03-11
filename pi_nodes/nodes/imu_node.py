@@ -32,12 +32,17 @@ class IMUNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('imu_node', **kwargs)
 
+        self._bus = None
         if _HW:
-            self._bus = smbus2.SMBus(1)
-            self._bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0x00)
-            self.log_info('MPU6050 initialised on I2C bus 1')
+            try:
+                bus = smbus2.SMBus(1)
+                bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0x00)
+                self._bus = bus
+                self.log_info('MPU6050 initialised @ 0x%02X', MPU6050_ADDR)
+            except Exception as e:
+                self.log_warn('MPU6050 not found (0x%02X): %s — IMU simulated',
+                              MPU6050_ADDR, e)
         else:
-            self._bus = None
             self.log_warn('smbus2 unavailable — IMU simulated')
 
         self.create_timer(0.02, self._read_and_publish)  # 50 Hz
@@ -45,14 +50,19 @@ class IMUNode(MqttNode):
     def _read_raw(self):
         if not self._bus:
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
-        raw = self._bus.read_i2c_block_data(MPU6050_ADDR, ACCEL_XOUT_H, 14)
-        ax = struct.unpack('>h', bytes(raw[0:2]))[0] / ACCEL_SCALE * 9.81
-        ay = struct.unpack('>h', bytes(raw[2:4]))[0] / ACCEL_SCALE * 9.81
-        az = struct.unpack('>h', bytes(raw[4:6]))[0] / ACCEL_SCALE * 9.81
-        gx = struct.unpack('>h', bytes(raw[8:10]))[0] / GYRO_SCALE * DEG2RAD
-        gy = struct.unpack('>h', bytes(raw[10:12]))[0] / GYRO_SCALE * DEG2RAD
-        gz = struct.unpack('>h', bytes(raw[12:14]))[0] / GYRO_SCALE * DEG2RAD
-        return (ax, ay, az, gx, gy, gz)
+        try:
+            raw = self._bus.read_i2c_block_data(MPU6050_ADDR, ACCEL_XOUT_H, 14)
+            ax = struct.unpack('>h', bytes(raw[0:2]))[0] / ACCEL_SCALE * 9.81
+            ay = struct.unpack('>h', bytes(raw[2:4]))[0] / ACCEL_SCALE * 9.81
+            az = struct.unpack('>h', bytes(raw[4:6]))[0] / ACCEL_SCALE * 9.81
+            gx = struct.unpack('>h', bytes(raw[8:10]))[0] / GYRO_SCALE * DEG2RAD
+            gy = struct.unpack('>h', bytes(raw[10:12]))[0] / GYRO_SCALE * DEG2RAD
+            gz = struct.unpack('>h', bytes(raw[12:14]))[0] / GYRO_SCALE * DEG2RAD
+            return (ax, ay, az, gx, gy, gz)
+        except Exception as e:
+            self.log_warn('IMU read error: %s — returning zeros', e)
+            self._bus = None  # stop trying until restart
+            return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 
     def _read_and_publish(self):
         ax, ay, az, gx, gy, gz = self._read_raw()
