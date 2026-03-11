@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 
 LAPTOP_TIMEOUT_S = 2.0
+STARTUP_GRACE_S = 10.0  # don't enter fallback until laptop seen at least once
 SAFE_M = 0.40
 STOP_M = 0.20
 FWD_SPEED = 0.10
@@ -42,16 +43,20 @@ class FallbackNavNode(MqttNode):
         self._range = 2.0
         self._last_laptop_t = self.now_sec()
         self._rotate_dir = 1.0
+        self._laptop_seen = False  # laptop must connect at least once
 
         self.subscribe('detections', self._laptop_heartbeat_cb)
         self.subscribe('range', self._range_cb)
         self.create_timer(1.0 / CTRL_HZ, self._control_loop)
 
-        self.log_info('fallback_nav ready (timeout=%.1fs, safe=%.2fm, stop=%.2fm)',
-                      LAPTOP_TIMEOUT_S, SAFE_M, STOP_M)
+        self.log_info('fallback_nav ready (timeout=%.1fs, grace=%.1fs, safe=%.2fm)',
+                      LAPTOP_TIMEOUT_S, STARTUP_GRACE_S, SAFE_M)
 
     def _laptop_heartbeat_cb(self, topic, data):
         self._last_laptop_t = self.now_sec()
+        if not self._laptop_seen:
+            self._laptop_seen = True
+            self.log_info('Laptop first seen — fallback armed')
         if self._state != STATE_IDLE:
             self.log_info('Laptop reconnected — yielding cmd_vel')
             self._state = STATE_IDLE
@@ -74,6 +79,10 @@ class FallbackNavNode(MqttNode):
             if self._state != STATE_IDLE:
                 self._state = STATE_IDLE
                 self.log_info('Laptop online — fallback IDLE')
+            return
+
+        # Don't enter fallback if laptop was never seen (robot just booted)
+        if not self._laptop_seen:
             return
 
         if self._state == STATE_IDLE:
