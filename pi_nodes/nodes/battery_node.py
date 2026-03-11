@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 
 _CHANNEL_CMDS = (0x84, 0xC4, 0x94, 0xD4, 0xA4, 0xE4, 0xB4, 0xF4)
-VBAT_MIN = 6.0
-VBAT_MAX = 8.4
+VBAT_MIN = 3.0   # одна LiPo банка: минимум (cutoff)
+VBAT_MAX = 4.2   # одна LiPo банка: максимум (полный заряд)
 VDIV_RATIO = 3.0
 
 try:
@@ -49,13 +49,16 @@ class BatteryNode(MqttNode):
         self.create_timer(1.0, self._read_battery)
 
     def _read_battery(self):
+        raw = -1
+        adc_voltage = 0.0
         if self._bus is not None:
             try:
                 self._bus.write_byte(self._addr, _CHANNEL_CMDS[self._channel])
                 raw = self._bus.read_byte(self._addr)
                 adc_voltage = raw / 255.0 * 3.3
                 voltage = adc_voltage * self._vdiv
-            except Exception:
+            except Exception as e:
+                self.log_warn('ADC read error: %s', e)
                 voltage = 0.0
         else:
             voltage = 7.8
@@ -69,7 +72,8 @@ class BatteryNode(MqttNode):
         }, qos=1, retain=True)
 
         if percent < 10.0:
-            self.log_error('CRITICAL battery: %.1fV (%.0f%%)', voltage, percent)
+            self.log_error('CRITICAL battery: %.1fV (%.0f%%) [raw=%d adc=%.2fV vdiv=%.1f]',
+                           voltage, percent, raw, adc_voltage, self._vdiv)
         elif percent < 20.0:
             self.log_warn('Low battery: %.1fV (%.0f%%)', voltage, percent)
 
