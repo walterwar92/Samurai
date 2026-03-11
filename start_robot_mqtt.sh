@@ -119,6 +119,21 @@ check_mqtt() {
         die "Установи mosquitto и перезапусти скрипт"
     fi
 
+    # Mosquitto 2.0+ blocks remote connections by default.
+    # Ensure a listener config exists so laptop/Android can connect.
+    local SAMURAI_CONF="/etc/mosquitto/conf.d/samurai.conf"
+    if [[ ! -f "$SAMURAI_CONF" ]]; then
+        log_warn "Конфиг для удалённых подключений не найден — создаю..."
+        sudo tee "$SAMURAI_CONF" >/dev/null <<'MQTTCFG'
+# Samurai Robot — allow LAN connections
+listener 1883
+allow_anonymous true
+MQTTCFG
+        log_ok "Создан $SAMURAI_CONF (listener 1883, allow_anonymous)"
+        # Restart mosquitto to pick up new config
+        sudo systemctl restart mosquitto 2>/dev/null || true
+    fi
+
     if ! systemctl is-active --quiet mosquitto 2>/dev/null; then
         log_warn "mosquitto не запущен. Запускаю..."
         sudo systemctl start mosquitto 2>/dev/null \

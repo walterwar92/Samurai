@@ -13,9 +13,16 @@ import argparse
 import importlib
 import logging
 import multiprocessing
+import os
 import signal
 import sys
 import time
+
+# Ensure project root is in sys.path so child processes can find
+# pi_nodes.*, config_loader, etc. regardless of how launcher was invoked.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 logging.basicConfig(
     level=logging.INFO,
