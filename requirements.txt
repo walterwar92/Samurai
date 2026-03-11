@@ -46,5 +46,8 @@ flask-cors
 flask-socketio>=5.3.0
 python-socketio>=5.10.0
 
+# --- Config ---
+PyYAML>=6.0                         # config.yaml loader
+
 # --- Utilities ---
 transforms3d
