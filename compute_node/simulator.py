@@ -358,9 +358,10 @@ class SimRobot:
         self.claw_open = False
         self.laser_on = False
         self._prev_v_linear = 0.0
+        self.max_speed = MAX_LINEAR  # updated by speed_profile
 
     def set_velocity(self, linear: float, angular: float):
-        self.v_linear = max(-MAX_LINEAR, min(MAX_LINEAR, linear))
+        self.v_linear = max(-self.max_speed, min(self.max_speed, linear))
         self.v_angular = max(-MAX_ANGULAR, min(MAX_ANGULAR, angular))
 
     def stop(self):
@@ -1366,6 +1367,7 @@ def main():
     latest_frame = [None]       # mutable container for JPEG bytes
     latest_map_png = [None]     # mutable container for map PNG
     sim_time = [0.0]            # simulation time counter
+    speed_profile = ['normal']  # current speed profile: slow / normal / fast
 
     # ── Flask app ─────────────────────────────────────────────
     template_dir = os.path.join(os.path.dirname(__file__), 'templates')
@@ -1635,6 +1637,28 @@ def main():
             robot.laser_on = on_val
         return json_ok({'laser_on': on_val})
 
+    # ── 5b. Speed profile ──
+
+    @app.route('/api/speed_profile', methods=['GET'])
+    def api_speed_profile_get():
+        with lock:
+            return json_ok({'profile': speed_profile[0]})
+
+    @app.route('/api/speed_profile', methods=['POST'])
+    def api_speed_profile_set():
+        body = request.get_json(silent=True)
+        if body is None:
+            return json_err("Request body must be JSON")
+        profile = body.get('profile', '').lower().strip()
+        if profile not in ('slow', 'normal', 'fast'):
+            return json_err("'profile' must be 'slow', 'normal', or 'fast'")
+        with lock:
+            speed_profile[0] = profile
+            # Apply to robot: slow=0.10, normal=0.20, fast=0.30 m/s
+            _PROFILE_SPEEDS = {'slow': 0.10, 'normal': 0.20, 'fast': 0.30}
+            robot.max_speed = _PROFILE_SPEEDS[profile]
+        return json_ok({'profile': profile})
+
     # ── 6. FSM ──
 
     @app.route('/api/fsm')
@@ -1850,7 +1874,8 @@ def main():
                 status['range_m'] = round(sensors.range_m, 3)
 
                 det = detector.get_closest_detection(fsm.target_colour)
-                det_all = detector.detections[0] if detector.detections else {}
+                # "closest" for banner: target colour first, else any visible ball
+                det_closest = det if det is not None else detector.get_closest_detection()
 
                 # All detections list
                 all_dets = list(detector.detections)
@@ -1876,7 +1901,7 @@ def main():
 
                 state = {
                     'status': status,
-                    'detection': det_all,
+                    'detection': det_closest,
                     'all_detections': all_dets,
                     'range_m': round(sensors.range_m, 3),
                     'imu_ypr': [
@@ -1927,7 +1952,7 @@ def main():
                     'follow_me': None,
                     'qr_detection': None,
                     'gesture': '',
-                    'speed_profile': 'normal',
+                    'speed_profile': speed_profile[0],
                 }
             socketio.emit('state_update', state)
             socketio.sleep(0.25)

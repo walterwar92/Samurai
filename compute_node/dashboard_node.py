@@ -864,20 +864,28 @@ def create_app(ros_node: DashboardNode):
 
     @app.post('/api/actuators/claw')
     async def api_claw(req: Request):
-        body  = await req.json()
-        state = body.get('state', '').lower().strip()
-        if state not in ('open', 'close', 'closed'):
-            return _err('state must be "open" or "close"')
-        cmd = 'open' if state == 'open' else 'close'
+        body = await req.json()
+        # Accept both { open: bool } (frontend) and { state: "open"/"close" } (legacy)
+        if 'open' in body:
+            cmd = 'open' if body['open'] else 'close'
+        else:
+            state = body.get('state', '').lower().strip()
+            if state not in ('open', 'close', 'closed'):
+                return _err('body must contain "open" (bool) or "state" ("open"/"close")')
+            cmd = 'open' if state == 'open' else 'close'
         ros_node.set_claw(cmd)
         return _ok(claw='open' if cmd == 'open' else 'closed')
 
     @app.post('/api/actuators/laser')
     async def api_laser(req: Request):
-        body  = await req.json()
-        state = body.get('state', '').lower().strip()
-        if state not in ('on', 'off'):
-            return _err('state must be "on" or "off"')
+        body = await req.json()
+        # Accept both { on: bool } (frontend) and { state: "on"/"off" } (legacy)
+        if 'on' in body:
+            state = 'on' if body['on'] else 'off'
+        else:
+            state = body.get('state', '').lower().strip()
+            if state not in ('on', 'off'):
+                return _err('body must contain "on" (bool) or "state" ("on"/"off")')
         ros_node.set_laser(state)
         return _ok(laser=state)
 
