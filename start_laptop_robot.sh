@@ -148,7 +148,7 @@ check_workspace() {
 
     build_ws() {
         log_info "Сборка workspace внутри Docker (colcon build)..."
-        docker run --rm \
+        MSYS_NO_PATHCONV=1 docker run --rm \
             -v "$SCRIPT_DIR:/root/Samurai" \
             "$DOCKER_IMAGE" \
             bash -c "
@@ -311,10 +311,20 @@ launch() {
     echo -e "${YELLOW}  ── Запуск ROS2 нод (Ctrl+C для остановки) ──${NC}"
     echo ""
 
+    # Docker Desktop (Win/Mac): --net=host работает только на Linux.
+    # На Win/Mac нужен -p для проброса портов + bridge network.
+    local docker_net_args
+    if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN|NT ]] || [[ "$(uname -o 2>/dev/null)" == "Msys" ]]; then
+        docker_net_args="-p 5000:5000"
+        log_ok "Windows: порт 5000 прокинут через -p"
+    else
+        docker_net_args="--net=host"
+    fi
+
     # shellcheck disable=SC2086
-    docker run --rm \
+    MSYS_NO_PATHCONV=1 docker run --rm \
         --name "$CONTAINER_NAME" \
-        --net=host \
+        $docker_net_args \
         --privileged \
         -v "$SCRIPT_DIR:/root/Samurai" \
         -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \

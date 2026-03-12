@@ -65,7 +65,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage, Range, Imu, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import String, Float32
@@ -108,28 +108,33 @@ class DashboardNode(Node):
         self._gesture_command = ''
         self._speed_profile = 'normal'
 
-        # --- QoS for map (transient local) ---
+        # --- QoS profiles ---
         map_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+        # Sensor QoS — matches mqtt_bridge_compute BEST_EFFORT publishers
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            depth=5,
+        )
 
         # --- Original subscriptions ---
-        self.create_subscription(CompressedImage, '/yolo/annotated/compressed', self._image_cb, 5)
+        self.create_subscription(CompressedImage, '/yolo/annotated/compressed', self._image_cb, sensor_qos)
         self.create_subscription(String, '/robot_status', self._status_cb, 10)
         self.create_subscription(String, '/ball_detection', self._detection_cb, 10)
-        self.create_subscription(Range, '/range', self._range_cb, 10)
-        self.create_subscription(Imu, '/imu/data', self._imu_cb, 10)
+        self.create_subscription(Range, '/range', self._range_cb, sensor_qos)
+        self.create_subscription(Imu, '/imu/data', self._imu_cb, sensor_qos)
         self.create_subscription(OccupancyGrid, '/map', self._map_cb, map_qos)
-        self.create_subscription(Odometry, '/odometry/filtered', self._odom_cb, 10)
+        self.create_subscription(Odometry, '/odometry/filtered', self._odom_cb, sensor_qos)
         self.create_subscription(String, '/voice_command', self._voice_cb, 10)
-        self.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
+        self.create_subscription(LaserScan, '/scan', self._scan_cb, sensor_qos)
 
         # --- New subscriptions ---
-        self.create_subscription(Float32, '/battery', self._battery_cb, 10)
-        self.create_subscription(Float32, '/battery_percent', self._battery_pct_cb, 10)
-        self.create_subscription(Float32, '/cpu_temperature', self._cpu_temp_cb, 10)
+        self.create_subscription(Float32, '/battery', self._battery_cb, sensor_qos)
+        self.create_subscription(Float32, '/battery_percent', self._battery_pct_cb, sensor_qos)
+        self.create_subscription(Float32, '/cpu_temperature', self._cpu_temp_cb, sensor_qos)
         self.create_subscription(String, '/watchdog', self._watchdog_cb, 10)
         self.create_subscription(String, '/patrol/status', self._patrol_status_cb, 10)
         self.create_subscription(String, '/path_recorder/status', self._path_status_cb, 10)
