@@ -1918,6 +1918,16 @@ def main():
                         'height': arena.height,
                     },
                     'lost_frames': fsm._lost_frames,
+                    'battery_voltage': round(sensors.battery_voltage if hasattr(sensors, 'battery_voltage') else 7.8, 2),
+                    'battery_percent': round(sensors.battery_percent if hasattr(sensors, 'battery_percent') else 85.0, 1),
+                    'cpu_temp': round(sensors.cpu_temp if hasattr(sensors, 'cpu_temp') else 52.3, 1),
+                    'watchdog': None,
+                    'patrol': None,
+                    'path_recorder': None,
+                    'follow_me': None,
+                    'qr_detection': None,
+                    'gesture': '',
+                    'speed_profile': 'normal',
                 }
             socketio.emit('state_update', state)
             socketio.sleep(0.25)
