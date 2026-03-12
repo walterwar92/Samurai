@@ -139,7 +139,7 @@ class DashboardNode(Node):
         self._scan_points    = []
         self._voice_log      = deque(maxlen=20)
         self._event_log      = deque(maxlen=100)
-        self._battery        = {'voltage': -1.0, 'percentage': -1, 'status': 'unknown'}
+        self._battery        = {'voltage': -1.0, 'percent': -1, 'status': 'unknown'}
         self._temperature    = {'value': -1.0, 'unit': 'C'}
         self._watchdog       = {}
         self._speed_profile  = 'normal'
@@ -520,9 +520,12 @@ class DashboardNode(Node):
                 'map_info':     self._map_info,
                 'scan_points':  self._scan_points,
                 'voice_log':    list(self._voice_log),
-                'battery':      self._battery,
-                'temperature':  self._temperature,
-                'watchdog':     self._watchdog,
+                'battery':         self._battery,
+                'battery_voltage': self._battery.get('voltage', -1.0),
+                'battery_percent': self._battery.get('percent', self._battery.get('percentage', -1)),
+                'cpu_temp':        self._temperature.get('value', -1.0) if isinstance(self._temperature, dict) else float(self._temperature),
+                'temperature':     self._temperature,
+                'watchdog':        self._watchdog,
                 'speed_profile': self._speed_profile,
                 'actuators': {
                     'claw':  'open'  if self._claw_open else 'closed',
@@ -625,8 +628,6 @@ def create_app(ros_node: DashboardNode):
         _last_json = ''
         while True:
             await asyncio.sleep(0.25)
-            if not sio.manager.rooms:
-                continue
             state_json = json.dumps(ros_node.get_state())
             if state_json == _last_json:
                 continue

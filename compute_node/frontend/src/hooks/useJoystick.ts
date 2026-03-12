@@ -91,7 +91,7 @@ export function useJoystick(maxLinear = 0.3, maxAngular = 2.0) {
       intervalRef.current = null
     }
     velocityRef.current = { linear: 0, angular: 0 }
-    api.emergencyStop()
+    api.sendVelocity(0, 0)
     setState({ knobX: 50, knobY: 50, linear: 0, angular: 0, active: false })
   }, [])
 
