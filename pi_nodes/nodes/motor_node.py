@@ -27,6 +27,9 @@ SPEED_PROFILES = {
 }
 DEFAULT_PROFILE = 'normal'
 
+# Physical maximums (= 'fast' profile) — used for normalization only
+_PHYS_MAX_LIN, _PHYS_MAX_ANG = SPEED_PROFILES['fast']
+
 
 class MotorNode(MqttNode):
     def __init__(self, **kwargs):
@@ -74,10 +77,11 @@ class MotorNode(MqttNode):
         self._last_time = now
 
         # m/s → percentage for driver
-        lin_pct = (self._linear / self._max_lin * 100.0
-                   if self._max_lin > 0 else 0.0)
-        ang_pct = (self._angular / self._max_ang * 100.0
-                   if self._max_ang > 0 else 0.0)
+        # Clamp to profile limit, then normalize by physical maximum
+        lin = max(-self._max_lin, min(self._max_lin, self._linear))
+        ang = max(-self._max_ang, min(self._max_ang, self._angular))
+        lin_pct = lin / _PHYS_MAX_LIN * 100.0
+        ang_pct = ang / _PHYS_MAX_ANG * 100.0
         self._driver.move(lin_pct, ang_pct)
 
         # Open-loop odometry

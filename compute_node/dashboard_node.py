@@ -139,7 +139,7 @@ class DashboardNode(Node):
         self._scan_points    = []
         self._voice_log      = deque(maxlen=20)
         self._event_log      = deque(maxlen=100)
-        self._battery        = {'voltage': -1.0, 'percentage': -1, 'status': 'unknown'}
+        self._battery        = {'voltage': -1.0, 'percent': -1, 'status': 'unknown'}
         self._temperature    = {'value': -1.0, 'unit': 'C'}
         self._watchdog       = {}
         self._speed_profile  = 'normal'
@@ -520,9 +520,12 @@ class DashboardNode(Node):
                 'map_info':     self._map_info,
                 'scan_points':  self._scan_points,
                 'voice_log':    list(self._voice_log),
-                'battery':      self._battery,
-                'temperature':  self._temperature,
-                'watchdog':     self._watchdog,
+                'battery':         self._battery,
+                'battery_voltage': self._battery.get('voltage', -1.0),
+                'battery_percent': self._battery.get('percent', self._battery.get('percentage', -1)),
+                'cpu_temp':        self._temperature.get('value', -1.0) if isinstance(self._temperature, dict) else float(self._temperature),
+                'temperature':     self._temperature,
+                'watchdog':        self._watchdog,
                 'speed_profile': self._speed_profile,
                 'actuators': {
                     'claw':  'open'  if self._claw_open else 'closed',
@@ -841,10 +844,11 @@ def create_app(ros_node: DashboardNode):
     # ==========================================================
 
     @app.post('/api/emergency_stop')
+    @app.post('/api/robot/stop')
     async def api_emergency_stop():
-        """Immediate stop — publishes 'стоп' command regardless of FSM state."""
-        ros_node.send_command('стоп')
-        return _ok(action='emergency_stop')
+        """Immediate stop — sends zero velocity directly to Pi."""
+        ros_node.send_velocity(0.0, 0.0)
+        return _ok(action='stop')
 
     @app.post('/api/fsm/command')
     async def api_fsm_command(req: Request):
@@ -860,20 +864,28 @@ def create_app(ros_node: DashboardNode):
 
     @app.post('/api/actuators/claw')
     async def api_claw(req: Request):
-        body  = await req.json()
-        state = body.get('state', '').lower().strip()
-        if state not in ('open', 'close', 'closed'):
-            return _err('state must be "open" or "close"')
-        cmd = 'open' if state == 'open' else 'close'
+        body = await req.json()
+        # Accept both { open: bool } (frontend) and { state: "open"/"close" } (legacy)
+        if 'open' in body:
+            cmd = 'open' if body['open'] else 'close'
+        else:
+            state = body.get('state', '').lower().strip()
+            if state not in ('open', 'close', 'closed'):
+                return _err('body must contain "open" (bool) or "state" ("open"/"close")')
+            cmd = 'open' if state == 'open' else 'close'
         ros_node.set_claw(cmd)
         return _ok(claw='open' if cmd == 'open' else 'closed')
 
     @app.post('/api/actuators/laser')
     async def api_laser(req: Request):
-        body  = await req.json()
-        state = body.get('state', '').lower().strip()
-        if state not in ('on', 'off'):
-            return _err('state must be "on" or "off"')
+        body = await req.json()
+        # Accept both { on: bool } (frontend) and { state: "on"/"off" } (legacy)
+        if 'on' in body:
+            state = 'on' if body['on'] else 'off'
+        else:
+            state = body.get('state', '').lower().strip()
+            if state not in ('on', 'off'):
+                return _err('body must contain "on" (bool) or "state" ("on"/"off")')
         ros_node.set_laser(state)
         return _ok(laser=state)
 

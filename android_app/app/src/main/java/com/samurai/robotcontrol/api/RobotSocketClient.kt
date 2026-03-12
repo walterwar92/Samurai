@@ -132,11 +132,12 @@ class RobotSocketClient {
                 laser = actMap?.get("laser") as? String,
             )
 
-            // Battery
+            // Battery: Pi publishes "percent", старый формат — "percentage"
             val batMap = map["battery"] as? Map<*, *>
             val battery = BatteryStatus(
                 voltage    = batMap.dbl("voltage", -1.0),
-                percentage = batMap.dbl("percentage", -1.0).toInt(),
+                percentage = (batMap?.get("percent") as? Double
+                             ?: batMap?.get("percentage") as? Double ?: -1.0).toInt(),
                 status     = (batMap?.get("status") as? String) ?: "unknown",
             )
 
