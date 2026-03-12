@@ -94,7 +94,8 @@ from sensor_msgs.msg import CompressedImage, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import String
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+import socketio
+from fastapi import FastAPI, Request
 from fastapi.responses import Response, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -246,6 +247,14 @@ class DashboardNode(Node):
             self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
 
     def _mqtt_camera(self, payload):
+        flip = int(os.environ.get('CAMERA_FLIP', '-1'))  # -1=rotate180°, 0=vertical, 1=horizontal, 99=none
+        if flip != 99:
+            np_arr = np.frombuffer(bytes(payload), np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frame = cv2.flip(frame, flip)
+                _, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                payload = enc.tobytes()
         with self._lock:
             self._latest_frame = bytes(payload)
 
@@ -573,10 +582,36 @@ def _err(message: str):
     return JSONResponse({'ok': False, 'error': message}, status_code=400)
 
 
-def create_app(ros_node: DashboardNode) -> FastAPI:
+def create_app(ros_node: DashboardNode):
     base_dir   = _find_static_dir()
     static_dir = os.path.join(base_dir, 'static')
 
+    # ── Socket.IO server ──────────────────────────────────────────
+    sio = socketio.AsyncServer(
+        async_mode='asgi',
+        cors_allowed_origins='*',
+        logger=False,
+        engineio_logger=False,
+    )
+
+    @sio.event
+    async def connect(sid, environ):
+        pass
+
+    @sio.event
+    async def disconnect(sid):
+        pass
+
+    @sio.event
+    async def send_command(sid, data):
+        text = data.get('text', '') if isinstance(data, dict) else str(data)
+        ros_node.send_command(text)
+
+    @sio.event
+    async def reset_sim(sid, data):
+        pass  # no-op in robot mode
+
+    # ── FastAPI app ───────────────────────────────────────────────
     app = FastAPI(title='Samurai Dashboard')
     app.add_middleware(
         CORSMiddleware,
@@ -585,56 +620,20 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
         allow_headers=['*'],
     )
 
-    # Список активных WebSocket соединений для state_update push.
-    # asyncio.Lock используется вместо threading.Lock — все операции
-    # с этим списком происходят внутри одного event loop (coroutines).
-    _ws_clients: list[WebSocket] = []
-    _ws_lock = asyncio.Lock()
-
-    # ── Background: push state to all WS clients (4 Hz) ──────────
-    async def _ws_push_loop():
-        _last_json: str = ''
+    # ── Background: push state via Socket.IO (4 Hz) ───────────────
+    async def _sio_push_loop():
+        _last_json = ''
         while True:
             await asyncio.sleep(0.25)
-
-            async with _ws_lock:
-                if not _ws_clients:
-                    continue  # нет клиентов — пропускаем сериализацию
-
-            # Сериализуем один раз вне lock
             state_json = json.dumps(ros_node.get_state())
-
-            # Пропускаем отправку если состояние не изменилось (экономим CPU)
-            nonlocal_state = _ws_push_loop.__dict__
-            if state_json == nonlocal_state.get('_last_json', ''):
+            if state_json == _last_json:
                 continue
-            nonlocal_state['_last_json'] = state_json
-
-            dead: list[WebSocket] = []
-            async with _ws_lock:
-                clients = list(_ws_clients)
-
-            for ws in clients:
-                try:
-                    await ws.send_text(state_json)
-                except (WebSocketDisconnect, RuntimeError):
-                    dead.append(ws)
-                except Exception as exc:
-                    # Unexpected error — log and mark dead
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        'WebSocket send error: %s', exc)
-                    dead.append(ws)
-
-            if dead:
-                async with _ws_lock:
-                    for ws in dead:
-                        if ws in _ws_clients:
-                            _ws_clients.remove(ws)
+            _last_json = state_json
+            await sio.emit('state_update', ros_node.get_state())
 
     @app.on_event('startup')
     async def startup():
-        asyncio.create_task(_ws_push_loop())
+        asyncio.create_task(_sio_push_loop())
 
     # ── SPA ───────────────────────────────────────────────────────
     index_html = os.path.join(static_dir, 'index.html')
@@ -663,22 +662,6 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
     async def map_image_legacy():
         png = ros_node.get_map_png()
         return Response(content=png or b'\x89PNG\r\n\x1a\n', media_type='image/png')
-
-    # ── WebSocket state push (совместим с Socket.IO клиентом) ─────
-    @app.websocket('/ws/state')
-    async def ws_state(ws: WebSocket):
-        await ws.accept()
-        async with _ws_lock:
-            _ws_clients.append(ws)
-        try:
-            while True:
-                await ws.receive_text()  # держим соединение живым
-        except WebSocketDisconnect:
-            pass
-        finally:
-            async with _ws_lock:
-                if ws in _ws_clients:
-                    _ws_clients.remove(ws)
 
     # ==========================================================
     # REST API — GET
@@ -961,7 +944,8 @@ def create_app(ros_node: DashboardNode) -> FastAPI:
     if os.path.isdir(static_dir):
         app.mount('/', StaticFiles(directory=static_dir, html=True), name='static')
 
-    return app
+    # Wrap with Socket.IO ASGI middleware so /socket.io/ is handled
+    return socketio.ASGIApp(sio, other_asgi_app=app)
 
 
 # =============================================================

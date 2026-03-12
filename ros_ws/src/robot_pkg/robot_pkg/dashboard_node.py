@@ -1,38 +1,59 @@
 #!/usr/bin/env python3
 """
-dashboard_node — Web dashboard for Samurai robot monitoring.
-*** ON-ROBOT (Flask/SocketIO) version — runs directly on Raspberry Pi. ***
-
-NOTE: The primary/recommended dashboard is compute_node/dashboard_node.py
-(FastAPI + uvicorn), which runs on the compute laptop with full API coverage,
-async WebSocket push, and better performance. Use this Flask version only when
-running the robot standalone without a compute laptop.
+dashboard_node — Web dashboard + REST API for Samurai robot.
 
 Runs on the compute laptop alongside YOLO/SLAM/Nav2.
 Provides a real-time web interface at http://localhost:5000
 
-Subscribes:
-    /yolo/annotated       (Image)         — annotated camera feed
-    /robot_status         (String)        — FSM state JSON
-    /ball_detection       (String)        — ball detection JSON
-    /range                (Range)         — ultrasonic distance
-    /imu/data             (Imu)           — IMU orientation
-    /map                  (OccupancyGrid) — SLAM map
-    /odometry/filtered    (Odometry)      — robot pose
-    /voice_command        (String)        — voice commands
-    /scan                 (LaserScan)     — pseudo-laser scan
-    /battery              (Float32)       — battery voltage
-    /battery_percent      (Float32)       — battery percentage
-    /cpu_temperature      (Float32)       — CPU temperature
-    /watchdog             (String)        — node health JSON
-    /patrol/status        (String)        — patrol status JSON
-    /path_recorder/status (String)        — path recorder status JSON
-    /follow_me/status     (String)        — follow-me status JSON
-    /qr_detection         (String)        — QR detection JSON
-    /gesture/command      (String)        — gesture command
-    /speed_profile/active (String)        — current speed profile
+Data sources:
+    PRIMARY   — Direct MQTT from Pi (camera, range, imu, battery, status,
+                odom, claw/state, watchdog, temperature). Works even if
+                ROS2 bridge is down. Broker IP from env MQTT_BROKER.
+    SECONDARY — ROS2 topics from mqtt_bridge_compute (SLAM map,
+                filtered odometry, YOLO annotated image).
+
+Commands go directly to Pi via MQTT (no ROS2 bridge needed).
+
+REST API reference:
+    GET  /api/status                  — full robot snapshot
+    GET  /api/robot/pose              — x, y, yaw
+    GET  /api/robot/velocity          — linear/angular speed
+    GET  /api/sensors                 — all sensors
+    GET  /api/sensors/ultrasonic      — ultrasonic range only
+    GET  /api/sensors/imu             — YPR + gyro + accel
+    GET  /api/detection               — YOLO detections
+    GET  /api/detection/closest       — closest object (optional ?color=)
+    GET  /api/fsm                     — current FSM state
+    GET  /api/actuators               — claw + laser state
+    GET  /api/battery                 — battery info
+    GET  /api/speed_profile           — current speed profile
+    GET  /api/camera/frame            — JPEG binary
+    GET  /api/camera/frame.json       — base64 JPEG
+    GET  /api/map/image               — PNG binary
+    GET  /api/map/info                — map metadata
+    GET  /api/map/list                — list saved maps
+    GET  /api/log                     — voice/event log
+    POST /api/robot/velocity          — {linear_x, angular_z}
+    POST /api/fsm/command             — send voice command
+    POST /api/actuators/claw          — open / close
+    POST /api/actuators/laser         — on / off
+    POST /api/speed_profile           — slow / normal / fast
+    POST /api/patrol/command          — start / stop patrol
+    POST /api/patrol/waypoints        — set waypoints
+    POST /api/follow_me               — start / stop follow-me
+    POST /api/path_recorder/command   — start / stop / play path
+    GET  /api/path_recorder/list      — list saved paths
+    POST /api/map/save                — save SLAM map
+    POST /api/map/load                — load SLAM map
+
+MQTT env vars (passed from start_laptop_robot.sh):
+    MQTT_BROKER  — Pi IP address (required)
+    MQTT_PORT    — broker port (default: 1883)
+    ROBOT_ID     — robot identifier (default: robot1)
 """
 
+import asyncio
+import base64
 import json
 import math
 import os
@@ -41,6 +62,8 @@ import threading
 import time
 from collections import deque
 
+import paho.mqtt.client as mqtt_client
+
 
 def _get_local_ip() -> str:
     """Auto-detect local network IP address.
@@ -48,7 +71,6 @@ def _get_local_ip() -> str:
     Uses a non-routed UDP connect trick (no packets sent).
     2-second timeout prevents hanging when network is unavailable.
     """
-    import logging
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(2.0)
@@ -57,23 +79,32 @@ def _get_local_ip() -> str:
         s.close()
         return ip
     except OSError as exc:
+        import logging
         logging.getLogger(__name__).warning(
             'IP auto-detection failed (%s) — falling back to 127.0.0.1', exc)
         return '127.0.0.1'
+
 
 import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import CompressedImage, Range, Imu, LaserScan
+from sensor_msgs.msg import CompressedImage, LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String
 
-from flask import Flask, Response, request, jsonify, send_from_directory
-from flask_socketio import SocketIO
-from flask_cors import CORS
+import socketio
+from fastapi import FastAPI, Request
+from fastapi.responses import Response, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
+
+# =============================================================
+# ROS2 Node
+# =============================================================
 
 class DashboardNode(Node):
     def __init__(self):
@@ -84,100 +115,280 @@ class DashboardNode(Node):
 
         self._lock = threading.Lock()
 
-        # --- Shared state ---
-        self._latest_frame = None
-        self._robot_status = {}
+        # ── MQTT config from env (set by start_laptop_robot.sh) ─
+        self._mqtt_broker = os.environ.get('MQTT_BROKER', '')
+        self._mqtt_port   = int(os.environ.get('MQTT_PORT', '1883'))
+        self._robot_id    = os.environ.get('ROBOT_ID', 'robot1')
+        self._prefix      = f'samurai/{self._robot_id}'
+        self._mqtt_connected = False
+
+        # ── Shared state ────────────────────────────────────
+        self._latest_frame   = None   # raw JPEG bytes (from camera MQTT)
+        self._yolo_frame     = None   # annotated JPEG (from ROS2 YOLO)
+        self._robot_status   = {}
         self._ball_detection = {}
-        self._range_m = -1.0
-        self._imu_ypr = [0.0, 0.0, 0.0]
-        self._map_png = None
-        self._map_info = {}
-        self._robot_pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
-        self._scan_points = []
-        self._voice_log = deque(maxlen=20)
+        self._range_m        = -1.0
+        self._imu_ypr        = [0.0, 0.0, 0.0]
+        self._imu_gyro       = [0.0, 0.0, 0.0]
+        self._imu_accel      = [0.0, 0.0, 0.0]
+        self._map_png        = None
+        self._map_info       = {}
+        self._robot_pose     = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
+        self._robot_velocity = {'linear_x': 0.0, 'linear_y': 0.0, 'angular_z': 0.0}
+        self._cmd_velocity   = {'linear_x': 0.0, 'angular_z': 0.0}
+        self._scan_points    = []
+        self._voice_log      = deque(maxlen=20)
+        self._event_log      = deque(maxlen=100)
+        self._battery        = {'voltage': -1.0, 'percentage': -1, 'status': 'unknown'}
+        self._temperature    = {'value': -1.0, 'unit': 'C'}
+        self._watchdog       = {}
+        self._speed_profile  = 'normal'
+        self._claw_open      = False
+        self._laser_on       = False
 
-        # New state fields
-        self._battery_voltage = 0.0
-        self._battery_percent = 0.0
-        self._cpu_temp = 0.0
-        self._watchdog_status = {}
-        self._patrol_status = {}
-        self._path_recorder_status = {}
-        self._follow_me_status = {}
-        self._qr_detection = {}
-        self._gesture_command = ''
-        self._speed_profile = 'normal'
+        # ── MQTT client (primary sensor source) ──────────────
+        if self._mqtt_broker:
+            self._mqtt = mqtt_client.Client(client_id='samurai_dashboard')
+            self._mqtt.on_connect    = self._mqtt_on_connect
+            self._mqtt.on_disconnect = self._mqtt_on_disconnect
+            self._mqtt.on_message    = self._mqtt_on_message
+            self._mqtt.reconnect_delay_set(min_delay=1, max_delay=10)
+            self._mqtt.connect_async(self._mqtt_broker, self._mqtt_port)
+            self._mqtt.loop_start()
+            self.get_logger().info(
+                f'MQTT client connecting → {self._mqtt_broker}:{self._mqtt_port}')
+        else:
+            self._mqtt = None
+            self.get_logger().warn(
+                'MQTT_BROKER env not set — sensor data from ROS2 only')
 
-        # --- QoS profiles ---
+        # ── ROS2: SLAM data (map, filtered odometry, YOLO image) ─
         map_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        # Sensor QoS — matches mqtt_bridge_compute BEST_EFFORT publishers
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
-            depth=5,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
         )
+        # Annotated YOLO image (ROS2 only — processed on laptop)
+        self.create_subscription(
+            CompressedImage, '/yolo/annotated/compressed', self._yolo_image_cb, 5)
+        # SLAM map
+        self.create_subscription(
+            OccupancyGrid, '/map', self._map_cb, map_qos)
+        # Filtered odometry from EKF (SLAM-fused pose)
+        self.create_subscription(
+            Odometry, '/odometry/filtered', self._odom_cb, 10)
+        # Laser scan (for map overlay)
+        self.create_subscription(
+            LaserScan, '/scan', self._scan_cb, 10)
+        # YOLO detections (ROS2 — for ball detection)
+        self.create_subscription(
+            String, '/ball_detection', self._detection_cb, 10)
 
-        # --- Original subscriptions ---
-        self.create_subscription(CompressedImage, '/yolo/annotated/compressed', self._image_cb, sensor_qos)
-        self.create_subscription(String, '/robot_status', self._status_cb, 10)
-        self.create_subscription(String, '/ball_detection', self._detection_cb, 10)
-        self.create_subscription(Range, '/range', self._range_cb, sensor_qos)
-        self.create_subscription(Imu, '/imu/data', self._imu_cb, sensor_qos)
-        self.create_subscription(OccupancyGrid, '/map', self._map_cb, map_qos)
-        self.create_subscription(Odometry, '/odometry/filtered', self._odom_cb, sensor_qos)
-        self.create_subscription(String, '/voice_command', self._voice_cb, 10)
-        self.create_subscription(LaserScan, '/scan', self._scan_cb, sensor_qos)
+        # ── ROS2 Publishers (→ mqtt_bridge_compute → Pi) ─────
+        # Also kept for Nav2 integration (Nav2 publishes /cmd_vel)
+        self._pub_map_save = self.create_publisher(String, '/map_manager/save', 10)
+        self._pub_map_load = self.create_publisher(String, '/map_manager/load', 10)
 
-        # --- New subscriptions ---
-        self.create_subscription(Float32, '/battery', self._battery_cb, sensor_qos)
-        self.create_subscription(Float32, '/battery_percent', self._battery_pct_cb, sensor_qos)
-        self.create_subscription(Float32, '/cpu_temperature', self._cpu_temp_cb, sensor_qos)
-        self.create_subscription(String, '/watchdog', self._watchdog_cb, 10)
-        self.create_subscription(String, '/patrol/status', self._patrol_status_cb, 10)
-        self.create_subscription(String, '/path_recorder/status', self._path_status_cb, 10)
-        self.create_subscription(String, '/follow_me/status', self._follow_status_cb, 10)
-        self.create_subscription(String, '/qr_detection', self._qr_cb, 10)
-        self.create_subscription(String, '/gesture/command', self._gesture_cb, 10)
-        self.create_subscription(String, '/speed_profile/active', self._speed_profile_cb, 10)
+        ip = _get_local_ip()
+        self.get_logger().info(f'Dashboard node started — http://{ip}:{self._port}')
+        self.get_logger().info(f'REST API           — http://{ip}:{self._port}/api/status')
 
-        # --- Publishers for commands from dashboard ---
-        self._speed_profile_pub = self.create_publisher(String, '/speed_profile', 10)
-        self._patrol_wp_pub = self.create_publisher(String, '/patrol/waypoints', 10)
-        self._patrol_cmd_pub = self.create_publisher(String, '/patrol/command', 10)
-        self._follow_cmd_pub = self.create_publisher(String, '/follow_me/command', 10)
-        self._path_cmd_pub = self.create_publisher(String, '/path_recorder/command', 10)
-        self._map_save_pub = self.create_publisher(String, '/map_manager/save', 10)
-        self._map_load_pub = self.create_publisher(String, '/map_manager/load', 10)
-        self._map_list_pub = self.create_publisher(String, '/map_manager/list', 10)
-        self._voice_cmd_pub = self.create_publisher(String, '/voice_command', 10)
+    # ── MQTT Client Callbacks ──────────────────────────────────
 
-        # Listen for map list responses
-        self._map_list_data = []
-        self.create_subscription(String, '/map_manager/map_list', self._map_list_cb, 10)
-        self._path_list_data = []
-        self.create_subscription(String, '/path_recorder/path_list', self._path_list_cb, 10)
+    def _mqtt_on_connect(self, client, userdata, flags, rc):
+        if rc != 0:
+            self.get_logger().error(f'MQTT connect failed rc={rc}')
+            return
+        self._mqtt_connected = True
+        p = self._prefix
+        # Subscribe to all Pi sensor topics
+        for topic in ['camera', 'range', 'imu', 'battery', 'temperature',
+                      'status', 'odom', 'claw/state', 'watchdog',
+                      'voice_command', 'speed_profile/active']:
+            client.subscribe(f'{p}/{topic}', qos=0)
+        self.get_logger().info(f'MQTT connected to {self._mqtt_broker} — subscribed to Pi topics')
 
-        self.get_logger().info(f'Dashboard node started — http://{_get_local_ip()}:{self._port}')
+    def _mqtt_on_disconnect(self, client, userdata, rc):
+        self._mqtt_connected = False
+        if rc != 0:
+            self.get_logger().warn(f'MQTT disconnected (rc={rc}), reconnecting...')
 
-    # ── Original ROS2 Callbacks ────────────────────────────────────
-
-    def _image_cb(self, msg: CompressedImage):
-        # Кадр уже JPEG от yolo_detector — передаём напрямую без decode+encode
-        with self._lock:
-            self._latest_frame = bytes(msg.data)
-
-    def _status_cb(self, msg: String):
+    def _mqtt_on_message(self, client, userdata, msg):
+        suffix = msg.topic[len(self._prefix) + 1:]
         try:
-            data = json.loads(msg.data)
+            if suffix == 'camera':
+                self._mqtt_camera(msg.payload)
+            elif suffix == 'range':
+                self._mqtt_range(msg.payload)
+            elif suffix == 'imu':
+                self._mqtt_imu(msg.payload)
+            elif suffix == 'battery':
+                self._mqtt_battery(msg.payload)
+            elif suffix == 'temperature':
+                self._mqtt_temperature(msg.payload)
+            elif suffix == 'status':
+                self._mqtt_status(msg.payload)
+            elif suffix == 'odom':
+                self._mqtt_odom(msg.payload)
+            elif suffix == 'claw/state':
+                self._mqtt_claw_state(msg.payload)
+            elif suffix == 'watchdog':
+                self._mqtt_watchdog(msg.payload)
+            elif suffix == 'voice_command':
+                self._mqtt_voice(msg.payload)
+            elif suffix == 'speed_profile/active':
+                self._mqtt_speed_profile(msg.payload)
+        except Exception as exc:
+            self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
+
+    def _mqtt_camera(self, payload):
+        flip = int(os.environ.get('CAMERA_FLIP', '-1'))  # -1=rotate180°, 0=vertical, 1=horizontal, 99=none
+        if flip != 99:
+            np_arr = np.frombuffer(bytes(payload), np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frame = cv2.flip(frame, flip)
+                _, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                payload = enc.tobytes()
+        with self._lock:
+            self._latest_frame = bytes(payload)
+
+    def _mqtt_range(self, payload):
+        try:
+            d = json.loads(payload)
+            r = float(d.get('range', d) if isinstance(d, dict) else d)
+        except Exception:
+            try:
+                r = float(payload)
+            except Exception:
+                return
+        with self._lock:
+            self._range_m = round(r, 3)
+
+    def _mqtt_imu(self, payload):
+        d = json.loads(payload)
+        # raw gyro/accel → compute yaw/pitch/roll if quaternion present
+        gx = d.get('gx', 0.0)
+        gy = d.get('gy', 0.0)
+        gz = d.get('gz', 0.0)
+        ax = d.get('ax', 0.0)
+        ay = d.get('ay', 0.0)
+        az = d.get('az', 1.0)
+        # Simple pitch/roll from accel
+        pitch = math.degrees(math.atan2(ay, math.sqrt(ax*ax + az*az)))
+        roll  = math.degrees(math.atan2(-ax, az))
+        with self._lock:
+            self._imu_gyro  = [round(gx, 4), round(gy, 4), round(gz, 4)]
+            self._imu_accel = [round(ax, 4), round(ay, 4), round(az, 4)]
+            self._imu_ypr[1] = round(pitch, 1)
+            self._imu_ypr[2] = round(roll, 1)
+
+    def _mqtt_battery(self, payload):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        with self._lock:
+            self._battery = d
+
+    def _mqtt_temperature(self, payload):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            try:
+                d = {'value': float(payload), 'unit': 'C'}
+            except Exception:
+                return
+        with self._lock:
+            self._temperature = d
+
+    def _mqtt_status(self, payload):
+        try:
+            text = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+            d = json.loads(text)
+        except Exception:
+            return
+        with self._lock:
+            self._robot_status = d
+
+    def _mqtt_odom(self, payload):
+        d = json.loads(payload)
+        x     = d.get('x', 0.0)
+        y     = d.get('y', 0.0)
+        theta = d.get('theta', 0.0)
+        vx    = d.get('vx', 0.0)
+        vz    = d.get('vz', 0.0)
+        with self._lock:
+            self._robot_pose     = {'x': round(x, 3), 'y': round(y, 3),
+                                    'yaw': round(theta, 3)}
+            self._robot_velocity = {'linear_x': round(vx, 3),
+                                    'linear_y': 0.0,
+                                    'angular_z': round(vz, 3)}
+
+    def _mqtt_claw_state(self, payload):
+        try:
+            text = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+            d = json.loads(text) if text.startswith('{') else {'angle': int(text)}
+        except Exception:
+            return
+        angle = d.get('angle', 90)
+        with self._lock:
+            self._claw_open = (angle < 60)
+
+    def _mqtt_watchdog(self, payload):
+        try:
+            d = json.loads(payload)
             with self._lock:
-                self._robot_status = data
-        except json.JSONDecodeError:
+                self._watchdog = d
+        except Exception:
             pass
 
+    def _mqtt_voice(self, payload):
+        try:
+            text = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+            entry = {'text': text, 'time': time.strftime('%H:%M:%S'), 'type': 'voice'}
+            with self._lock:
+                self._voice_log.append(entry)
+                self._event_log.append(entry)
+        except Exception:
+            pass
+
+    def _mqtt_speed_profile(self, payload):
+        try:
+            text = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+            with self._lock:
+                self._speed_profile = text.strip()
+        except Exception:
+            pass
+
+    # ── MQTT publish helpers (commands → Pi directly) ──────────
+
+    def _mqtt_pub(self, subtopic: str, payload, qos=0):
+        """Publish directly to Pi via MQTT."""
+        if self._mqtt and self._mqtt_connected:
+            if isinstance(payload, (dict, list)):
+                payload = json.dumps(payload)
+            self._mqtt.publish(f'{self._prefix}/{subtopic}', payload, qos=qos)
+            return True
+        self.get_logger().warn(f'MQTT not connected — cannot publish {subtopic}')
+        return False
+
+    # ── ROS2 Callbacks (SLAM data only) ───────────────────────────
+
+    def _yolo_image_cb(self, msg: CompressedImage):
+        """Annotated YOLO frame — overlay on raw camera frame if available."""
+        with self._lock:
+            self._yolo_frame = bytes(msg.data)
+            # Use annotated frame as display frame when available
+            self._latest_frame = self._yolo_frame
+
     def _detection_cb(self, msg: String):
+        """YOLO ball detection from ROS2 (processed on laptop)."""
         try:
             data = json.loads(msg.data)
             with self._lock:
@@ -185,196 +396,175 @@ class DashboardNode(Node):
         except json.JSONDecodeError:
             pass
 
-    def _range_cb(self, msg: Range):
-        with self._lock:
-            self._range_m = round(msg.range, 3)
-
-    def _imu_cb(self, msg: Imu):
-        q = msg.orientation
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        yaw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
-
-        sinp = 2.0 * (q.w * q.y - q.z * q.x)
-        pitch = math.degrees(math.asin(max(-1.0, min(1.0, sinp))))
-
-        sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z)
-        cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
-        roll = math.degrees(math.atan2(sinr_cosp, cosr_cosp))
-
-        with self._lock:
-            self._imu_ypr = [round(yaw, 1), round(pitch, 1), round(roll, 1)]
-
     def _map_cb(self, msg: OccupancyGrid):
-        w = msg.info.width
-        h = msg.info.height
+        w, h = msg.info.width, msg.info.height
         data = np.array(msg.data, dtype=np.int8).reshape((h, w))
-
         img = np.full((h, w, 3), 128, dtype=np.uint8)
-        img[data == 0] = [240, 240, 240]
-        img[data > 50] = [30, 30, 30]
-
+        img[data == 0]   = [240, 240, 240]
+        img[data > 50]   = [30,  30,  30]
         img = cv2.flip(img, 0)
         _, png = cv2.imencode('.png', img)
-
         with self._lock:
-            self._map_png = png.tobytes()
+            self._map_png  = png.tobytes()
             self._map_info = {
-                'width': w,
-                'height': h,
+                'width': w, 'height': h,
                 'resolution': msg.info.resolution,
                 'origin_x': msg.info.origin.position.x,
                 'origin_y': msg.info.origin.position.y,
             }
 
     def _odom_cb(self, msg: Odometry):
+        """Filtered odometry from EKF (SLAM-fused) — overrides raw MQTT odom."""
         pos = msg.pose.pose.position
-        q = msg.pose.pose.orientation
+        q   = msg.pose.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw = math.atan2(siny_cosp, cosy_cosp)
-
         with self._lock:
-            self._robot_pose = {
-                'x': round(pos.x, 3),
-                'y': round(pos.y, 3),
-                'yaw': round(yaw, 3),
+            self._robot_pose = {'x': round(pos.x, 3), 'y': round(pos.y, 3),
+                                'yaw': round(yaw, 3)}
+            self._robot_velocity = {
+                'linear_x':  round(msg.twist.twist.linear.x,  3),
+                'linear_y':  round(msg.twist.twist.linear.y,  3),
+                'angular_z': round(msg.twist.twist.angular.z, 3),
             }
 
-    def _voice_cb(self, msg: String):
-        entry = {
-            'text': msg.data,
-            'time': time.strftime('%H:%M:%S'),
-        }
-        with self._lock:
-            self._voice_log.append(entry)
-
     def _scan_cb(self, msg: LaserScan):
-        points = []
-        angle = msg.angle_min
+        points, angle = [], msg.angle_min
         for r in msg.ranges:
             if msg.range_min < r < msg.range_max:
-                x = r * math.cos(angle)
-                y = r * math.sin(angle)
-                points.append([round(x, 3), round(y, 3)])
+                points.append([round(r * math.cos(angle), 3), round(r * math.sin(angle), 3)])
             angle += msg.angle_increment
         with self._lock:
             self._scan_points = points
 
-    # ── New ROS2 Callbacks ─────────────────────────────────────────
+    # ── Command helpers (publish directly to Pi via MQTT) ──────────
 
-    def _battery_cb(self, msg: Float32):
+    def send_command(self, command: str):
+        """Send voice/FSM command to Pi."""
+        self._mqtt_pub('voice_command', command, qos=1)
+        entry = {'text': command, 'time': time.strftime('%H:%M:%S'), 'type': 'api_command'}
         with self._lock:
-            self._battery_voltage = round(msg.data, 2)
+            self._event_log.append(entry)
 
-    def _battery_pct_cb(self, msg: Float32):
+    def send_velocity(self, linear_x: float, angular_z: float):
+        """Send cmd_vel directly to Pi."""
+        self._mqtt_pub('cmd_vel',
+                       {'linear_x': round(linear_x, 3), 'angular_z': round(angular_z, 3)},
+                       qos=0)
         with self._lock:
-            self._battery_percent = round(msg.data, 1)
+            self._cmd_velocity = {'linear_x': round(linear_x, 3),
+                                  'angular_z': round(angular_z, 3)}
 
-    def _cpu_temp_cb(self, msg: Float32):
+    def set_claw(self, state: str):
+        self._mqtt_pub('claw/command', state, qos=1)
         with self._lock:
-            self._cpu_temp = round(msg.data, 1)
+            self._claw_open = (state == 'open')
 
-    def _watchdog_cb(self, msg: String):
-        try:
-            data = json.loads(msg.data)
-            with self._lock:
-                self._watchdog_status = data
-        except json.JSONDecodeError:
-            pass
-
-    def _patrol_status_cb(self, msg: String):
-        try:
-            with self._lock:
-                self._patrol_status = json.loads(msg.data)
-        except json.JSONDecodeError:
-            pass
-
-    def _path_status_cb(self, msg: String):
-        try:
-            with self._lock:
-                self._path_recorder_status = json.loads(msg.data)
-        except json.JSONDecodeError:
-            pass
-
-    def _follow_status_cb(self, msg: String):
-        try:
-            with self._lock:
-                self._follow_me_status = json.loads(msg.data)
-        except json.JSONDecodeError:
-            pass
-
-    def _qr_cb(self, msg: String):
-        try:
-            with self._lock:
-                self._qr_detection = json.loads(msg.data)
-        except json.JSONDecodeError:
-            pass
-
-    def _gesture_cb(self, msg: String):
+    def set_laser(self, state: str):
+        self._mqtt_pub('laser/command', state, qos=1)
         with self._lock:
-            self._gesture_command = msg.data
+            self._laser_on = (state == 'on')
 
-    def _speed_profile_cb(self, msg: String):
-        with self._lock:
-            self._speed_profile = msg.data
+    def set_speed_profile(self, profile: str):
+        self._mqtt_pub('speed_profile', profile, qos=1)
 
-    def _map_list_cb(self, msg: String):
-        try:
-            self._map_list_data = json.loads(msg.data)
-        except json.JSONDecodeError:
-            pass
+    def set_patrol_command(self, command: str):
+        self._mqtt_pub('patrol/command', command, qos=1)
 
-    def _path_list_cb(self, msg: String):
-        try:
-            self._path_list_data = json.loads(msg.data)
-        except json.JSONDecodeError:
-            pass
+    def set_patrol_waypoints(self, waypoints: list):
+        self._mqtt_pub('patrol/waypoints', json.dumps(waypoints), qos=1)
 
-    # ── Data Access (for Flask) ──────────────────────────────────
+    def set_follow_me(self, command: str):
+        self._mqtt_pub('follow_me/command', command, qos=1)
+
+    def set_path_recorder(self, payload: dict):
+        self._mqtt_pub('path_recorder/command', json.dumps(payload), qos=1)
+
+    def save_map(self, name: str):
+        self._pub_str(self._pub_map_save, name)
+
+    def load_map(self, name: str):
+        self._pub_str(self._pub_map_load, name)
+
+    def _pub_str(self, publisher, text: str):
+        msg = String()
+        msg.data = text
+        publisher.publish(msg)
+
+    # ── Data access (for Flask) ────────────────────────────────────
 
     def get_frame(self):
         with self._lock:
             return self._latest_frame
 
-    def get_state(self):
-        with self._lock:
-            return {
-                'status': self._robot_status,
-                'detection': self._ball_detection,
-                'range_m': self._range_m,
-                'imu_ypr': self._imu_ypr,
-                'pose': self._robot_pose,
-                'map_info': self._map_info,
-                'scan_points': self._scan_points,
-                'voice_log': list(self._voice_log),
-                'battery_voltage': self._battery_voltage,
-                'battery_percent': self._battery_percent,
-                'cpu_temp': self._cpu_temp,
-                'watchdog': self._watchdog_status,
-                'patrol': self._patrol_status,
-                'path_recorder': self._path_recorder_status,
-                'follow_me': self._follow_me_status,
-                'qr_detection': self._qr_detection,
-                'gesture': self._gesture_command,
-                'speed_profile': self._speed_profile,
-            }
-
     def get_map_png(self):
         with self._lock:
             return self._map_png
 
-    def pub_string(self, publisher, text: str):
-        msg = String()
-        msg.data = text
-        publisher.publish(msg)
+    def get_state(self):
+        """Full state dict for SocketIO push."""
+        with self._lock:
+            return {
+                'status':       self._robot_status,
+                'detection':    self._ball_detection,
+                'range_m':      self._range_m,
+                'imu': {
+                    'yaw': self._imu_ypr[0], 'pitch': self._imu_ypr[1], 'roll': self._imu_ypr[2],
+                    'gyro':  {'x': self._imu_gyro[0],  'y': self._imu_gyro[1],  'z': self._imu_gyro[2]},
+                    'accel': {'x': self._imu_accel[0], 'y': self._imu_accel[1], 'z': self._imu_accel[2]},
+                },
+                'pose':         self._robot_pose,
+                'velocity':     self._robot_velocity,
+                'cmd_velocity': self._cmd_velocity,
+                'map_info':     self._map_info,
+                'scan_points':  self._scan_points,
+                'voice_log':    list(self._voice_log),
+                'battery':      self._battery,
+                'temperature':  self._temperature,
+                'watchdog':     self._watchdog,
+                'speed_profile': self._speed_profile,
+                'actuators': {
+                    'claw':  'open'  if self._claw_open else 'closed',
+                    'laser': 'on'    if self._laser_on  else 'off',
+                },
+            }
+
+    def _snapshot(self):
+        """Compact snapshot for /api/status."""
+        with self._lock:
+            return {
+                'robot_status':  self._robot_status,
+                'pose':          dict(self._robot_pose),
+                'velocity':      dict(self._robot_velocity),
+                'cmd_velocity':  dict(self._cmd_velocity),
+                'sensors': {
+                    'ultrasonic': {'range_m': self._range_m},
+                    'imu': {
+                        'yaw': self._imu_ypr[0], 'pitch': self._imu_ypr[1], 'roll': self._imu_ypr[2],
+                        'gyro':  {'x': self._imu_gyro[0],  'y': self._imu_gyro[1],  'z': self._imu_gyro[2]},
+                        'accel': {'x': self._imu_accel[0], 'y': self._imu_accel[1], 'z': self._imu_accel[2]},
+                    },
+                },
+                'detection':     dict(self._ball_detection),
+                'actuators': {
+                    'claw':  'open' if self._claw_open else 'closed',
+                    'laser': 'on'   if self._laser_on  else 'off',
+                },
+                'battery':       dict(self._battery),
+                'temperature':   dict(self._temperature),
+                'watchdog':      dict(self._watchdog),
+                'speed_profile': self._speed_profile,
+                'map_info':      dict(self._map_info),
+                'event_log':     list(self._event_log)[-20:],
+            }
 
 
-# ═════════════════════════════════════════════════════════════════
-# Flask Application
-# ═════════════════════════════════════════════════════════════════
+# =============================================================
+# FastAPI Application
+# =============================================================
 
-def _find_compute_node_dir() -> str:
+def _find_static_dir() -> str:
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(10):
         candidate = os.path.join(d, 'compute_node')
@@ -384,163 +574,385 @@ def _find_compute_node_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _ok(**kwargs):
+    return {'ok': True, **kwargs}
+
+
+def _err(message: str):
+    return JSONResponse({'ok': False, 'error': message}, status_code=400)
+
+
 def create_app(ros_node: DashboardNode):
-    base_dir = _find_compute_node_dir()
-    template_dir = os.path.join(base_dir, 'templates')
+    base_dir   = _find_static_dir()
     static_dir = os.path.join(base_dir, 'static')
-    app = Flask(__name__, template_folder=template_dir,
-                static_folder=static_dir, static_url_path='')
-    CORS(app)
-    socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
-    @app.route('/')
-    @app.route('/dashboard')
-    @app.route('/admin')
-    def serve_spa():
-        return send_from_directory(static_dir, 'index.html')
+    # ── Socket.IO server ──────────────────────────────────────────
+    sio = socketio.AsyncServer(
+        async_mode='asgi',
+        cors_allowed_origins='*',
+        logger=False,
+        engineio_logger=False,
+    )
 
-    @app.route('/video_feed')
-    def video_feed():
-        def generate():
-            while True:
-                frame = ros_node.get_frame()
-                if frame is not None:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n'
-                           + frame + b'\r\n')
-                else:
-                    time.sleep(0.1)
-                time.sleep(0.033)
-        return Response(generate(),
-                        mimetype='multipart/x-mixed-replace; boundary=frame')
+    @sio.event
+    async def connect(sid, environ):
+        pass
 
-    @app.route('/map.png')
-    def map_image():
-        png = ros_node.get_map_png()
-        if png is None:
-            return Response(b'\x89PNG\r\n\x1a\n', mimetype='image/png')
-        return Response(png, mimetype='image/png')
+    @sio.event
+    async def disconnect(sid):
+        pass
 
-    # ── New API routes ─────────────────────────────────────────
+    @sio.event
+    async def send_command(sid, data):
+        text = data.get('text', '') if isinstance(data, dict) else str(data)
+        ros_node.send_command(text)
 
-    @app.route('/api/speed_profile', methods=['POST'])
-    def set_speed_profile():
-        data = request.get_json(silent=True) or {}
-        profile = data.get('profile', 'normal')
-        ros_node.pub_string(ros_node._speed_profile_pub, profile)
-        return jsonify({'ok': True, 'profile': profile})
+    @sio.event
+    async def reset_sim(sid, data):
+        pass  # no-op in robot mode
 
-    @app.route('/api/patrol/waypoints', methods=['POST'])
-    def set_patrol_waypoints():
-        data = request.get_json(silent=True) or {}
-        waypoints = data.get('waypoints', [])
-        ros_node.pub_string(ros_node._patrol_wp_pub, json.dumps(waypoints))
-        return jsonify({'ok': True, 'count': len(waypoints)})
+    # ── FastAPI app ───────────────────────────────────────────────
+    app = FastAPI(title='Samurai Dashboard')
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=['*'],
+        allow_methods=['*'],
+        allow_headers=['*'],
+    )
 
-    @app.route('/api/patrol/command', methods=['POST'])
-    def patrol_command():
-        data = request.get_json(silent=True) or {}
-        cmd = data.get('command', 'stop')
-        ros_node.pub_string(ros_node._patrol_cmd_pub, cmd)
-        return jsonify({'ok': True, 'command': cmd})
-
-    @app.route('/api/map/save', methods=['POST'])
-    def save_map():
-        data = request.get_json(silent=True) or {}
-        name = data.get('name', 'default')
-        ros_node.pub_string(ros_node._map_save_pub, name)
-        return jsonify({'ok': True, 'name': name})
-
-    @app.route('/api/map/load', methods=['POST'])
-    def load_map():
-        data = request.get_json(silent=True) or {}
-        name = data.get('name', '')
-        ros_node.pub_string(ros_node._map_load_pub, name)
-        return jsonify({'ok': True, 'name': name})
-
-    @app.route('/api/map/list', methods=['GET'])
-    def list_maps():
-        ros_node.pub_string(ros_node._map_list_pub, 'list')
-        time.sleep(0.3)
-        return jsonify({'maps': ros_node._map_list_data})
-
-    @app.route('/api/follow_me', methods=['POST'])
-    def follow_me_cmd():
-        data = request.get_json(silent=True) or {}
-        cmd = data.get('command', 'stop')
-        ros_node.pub_string(ros_node._follow_cmd_pub, cmd)
-        return jsonify({'ok': True, 'command': cmd})
-
-    @app.route('/api/path_recorder/command', methods=['POST'])
-    def path_recorder_cmd():
-        data = request.get_json(silent=True) or {}
-        cmd = data.get('command', 'stop')
-        ros_node.pub_string(ros_node._path_cmd_pub, cmd)
-        return jsonify({'ok': True, 'command': cmd})
-
-    @app.route('/api/path_recorder/list', methods=['GET'])
-    def list_paths():
-        ros_node.pub_string(ros_node._path_cmd_pub, 'list')
-        time.sleep(0.3)
-        return jsonify({'paths': ros_node._path_list_data})
-
-    # ── SocketIO events ────────────────────────────────────────
-
-    @socketio.on('send_command')
-    def handle_command(data):
-        text = data.get('text', '')
-        if text:
-            ros_node.pub_string(ros_node._voice_cmd_pub, text)
-
-    @socketio.on('set_speed_profile')
-    def handle_speed_profile(data):
-        profile = data.get('profile', 'normal')
-        ros_node.pub_string(ros_node._speed_profile_pub, profile)
-
-    @socketio.on('patrol_command')
-    def handle_patrol_cmd(data):
-        cmd = data.get('command', 'stop')
-        ros_node.pub_string(ros_node._patrol_cmd_pub, cmd)
-
-    @socketio.on('patrol_waypoints')
-    def handle_patrol_wp(data):
-        waypoints = data.get('waypoints', [])
-        ros_node.pub_string(ros_node._patrol_wp_pub, json.dumps(waypoints))
-
-    @socketio.on('follow_me_command')
-    def handle_follow_cmd(data):
-        cmd = data.get('command', 'stop')
-        ros_node.pub_string(ros_node._follow_cmd_pub, cmd)
-
-    @socketio.on('path_recorder_command')
-    def handle_path_cmd(data):
-        cmd = data.get('command', 'stop')
-        ros_node.pub_string(ros_node._path_cmd_pub, cmd)
-
-    @socketio.on('map_save')
-    def handle_map_save(data):
-        name = data.get('name', 'default')
-        ros_node.pub_string(ros_node._map_save_pub, name)
-
-    @socketio.on('map_load')
-    def handle_map_load(data):
-        name = data.get('name', '')
-        ros_node.pub_string(ros_node._map_load_pub, name)
-
-    def emit_state():
+    # ── Background: push state via Socket.IO (4 Hz) ───────────────
+    async def _sio_push_loop():
+        _last_json = ''
         while True:
-            state = ros_node.get_state()
-            socketio.emit('state_update', state)
-            socketio.sleep(0.25)
+            await asyncio.sleep(0.25)
+            if not sio.manager.rooms:
+                continue
+            state_json = json.dumps(ros_node.get_state())
+            if state_json == _last_json:
+                continue
+            _last_json = state_json
+            await sio.emit('state_update', ros_node.get_state())
 
-    socketio.start_background_task(emit_state)
+    @app.on_event('startup')
+    async def startup():
+        asyncio.create_task(_sio_push_loop())
 
-    return app, socketio
+    # ── SPA ───────────────────────────────────────────────────────
+    index_html = os.path.join(static_dir, 'index.html')
+
+    @app.get('/')
+    @app.get('/dashboard')
+    @app.get('/admin')
+    async def serve_spa():
+        return FileResponse(index_html)
+
+    # ── MJPEG video stream ────────────────────────────────────────
+    async def _mjpeg_generator():
+        while True:
+            frame = ros_node.get_frame()
+            if frame:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            await asyncio.sleep(0.033)  # ~30fps cap
+
+    @app.get('/video_feed')
+    async def video_feed():
+        from starlette.responses import StreamingResponse
+        return StreamingResponse(_mjpeg_generator(),
+                                 media_type='multipart/x-mixed-replace; boundary=frame')
+
+    @app.get('/map.png')
+    async def map_image_legacy():
+        png = ros_node.get_map_png()
+        return Response(content=png or b'\x89PNG\r\n\x1a\n', media_type='image/png')
+
+    # ==========================================================
+    # REST API — GET
+    # ==========================================================
+
+    @app.get('/api/')
+    async def api_index():
+        return _ok(endpoints={
+            'GET': ['/api/status', '/api/robot/pose', '/api/robot/velocity',
+                    '/api/sensors', '/api/sensors/ultrasonic', '/api/sensors/imu',
+                    '/api/detection', '/api/detection/closest',
+                    '/api/fsm', '/api/actuators', '/api/battery', '/api/speed_profile',
+                    '/api/camera/frame', '/api/camera/frame.json',
+                    '/api/map/image', '/api/map/info', '/api/map/list',
+                    '/api/path_recorder/list', '/api/log'],
+            'POST': ['/api/emergency_stop', '/api/fsm/command',
+                     '/api/actuators/claw', '/api/actuators/laser',
+                     '/api/speed_profile', '/api/patrol/command', '/api/patrol/waypoints',
+                     '/api/follow_me', '/api/path_recorder/command',
+                     '/api/map/save', '/api/map/load'],
+        })
+
+    @app.get('/api/status')
+    async def api_status():
+        return ros_node._snapshot()
+
+    @app.get('/api/robot/pose')
+    async def api_pose():
+        with ros_node._lock:
+            return _ok(**ros_node._robot_pose)
+
+    @app.get('/api/robot/velocity')
+    async def api_velocity():
+        with ros_node._lock:
+            return _ok(estimated=dict(ros_node._robot_velocity),
+                       commanded=dict(ros_node._cmd_velocity))
+
+    @app.post('/api/robot/velocity')
+    async def api_set_velocity(req: Request):
+        body = await req.json()
+        linear_x  = float(body.get('linear_x',  body.get('linear',  0.0)))
+        angular_z = float(body.get('angular_z', body.get('angular', 0.0)))
+        ros_node.send_velocity(linear_x, angular_z)
+        return _ok(linear_x=linear_x, angular_z=angular_z)
+
+    @app.get('/api/mqtt/status')
+    async def api_mqtt_status():
+        return _ok(
+            connected=ros_node._mqtt_connected,
+            broker=ros_node._mqtt_broker,
+            port=ros_node._mqtt_port,
+            robot_id=ros_node._robot_id,
+        )
+
+    @app.get('/api/sensors')
+    async def api_sensors():
+        with ros_node._lock:
+            return _ok(
+                ultrasonic={'range_m': ros_node._range_m},
+                imu={'yaw': ros_node._imu_ypr[0], 'pitch': ros_node._imu_ypr[1], 'roll': ros_node._imu_ypr[2],
+                     'gyro':  {'x': ros_node._imu_gyro[0],  'y': ros_node._imu_gyro[1],  'z': ros_node._imu_gyro[2]},
+                     'accel': {'x': ros_node._imu_accel[0], 'y': ros_node._imu_accel[1], 'z': ros_node._imu_accel[2]}},
+            )
+
+    @app.get('/api/sensors/ultrasonic')
+    async def api_ultrasonic():
+        with ros_node._lock:
+            return _ok(range_m=ros_node._range_m)
+
+    @app.get('/api/sensors/imu')
+    async def api_imu():
+        with ros_node._lock:
+            return _ok(yaw=ros_node._imu_ypr[0], pitch=ros_node._imu_ypr[1], roll=ros_node._imu_ypr[2],
+                       gyro ={'x': ros_node._imu_gyro[0],  'y': ros_node._imu_gyro[1],  'z': ros_node._imu_gyro[2]},
+                       accel={'x': ros_node._imu_accel[0], 'y': ros_node._imu_accel[1], 'z': ros_node._imu_accel[2]})
+
+    @app.get('/api/detection')
+    async def api_detection():
+        with ros_node._lock:
+            return _ok(detection=ros_node._ball_detection)
+
+    @app.get('/api/detection/closest')
+    async def api_detection_closest(color: str = ''):
+        color_filter = color.lower().strip()
+        with ros_node._lock:
+            det = ros_node._ball_detection
+        objects = det.get('objects', det.get('balls', []))
+        if color_filter:
+            objects = [o for o in objects
+                       if str(o.get('color', o.get('class', ''))).lower() == color_filter]
+        if not objects:
+            return _ok(found=False, object=None)
+        def _sort_key(o):
+            if 'distance' in o:
+                return o['distance']
+            b = o.get('bbox', [0, 0, 0, 0])
+            return -((b[2] - b[0]) * (b[3] - b[1])) if len(b) >= 4 else 0
+        return _ok(found=True, object=sorted(objects, key=_sort_key)[0])
+
+    @app.get('/api/fsm')
+    async def api_fsm():
+        with ros_node._lock:
+            status = ros_node._robot_status
+        state = status.get('state', status.get('fsm_state', 'unknown'))
+        return _ok(state=state, details=status)
+
+    @app.get('/api/actuators')
+    async def api_actuators():
+        with ros_node._lock:
+            return _ok(claw='open' if ros_node._claw_open else 'closed',
+                       laser='on'  if ros_node._laser_on  else 'off')
+
+    @app.get('/api/battery')
+    async def api_battery():
+        with ros_node._lock:
+            return {'ok': True, **ros_node._battery}
+
+    @app.get('/api/speed_profile')
+    async def api_speed_profile_get():
+        with ros_node._lock:
+            return _ok(profile=ros_node._speed_profile)
+
+    @app.get('/api/camera/frame')
+    async def api_camera_frame():
+        frame = ros_node.get_frame()
+        if not frame:
+            return JSONResponse({'ok': False, 'error': 'No frame available yet'}, status_code=503)
+        return Response(content=frame, media_type='image/jpeg')
+
+    @app.get('/api/camera/frame.json')
+    async def api_camera_frame_json():
+        frame = ros_node.get_frame()
+        if not frame:
+            return JSONResponse({'ok': False, 'error': 'No frame available yet'}, status_code=503)
+        return _ok(jpeg_b64=base64.b64encode(frame).decode())
+
+    @app.get('/api/map/image')
+    async def api_map_image():
+        png = ros_node.get_map_png()
+        if not png:
+            return JSONResponse({'ok': False, 'error': 'Map not available yet'}, status_code=503)
+        return Response(content=png, media_type='image/png')
+
+    @app.get('/api/map/info')
+    async def api_map_info():
+        with ros_node._lock:
+            info = dict(ros_node._map_info)
+        if not info:
+            return JSONResponse({'ok': False, 'error': 'Map not available yet'}, status_code=503)
+        return _ok(**info)
+
+    @app.get('/api/map/list')
+    async def api_map_list():
+        maps_dir = os.path.expanduser('~/maps')
+        if not os.path.isdir(maps_dir):
+            return _ok(maps=[])
+        maps = sorted(f.replace('.yaml', '') for f in os.listdir(maps_dir) if f.endswith('.yaml'))
+        return _ok(maps=maps)
+
+    @app.get('/api/path_recorder/list')
+    async def api_path_list():
+        paths_dir = os.path.expanduser('~/paths')
+        if not os.path.isdir(paths_dir):
+            return _ok(paths=[])
+        paths = sorted(f.replace('.json', '') for f in os.listdir(paths_dir) if f.endswith('.json'))
+        return _ok(paths=paths)
+
+    @app.get('/api/log')
+    async def api_log(limit: int = 50):
+        limit = min(limit, 100)
+        with ros_node._lock:
+            log = list(ros_node._event_log)[-limit:]
+        return _ok(log=log, count=len(log))
+
+    # ==========================================================
+    # REST API — POST
+    # ==========================================================
+
+    @app.post('/api/emergency_stop')
+    async def api_emergency_stop():
+        """Immediate stop — publishes 'стоп' command regardless of FSM state."""
+        ros_node.send_command('стоп')
+        return _ok(action='emergency_stop')
+
+    @app.post('/api/fsm/command')
+    async def api_fsm_command(req: Request):
+        body = await req.json()
+        command = body.get('command', body.get('text', '')).strip()
+        if not command:
+            return _err('"command" field is required')
+        # Reject unreasonably long strings (max 200 chars)
+        if len(command) > 200:
+            return _err('command too long (max 200 characters)')
+        ros_node.send_command(command)
+        return _ok(sent=command)
+
+    @app.post('/api/actuators/claw')
+    async def api_claw(req: Request):
+        body  = await req.json()
+        state = body.get('state', '').lower().strip()
+        if state not in ('open', 'close', 'closed'):
+            return _err('state must be "open" or "close"')
+        cmd = 'open' if state == 'open' else 'close'
+        ros_node.set_claw(cmd)
+        return _ok(claw='open' if cmd == 'open' else 'closed')
+
+    @app.post('/api/actuators/laser')
+    async def api_laser(req: Request):
+        body  = await req.json()
+        state = body.get('state', '').lower().strip()
+        if state not in ('on', 'off'):
+            return _err('state must be "on" or "off"')
+        ros_node.set_laser(state)
+        return _ok(laser=state)
+
+    @app.post('/api/speed_profile')
+    async def api_speed_profile_set(req: Request):
+        body    = await req.json()
+        profile = body.get('profile', '').lower().strip()
+        if profile not in ('slow', 'normal', 'fast'):
+            return _err('profile must be "slow", "normal", or "fast"')
+        ros_node.set_speed_profile(profile)
+        return _ok(profile=profile)
+
+    @app.post('/api/patrol/command')
+    async def api_patrol_command(req: Request):
+        body    = await req.json()
+        command = body.get('command', '').lower().strip()
+        if command not in ('start', 'stop'):
+            return _err('command must be "start" or "stop"')
+        ros_node.set_patrol_command(command)
+        return _ok(patrol=command)
+
+    @app.post('/api/patrol/waypoints')
+    async def api_patrol_waypoints(req: Request):
+        body      = await req.json()
+        waypoints = body.get('waypoints', [])
+        if not isinstance(waypoints, list) or not waypoints:
+            return _err('waypoints must be a non-empty list of [x, y] pairs')
+        ros_node.set_patrol_waypoints(waypoints)
+        return _ok(waypoints_set=len(waypoints))
+
+    @app.post('/api/follow_me')
+    async def api_follow_me(req: Request):
+        body    = await req.json()
+        command = body.get('command', '').lower().strip()
+        if command not in ('start', 'stop'):
+            return _err('command must be "start" or "stop"')
+        ros_node.set_follow_me(command)
+        return _ok(follow_me=command)
+
+    @app.post('/api/path_recorder/command')
+    async def api_path_recorder(req: Request):
+        body    = await req.json()
+        command = body.get('command', '').lower().strip()
+        if command not in ('start', 'stop', 'play'):
+            return _err('command must be "start", "stop", or "play"')
+        ros_node.set_path_recorder(body)
+        return _ok(path_recorder=command)
+
+    @app.post('/api/map/save')
+    async def api_map_save(req: Request):
+        body = await req.json()
+        name = body.get('name', 'map').strip()
+        if not name:
+            return _err('"name" is required')
+        ros_node.save_map(name)
+        return _ok(saved=name)
+
+    @app.post('/api/map/load')
+    async def api_map_load(req: Request):
+        body = await req.json()
+        name = body.get('name', '').strip()
+        if not name:
+            return _err('"name" is required')
+        ros_node.load_map(name)
+        return _ok(loaded=name)
+
+    # ── Static files (SPA assets) ─────────────────────────────────
+    if os.path.isdir(static_dir):
+        app.mount('/', StaticFiles(directory=static_dir, html=True), name='static')
+
+    # Wrap with Socket.IO ASGI middleware so /socket.io/ is handled
+    return socketio.ASGIApp(sio, other_asgi_app=app)
 
 
-# ═════════════════════════════════════════════════════════════════
+# =============================================================
 # Main
-# ═════════════════════════════════════════════════════════════════
+# =============================================================
 
 def main(args=None):
     rclpy.init(args=args)
@@ -549,13 +961,15 @@ def main(args=None):
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
-    app, socketio = create_app(node)
-    port = node._port
+    app = create_app(node)
     try:
-        socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
+        uvicorn.run(app, host='0.0.0.0', port=node._port, log_level='warning')
     except KeyboardInterrupt:
         pass
     finally:
+        if node._mqtt:
+            node._mqtt.loop_stop()
+            node._mqtt.disconnect()
         node.destroy_node()
         rclpy.shutdown()
 
