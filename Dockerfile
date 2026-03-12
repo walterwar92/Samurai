@@ -32,16 +32,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   - ultralytics нужен только для экспорта .pt → .onnx (первый запуск)
 #   - fastapi+uvicorn вместо flask+socketio → async, меньше CPU
 RUN pip3 install --no-cache-dir \
+    "numpy<2" \
     "ultralytics>=8.0" \
     onnxruntime \
     "fastapi>=0.110" \
     "uvicorn[standard]>=0.27" \
     python-multipart \
     paho-mqtt \
-    && pip3 install --no-cache-dir "numpy<2"
+    flask \
+    flask-cors \
+    flask-socketio \
+    timm
 
 # Build ROS2 workspace
 WORKDIR /root/Samurai/ros_ws
 ENV ROS_DOMAIN_ID=42
 
-ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && exec bash"]
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]

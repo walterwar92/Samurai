@@ -22,7 +22,7 @@ Usage (через мобильный хотспот — unicast, указать 
 import os
 import socket
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction, ExecuteProcess
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -169,20 +169,18 @@ def generate_launch_description():
         name='yolo_detector',
         output='screen',
         parameters=[{
-            'model': 'yolov8n.pt',
+            'model': '/root/Samurai/yolo11n.pt',
             'confidence': 0.45,
             'device': 'cpu',
             'detect_all_classes': True,
         }],
     )
 
-    # ── Web Dashboard ─────────────────────────────────────────
-    dashboard_node = Node(
-        package='robot_pkg',
-        executable='dashboard_node',
-        name='dashboard',
+    # ── Web Dashboard (FastAPI — compute_node version) ─────────
+    dashboard_node = ExecuteProcess(
+        cmd=['python3', '/root/Samurai/compute_node/dashboard_node.py'],
+        name='dashboard_node',
         output='screen',
-        parameters=[{'port': 5000}],
     )
 
     # ── New compute nodes ──────────────────────────────────────
