@@ -92,6 +92,19 @@ class RobotMqttClient {
         }
     }
 
+    // ── Publish cmd_vel (joystick — QoS 0, высокая частота) ──
+    fun sendCmdVel(linear: Double, angular: Double) {
+        val topic = "samurai/$robotId/cmd_vel"
+        val payload = """{"linear_x":$linear,"angular_z":$angular}"""
+        try {
+            client?.publish(topic, MqttMessage(payload.toByteArray(Charsets.UTF_8)).apply {
+                qos = 0
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "sendCmdVel failed", e)
+        }
+    }
+
     // ── Subscribe to status ─────────────────────────────────
     private fun subscribeToStatus() {
         val topic = "samurai/$robotId/status"

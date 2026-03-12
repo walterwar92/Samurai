@@ -844,10 +844,11 @@ def create_app(ros_node: DashboardNode):
     # ==========================================================
 
     @app.post('/api/emergency_stop')
+    @app.post('/api/robot/stop')
     async def api_emergency_stop():
-        """Immediate stop — publishes 'стоп' command regardless of FSM state."""
-        ros_node.send_command('стоп')
-        return _ok(action='emergency_stop')
+        """Immediate stop — sends zero velocity directly to Pi."""
+        ros_node.send_velocity(0.0, 0.0)
+        return _ok(action='stop')
 
     @app.post('/api/fsm/command')
     async def api_fsm_command(req: Request):

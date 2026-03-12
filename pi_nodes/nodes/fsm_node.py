@@ -39,12 +39,17 @@ _MAX_CMD_LEN = 200
 _P_CALLING = re.compile(r'вызови.{0,20}машин')
 _P_GRAB    = re.compile(r'получи|возьми|найди')
 _P_BURN    = re.compile(r'сожги|прожги|лазер')
-_P_STOP    = re.compile(r'стоп|остановись')
+_P_STOP    = re.compile(r'стоп|остановись|стой')
 _P_HOME    = re.compile(r'домой|вернись')
 _P_PATROL  = re.compile(r'патрул|обход')
 _P_FOLLOW  = re.compile(r'следуй|за мной')
 _P_RECORD  = re.compile(r'запиши путь|запись')
 _P_REPLAY  = re.compile(r'воспроизведи|повтори путь')
+# Движение — прямые команды cmd_vel (только в состоянии IDLE)
+_P_FORWARD = re.compile(r'вперёд|вперед|прямо|едь вперёд|двигайся вперёд')
+_P_BACK    = re.compile(r'назад|едь назад|двигайся назад|сдай назад')
+_P_LEFT    = re.compile(r'налево|влево|поверни влево|повернись влево')
+_P_RIGHT   = re.compile(r'направо|вправо|поверни вправо|повернись вправо')
 
 
 class State:
@@ -119,7 +124,23 @@ class FSMNode(MqttNode):
 
         if _P_STOP.search(text):
             self._transition(State.IDLE)
+            self._pub_cmd_vel(0.0, 0.0)
             return
+
+        # Движение — работают только в IDLE (не перебивают автономные режимы)
+        if self._state == State.IDLE:
+            if _P_FORWARD.search(text):
+                self._pub_cmd_vel(0.15, 0.0)
+                return
+            if _P_BACK.search(text):
+                self._pub_cmd_vel(-0.15, 0.0)
+                return
+            if _P_LEFT.search(text):
+                self._pub_cmd_vel(0.0, 0.5)
+                return
+            if _P_RIGHT.search(text):
+                self._pub_cmd_vel(0.0, -0.5)
+                return
 
         if _P_HOME.search(text):
             self._transition(State.RETURNING)

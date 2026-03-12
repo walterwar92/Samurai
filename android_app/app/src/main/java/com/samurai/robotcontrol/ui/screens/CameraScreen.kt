@@ -57,32 +57,15 @@ fun CameraScreen(
                     modifier = Modifier.padding(12.dp, 8.dp)
                 )
 
-                if (connectionMode == ConnectionMode.SIMULATOR) {
-                    if (cameraFrame != null) {
-                        Image(
-                            bitmap = cameraFrame.asImageBitmap(),
-                            contentDescription = "Camera Feed",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(640f / 480f),
-                            contentScale = ContentScale.FillWidth
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(640f / 480f),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                            Text(
-                                "Подключение к камере...",
-                                fontSize = 12.sp,
-                                color = Color.Gray,
-                                modifier = Modifier.padding(top = 48.dp)
-                            )
-                        }
-                    }
+                if (cameraFrame != null) {
+                    Image(
+                        bitmap = cameraFrame.asImageBitmap(),
+                        contentDescription = "Camera Feed",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(640f / 480f),
+                        contentScale = ContentScale.FillWidth
+                    )
                 } else {
                     Box(
                         modifier = Modifier
@@ -90,11 +73,12 @@ fun CameraScreen(
                             .aspectRatio(640f / 480f),
                         contentAlignment = Alignment.Center
                     ) {
+                        CircularProgressIndicator(modifier = Modifier.size(32.dp))
                         Text(
-                            "Камера доступна только\nв режиме симулятора",
-                            fontSize = 13.sp,
+                            "Подключение к камере...",
+                            fontSize = 12.sp,
                             color = Color.Gray,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            modifier = Modifier.padding(top = 48.dp)
                         )
                     }
                 }

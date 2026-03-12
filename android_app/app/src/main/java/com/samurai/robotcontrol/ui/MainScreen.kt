@@ -105,9 +105,9 @@ fun MainScreen(applicationContext: Context) {
         }
     }
 
-    // Poll camera frame (только симулятор, Camera вкладка)
-    LaunchedEffect(connectionMode, apiConnected, selectedTab) {
-        if (selectedTab == AppTab.CAMERA && connectionMode == ConnectionMode.SIMULATOR && apiConnected) {
+    // Poll camera frame — симулятор и реальный робот (Camera вкладка)
+    LaunchedEffect(connectionMode, apiConnected, socketConnected, selectedTab) {
+        if (selectedTab == AppTab.CAMERA && isConnected && _baseUrl_isSet(apiClient)) {
             while (isActive) {
                 cameraFrame = apiClient.getCameraFrame()
                 delay(100) // ~10 fps
@@ -199,9 +199,15 @@ fun MainScreen(applicationContext: Context) {
                     commandLog      = commandLog,
                     vosk            = vosk,
                     sendCommand     = sendCommand,
-                    onStop          = { scope.launch { apiClient.stop() } },
+                    onStop          = {
+                        if (isRealRobot && mqttConnected) mqttClient.sendCmdVel(0.0, 0.0)
+                        else scope.launch { apiClient.stop() }
+                    },
                     onReset         = { scope.launch { apiClient.resetSimulation() } },
-                    onSetVelocity   = { lin, ang -> scope.launch { apiClient.setVelocity(lin, ang) } },
+                    onSetVelocity   = { lin, ang ->
+                        if (isRealRobot && mqttConnected) mqttClient.sendCmdVel(lin, ang)
+                        else scope.launch { apiClient.setVelocity(lin, ang) }
+                    },
                     onSetClaw       = { open -> scope.launch { apiClient.setClaw(open) } },
                     onSetLaser      = { on   -> scope.launch { apiClient.setLaser(on) } },
                     onForceState    = { s    -> scope.launch { apiClient.forceTransition(s) } },

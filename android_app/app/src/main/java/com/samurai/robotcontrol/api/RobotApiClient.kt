@@ -153,11 +153,12 @@ class RobotApiClient {
             laser = actMap?.get("laser") as? String,
         )
 
-        // Battery: {voltage, percentage, status}
+        // Battery: Pi publishes "percent", старый формат — "percentage"
         val batMap = map["battery"] as? Map<*, *>
         val battery = BatteryStatus(
             voltage    = batMap.dbl("voltage", -1.0),
-            percentage = batMap.dbl("percentage", -1.0).toInt(),
+            percentage = (batMap?.get("percent") as? Double
+                         ?: batMap?.get("percentage") as? Double ?: -1.0).toInt(),
             status     = (batMap?.get("status") as? String) ?: "unknown",
         )
 
@@ -269,7 +270,7 @@ class RobotApiClient {
 
     suspend fun stop() = withContext(Dispatchers.IO) {
         val base = _baseUrl.value.ifEmpty { return@withContext }
-        httpPost("$base/api/robot/stop", emptyMap<String, Any>())
+        httpPost("$base/api/robot/velocity", mapOf("linear" to 0.0, "angular" to 0.0))
     }
 
     suspend fun setClaw(open: Boolean) = withContext(Dispatchers.IO) {
