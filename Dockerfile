@@ -37,6 +37,7 @@ RUN pip3 install --no-cache-dir \
     onnxruntime \
     "fastapi>=0.110" \
     "uvicorn[standard]>=0.27" \
+    "python-socketio[asyncio_client]>=5.11" \
     python-multipart \
     paho-mqtt \
     flask \

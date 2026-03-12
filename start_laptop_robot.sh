@@ -332,6 +332,7 @@ launch() {
         -e MQTT_BROKER="$MQTT_BROKER" \
         -e MQTT_PORT="1883" \
         -e ROBOT_ID="robot1" \
+        -e CAMERA_FLIP="-1" \
         "$DOCKER_IMAGE" \
         bash -c "
             source /opt/ros/humble/setup.bash
