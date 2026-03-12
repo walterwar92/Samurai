@@ -16,10 +16,17 @@ MQTT → ROS2:
     samurai/robot1/goal_pose   → /goal_pose (PoseStamped)
 
 ROS2 → MQTT:
-    /ball_detection     → samurai/robot1/ball_detection
-    /yolo/detections    → samurai/robot1/detections
-    /gesture/command    → samurai/robot1/gesture/command
-    /cmd_vel (Nav2)     → samurai/robot1/cmd_vel  (only when Nav2 publishes)
+    /ball_detection          → samurai/robot1/ball_detection
+    /yolo/detections         → samurai/robot1/detections
+    /gesture/command         → samurai/robot1/gesture/command
+    /cmd_vel                 → samurai/robot1/cmd_vel
+    /voice_command           → samurai/robot1/voice_command
+    /claw/command            → samurai/robot1/claw/command
+    /laser/command           → samurai/robot1/laser/command
+    /speed_profile           → samurai/robot1/speed_profile
+    /patrol/command          → samurai/robot1/patrol/command
+    /follow_me/command       → samurai/robot1/follow_me/command
+    /path_recorder/command   → samurai/robot1/path_recorder/command
 """
 
 import json
@@ -82,12 +89,31 @@ class MqttBridgeCompute(Node):
         self._publish_static_transforms()
 
         # ── ROS2 Subscribers (ROS2 → MQTT) ───────────────────
+        # Compute results → Pi
         self.create_subscription(
             String, '/ball_detection', self._ball_det_cb, 10)
         self.create_subscription(
             String, '/yolo/detections', self._yolo_dets_cb, 10)
         self.create_subscription(
             String, '/gesture/command', self._gesture_cb, 10)
+
+        # Dashboard/Nav2 commands → Pi
+        self.create_subscription(
+            Twist, '/cmd_vel', self._cmdvel_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/voice_command', self._voice_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/claw/command', self._claw_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/laser/command', self._laser_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/speed_profile', self._speed_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/patrol/command', self._patrol_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/follow_me/command', self._follow_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/path_recorder/command', self._path_rec_to_mqtt_cb, 10)
 
         self.get_logger().info(
             f'MQTT bridge started: {broker}:{port} id={self._robot_id}')
@@ -266,6 +292,35 @@ class MqttBridgeCompute(Node):
     def _gesture_cb(self, msg: String):
         self._mqtt.publish(
             f'{self._prefix}/gesture/command', msg.data)
+
+    # ── Dashboard/Nav2 Commands → MQTT (Pi) ──────────────────
+    def _cmdvel_to_mqtt_cb(self, msg: Twist):
+        payload = json.dumps({
+            'linear_x': msg.linear.x,
+            'angular_z': msg.angular.z,
+        })
+        self._mqtt.publish(f'{self._prefix}/cmd_vel', payload)
+
+    def _voice_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/voice_command', msg.data)
+
+    def _claw_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/claw/command', msg.data)
+
+    def _laser_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/laser/command', msg.data)
+
+    def _speed_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/speed_profile', msg.data)
+
+    def _patrol_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/patrol/command', msg.data)
+
+    def _follow_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/follow_me/command', msg.data)
+
+    def _path_rec_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/path_recorder/command', msg.data)
 
     # ── Cleanup ──────────────────────────────────────────────
     def destroy_node(self):
