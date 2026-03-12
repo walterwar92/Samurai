@@ -27,6 +27,9 @@ ROS2 → MQTT:
     /patrol/command          → samurai/robot1/patrol/command
     /follow_me/command       → samurai/robot1/follow_me/command
     /path_recorder/command   → samurai/robot1/path_recorder/command
+
+Heartbeat (1 Hz):
+    samurai/robot1/heartbeat — JSON {"ts": ..., "source": "compute_bridge"}
 """
 
 import json
@@ -114,6 +117,9 @@ class MqttBridgeCompute(Node):
             String, '/follow_me/command', self._follow_to_mqtt_cb, 10)
         self.create_subscription(
             String, '/path_recorder/command', self._path_rec_to_mqtt_cb, 10)
+
+        # ── Heartbeat timer (1 Hz) → Pi knows laptop is alive ──
+        self._heartbeat_timer = self.create_timer(1.0, self._heartbeat_cb)
 
         self.get_logger().info(
             f'MQTT bridge started: {broker}:{port} id={self._robot_id}')
@@ -279,6 +285,13 @@ class MqttBridgeCompute(Node):
         goal.pose.orientation.z = math.sin(theta / 2.0)
         goal.pose.orientation.w = math.cos(theta / 2.0)
         self._goal_pub.publish(goal)
+
+    # ── Heartbeat → MQTT ────────────────────────────────────
+    def _heartbeat_cb(self):
+        import time
+        self._mqtt.publish(
+            f'{self._prefix}/heartbeat',
+            json.dumps({'ts': time.time(), 'source': 'compute_bridge'}))
 
     # ── ROS2 → MQTT Callbacks ────────────────────────────────
     def _ball_det_cb(self, msg: String):

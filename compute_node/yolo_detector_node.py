@@ -85,6 +85,7 @@ class YoloDetectorNode(Node):
         )
         self.create_subscription(CompressedImage, '/camera/image_raw/compressed', self._image_cb, cam_qos)
         self._det_pub = self.create_publisher(String, '/ball_detection', 10)
+        self._dets_pub = self.create_publisher(String, '/yolo/detections', 10)
         self._ann_pub = self.create_publisher(CompressedImage, '/yolo/annotated/compressed', cam_qos)
 
     def _infer(self, frame: np.ndarray):
@@ -129,6 +130,7 @@ class YoloDetectorNode(Node):
 
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         annotated = frame.copy()
+        all_detections = []
 
         for (x1, y1, x2, y2, conf, cls_id) in raw_boxes:
             cls_name = self._names.get(cls_id, 'unknown')
@@ -150,6 +152,8 @@ class YoloDetectorNode(Node):
                 'conf': round(conf, 3),
                 'distance': round(dist_est, 3),
             }
+            all_detections.append(det)
+
             det_msg = String()
             det_msg.data = json.dumps(det)
             self._det_pub.publish(det_msg)
@@ -158,6 +162,11 @@ class YoloDetectorNode(Node):
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(annotated, label, (x1, y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        # Publish summary detections (always — even empty list serves as heartbeat)
+        dets_msg = String()
+        dets_msg.data = json.dumps({'objects': all_detections, 'count': len(all_detections)})
+        self._dets_pub.publish(dets_msg)
 
         # Publish annotated image as CompressedImage (JPEG)
         ok, enc = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
