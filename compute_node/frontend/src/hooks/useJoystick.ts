@@ -13,6 +13,7 @@ export function useJoystick(maxLinear = 0.3, maxAngular = 2.0) {
   const containerRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const velocityRef = useRef({ linear: 0, angular: 0 })
+  const isActiveRef = useRef(false) // ref for sync guard (avoids stale state.active)
 
   const [state, setState] = useState<JoystickState>({
     knobX: 50,
@@ -55,9 +56,11 @@ export function useJoystick(maxLinear = 0.3, maxAngular = 2.0) {
       const pctY = ((dy + rect.height / 2) / rect.height) * 100
 
       const linear = (-dy / maxR) * maxLinear
-      const angular = (-dx / maxR) * maxAngular
+      const angular = (dx / maxR) * maxAngular
 
       velocityRef.current = { linear, angular }
+      // Send immediately on every move — no waiting for interval
+      api.sendVelocity(linear, angular)
       setState({ knobX: pctX, knobY: pctY, linear, angular, active: true })
     },
     [getDisplacement, maxLinear, maxAngular]
@@ -67,8 +70,10 @@ export function useJoystick(maxLinear = 0.3, maxAngular = 2.0) {
     (e: React.PointerEvent) => {
       e.preventDefault()
       ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      isActiveRef.current = true
       updateFromPointer(e.clientX, e.clientY)
 
+      // Heartbeat: re-send current velocity so robot doesn't stop on slow moves
       intervalRef.current = setInterval(() => {
         const v = velocityRef.current
         api.sendVelocity(v.linear, v.angular)
@@ -79,13 +84,14 @@ export function useJoystick(maxLinear = 0.3, maxAngular = 2.0) {
 
   const moveJoy = useCallback(
     (e: React.PointerEvent) => {
-      if (!state.active) return
+      if (!isActiveRef.current) return // sync ref — no stale closure issue
       updateFromPointer(e.clientX, e.clientY)
     },
-    [state.active, updateFromPointer]
+    [updateFromPointer]
   )
 
   const endJoy = useCallback(() => {
+    isActiveRef.current = false
     if (intervalRef.current) {
       clearInterval(intervalRef.current)
       intervalRef.current = null

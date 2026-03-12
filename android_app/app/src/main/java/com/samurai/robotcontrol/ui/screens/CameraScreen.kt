@@ -1,6 +1,9 @@
 package com.samurai.robotcontrol.ui.screens
 
 import android.graphics.Bitmap
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,9 +18,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.samurai.robotcontrol.api.Detection
 import com.samurai.robotcontrol.api.DetectionResult
-import com.samurai.robotcontrol.ui.ConnectionMode
 
 private val COLOUR_MAP = mapOf(
     "red" to Color(0xFFEF5350), "blue" to Color(0xFF42A5F5),
@@ -37,7 +40,7 @@ fun CameraScreen(
     cameraFrame: Bitmap?,
     detections: DetectionResult,
     closestDetection: Detection?,
-    connectionMode: ConnectionMode,
+    isConnected: Boolean,
     streamUrl: String,
 ) {
     Column(
@@ -57,29 +60,46 @@ fun CameraScreen(
                     modifier = Modifier.padding(12.dp, 8.dp)
                 )
 
-                if (cameraFrame != null) {
-                    Image(
-                        bitmap = cameraFrame.asImageBitmap(),
-                        contentDescription = "Camera Feed",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(640f / 480f),
-                        contentScale = ContentScale.FillWidth
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(640f / 480f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                        Text(
-                            "Подключение к камере...",
-                            fontSize = 12.sp,
-                            color = Color.Gray,
-                            modifier = Modifier.padding(top = 48.dp)
-                        )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(640f / 480f)
+                ) {
+                    when {
+                        // Primary: MJPEG stream via WebView (no bitmap handling → no crash)
+                        streamUrl.isNotEmpty() && isConnected -> {
+                            MjpegStreamView(
+                                url = streamUrl,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        // Fallback: bitmap from polling
+                        cameraFrame != null -> {
+                            Image(
+                                bitmap = cameraFrame.asImageBitmap(),
+                                contentDescription = "Camera Feed",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.FillBounds
+                            )
+                        }
+                        // Loading
+                        else -> {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        if (isConnected) "Подключение к камере..."
+                                        else "Нет подключения",
+                                        fontSize = 12.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -169,4 +189,40 @@ fun CameraScreen(
 
         Spacer(Modifier.height(20.dp))
     }
+}
+
+@Composable
+private fun MjpegStreamView(url: String, modifier: Modifier = Modifier) {
+    val webViewRef = remember { mutableStateOf<WebView?>(null) }
+
+    // Stop stream when composable leaves composition
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef.value?.stopLoading()
+            webViewRef.value?.loadUrl("about:blank")
+            webViewRef.value?.destroy()
+            webViewRef.value = null
+        }
+    }
+
+    AndroidView(
+        factory = { context ->
+            WebView(context).apply {
+                settings.apply {
+                    javaScriptEnabled = false
+                    cacheMode = WebSettings.LOAD_NO_CACHE
+                    mediaPlaybackRequiresUserGesture = false
+                    builtInZoomControls = false
+                    displayZoomControls = false
+                    loadWithOverviewMode = true
+                    useWideViewPort = true
+                }
+                webViewClient = WebViewClient()
+                setBackgroundColor(android.graphics.Color.BLACK)
+                webViewRef.value = this
+                loadUrl(url)
+            }
+        },
+        modifier = modifier
+    )
 }

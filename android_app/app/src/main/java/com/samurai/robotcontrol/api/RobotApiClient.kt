@@ -361,6 +361,8 @@ class RobotApiClient {
                 val bytes = resp.body?.bytes() ?: return@withContext null
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e  // must not swallow — allows coroutine cancellation to work
         } catch (e: Throwable) {
             Log.e(TAG, "getCameraFrame failed: ${e.message}")
             null
