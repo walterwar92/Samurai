@@ -329,6 +329,9 @@ launch() {
         -v "$SCRIPT_DIR:/root/Samurai" \
         -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
         -e DISPLAY="${DISPLAY:-:0}" \
+        -e MQTT_BROKER="$MQTT_BROKER" \
+        -e MQTT_PORT="1883" \
+        -e ROBOT_ID="robot1" \
         "$DOCKER_IMAGE" \
         bash -c "
             source /opt/ros/humble/setup.bash
