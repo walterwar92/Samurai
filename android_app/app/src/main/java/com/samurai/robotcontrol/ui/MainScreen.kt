@@ -105,13 +105,18 @@ fun MainScreen(applicationContext: Context) {
         }
     }
 
-    // Poll camera frame — симулятор и реальный робот (Camera вкладка)
-    LaunchedEffect(connectionMode, apiConnected, socketConnected, selectedTab) {
-        if (selectedTab == AppTab.CAMERA && isConnected && _baseUrl_isSet(apiClient)) {
+    // Camera: primary display is MJPEG stream via WebView (no polling needed).
+    // Bitmap polling kept only as fallback when stream URL is unavailable.
+    LaunchedEffect(connectionMode, apiConnected, socketConnected, mqttConnected, selectedTab) {
+        val hasStreamUrl = _baseUrl_isSet(apiClient)
+        if (selectedTab == AppTab.CAMERA && isConnected && !hasStreamUrl) {
+            // fallback: poll single frames only if no stream URL
             while (isActive) {
                 cameraFrame = apiClient.getCameraFrame()
-                delay(100) // ~10 fps
+                delay(150)
             }
+        } else {
+            cameraFrame = null
         }
     }
 
@@ -217,7 +222,7 @@ fun MainScreen(applicationContext: Context) {
                     cameraFrame      = cameraFrame,
                     detections       = robotState.detections,
                     closestDetection = robotState.closestDetection,
-                    connectionMode   = connectionMode,
+                    isConnected      = isConnected,
                     streamUrl        = apiClient.getCameraStreamUrl(),
                 )
 

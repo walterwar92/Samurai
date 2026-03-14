@@ -417,7 +417,7 @@ private fun JoystickControl(
                                 offsetY = offsetY / dist * maxRadius
                             }
                             val lin = (-offsetY / maxRadius * 0.3).coerceIn(-0.3, 0.3)
-                            val ang = (-offsetX / maxRadius * 2.0).coerceIn(-2.0, 2.0)
+                            val ang = (offsetX / maxRadius * 2.0).coerceIn(-2.0, 2.0)
                             onSetVelocity(lin, ang)
                         },
                         onDragEnd = { offsetX = 0f; offsetY = 0f; onStop() },
@@ -447,7 +447,7 @@ private fun JoystickControl(
     Spacer(Modifier.height(4.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
         val lin = if (abs(offsetY) > 0.01f) (-offsetY / maxRadius * 0.3) else 0.0
-        val ang = if (abs(offsetX) > 0.01f) (-offsetX / maxRadius * 2.0) else 0.0
+        val ang = if (abs(offsetX) > 0.01f) (offsetX / maxRadius * 2.0) else 0.0
         Text("Lin: ${"%.2f".format(lin)} м/с", fontSize = 11.sp, color = Color.Gray)
         Text("Ang: ${"%.2f".format(ang)} рад/с", fontSize = 11.sp, color = Color.Gray)
     }
