@@ -10,10 +10,11 @@
     blink <имя|hex>    — мигнуть 3 раза
     pulse <имя|hex>    — плавное нарастание/угасание
     rainbow            — радужный цикл
+    scan               — проверка всех цветов: все диоды, затем по одному
     demo               — демонстрация всех эффектов
     off                — выключить
 
-Без аргументов — запускает demo.
+Без аргументов — запускает scan.
 """
 
 import sys
@@ -55,6 +56,63 @@ def parse_color(arg: str) -> Color:
     sys.exit(1)
 
 
+def scan(hold: float = 2.0):
+    """Проверка аппаратуры: каждый цвет на всех диодах, потом диоды по одному."""
+    sim = ' [СИМУЛЯЦИЯ]' if LED.simulated else ''
+    print(f'=== Проверка LED{sim} ({LED.count} диодов) ===')
+    print()
+
+    color_names = [n for n in COLORS if n != 'off']
+
+    # --- Шаг 1: все диоды одним цветом ---
+    print('Шаг 1: все диоды — каждый цвет по очереди')
+    print(f'       задержка {hold:.0f}с, Ctrl+C для пропуска шага\n')
+    try:
+        for name in color_names:
+            color = COLORS[name]
+            print(f'  >> {name:10s}  RGB{color}')
+            LED.set_all(color)
+            time.sleep(hold)
+    except KeyboardInterrupt:
+        print('  (пропущено)')
+    LED.off()
+    time.sleep(0.5)
+
+    # --- Шаг 2: диоды по одному ---
+    print()
+    print('Шаг 2: каждый диод по очереди (белый)')
+    print(f'       убедитесь что все {LED.count} диодов светятся\n')
+    try:
+        for i in range(LED.count):
+            print(f'  >> диод #{i}')
+            LED.off()
+            LED.set_one(i, COLORS['white'])
+            time.sleep(0.6)
+    except KeyboardInterrupt:
+        print('  (пропущено)')
+    LED.off()
+    time.sleep(0.3)
+
+    # --- Шаг 3: бегущий огонь всеми цветами ---
+    print()
+    print('Шаг 3: бегущий огонь — все цвета\n')
+    try:
+        for name in color_names:
+            color = COLORS[name]
+            print(f'  >> {name}')
+            for i in range(LED.count):
+                LED.off()
+                LED.set_one(i, color)
+                time.sleep(0.08)
+        LED.off()
+    except KeyboardInterrupt:
+        print('  (пропущено)')
+    LED.off()
+
+    print()
+    print('Готово. Если какой-то диод не светился — проверьте питание/пайку.')
+
+
 def demo():
     print('=== LED Demo ===')
 
@@ -91,7 +149,7 @@ def demo():
 
 # ------------------------------------------------------------------
 def main():
-    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else 'demo'
+    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else 'scan'
 
     try:
         if cmd == 'color':
@@ -123,6 +181,10 @@ def main():
                     LED.rainbow_cycle(wait=0.01, cycles=1)
             except KeyboardInterrupt:
                 pass
+
+        elif cmd == 'scan':
+            hold = float(sys.argv[2]) if len(sys.argv) > 2 else 2.0
+            scan(hold=hold)
 
         elif cmd == 'demo':
             demo()
