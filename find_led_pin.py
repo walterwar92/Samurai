@@ -20,8 +20,8 @@ rpi_ws281x работает только на пинах с PWM/PCM/SPI:
 import sys
 import time
 
-LED_COUNT = int(sys.argv[1]) if len(sys.argv) > 1 else 8
-BRIGHTNESS = 0.3
+LED_COUNT  = int(sys.argv[1]) if len(sys.argv) > 1 else 8
+BRIGHTNESS = 76                # uint8_t (0-255), 76 ≈ 30% яркости
 TEST_COLOR = (255, 255, 255)   # белый — виден при любом типе пикселей
 HOLD_SEC   = 0.5               # сколько держать после включения перед паузой
 
