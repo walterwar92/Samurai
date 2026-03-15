@@ -28,8 +28,8 @@ except (ImportError, NotImplementedError, RuntimeError):
     _HW_NEOPIXEL = False
 
 # GPIO пин и количество светодиодов (Adeept HAT V3.1)
-LED_PIN_BOARD = 'D12'   # GPIO 12 = board.D12
-LED_COUNT_DEFAULT = 8
+LED_PIN_BOARD = 'D18'   # GPIO 18 = board.D18 (Adeept HAT V3.1 LED разъём)
+LED_COUNT_DEFAULT = 12  # 4 панели × 3 диода
 LED_BRIGHTNESS_DEFAULT = 0.3  # 0.0–1.0 (держим умеренно, не слепит)
 
 Color = Tuple[int, int, int]  # (R, G, B), каждый 0–255
