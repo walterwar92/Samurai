@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls, Grid, Environment } from '@react-three/drei'
+import { OrbitControls, Grid } from '@react-three/drei'
 import { useRobotState } from '@/hooks/useRobotState'
 import { useSocket } from '@/providers/SocketProvider'
 import { RobotModel } from '@/components/3d/RobotModel'
@@ -12,19 +12,32 @@ export function Visualization3DPage() {
   const state = useRobotState()
   const { connected } = useSocket()
   const [clearSignal, setClearSignal] = useState(0)
+  const [useEkf, setUseEkf] = useState(true)
 
-  const yaw = state?.imu_ypr?.[0] ?? 0
-  const pitch = state?.imu_ypr?.[1] ?? 0
-  const roll = state?.imu_ypr?.[2] ?? 0
+  const hasEkf = state?.imu_has_ekf ?? false
+
+  // Select YPR source based on toggle
+  const yprSource = (useEkf && hasEkf)
+    ? (state?.imu_ypr_ekf ?? [0, 0, 0])
+    : (state?.imu_ypr_raw ?? state?.imu_ypr ?? [0, 0, 0])
+
+  const yaw = yprSource[0]
+  const pitch = yprSource[1]
+  const roll = yprSource[2]
   const accel: [number, number, number] = state?.imu_accel ?? [0, 0, 9.81]
   const gyro: [number, number, number] = state?.imu_gyro ?? [0, 0, 0]
   const posX = state?.pose?.x ?? 0
   const posY = state?.pose?.y ?? 0
   const linearVel = state?.velocity?.linear ?? 0
   const angularVel = state?.velocity?.angular ?? 0
+  const ekfBias: [number, number, number] | null = state?.imu_ekf_bias ?? null
 
   const handleClearPath = useCallback(() => {
     setClearSignal(prev => prev + 1)
+  }, [])
+
+  const handleToggleEkf = useCallback(() => {
+    setUseEkf(prev => !prev)
   }, [])
 
   return (
@@ -134,6 +147,11 @@ export function Visualization3DPage() {
         linearVel={linearVel}
         angularVel={angularVel}
         onClearPath={handleClearPath}
+        useEkf={useEkf}
+        hasEkf={hasEkf}
+        onToggleEkf={handleToggleEkf}
+        ekfBias={ekfBias}
+        yprRaw={state?.imu_ypr_raw ?? null}
       />
     </div>
   )

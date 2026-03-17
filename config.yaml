@@ -65,6 +65,18 @@ simulator:
   jpeg_quality: 75          # JPEG compression quality (0-100)
   emit_state_hz: 4          # SocketIO state emit frequency
 
+# IMU filtering (Extended Kalman Filter on Pi)
+imu:
+  ekf:
+    enabled: true
+    # Process noise (больше = меньше доверия гироскопу, больше следования акселерометру)
+    q_angle: 0.001         # rad² — шум углов
+    q_bias: 0.0001         # (rad/s)² — случайное блуждание bias гироскопа
+    # Measurement noise (больше = меньше доверия акселерометру)
+    r_accel: 0.5           # (m/s²)² — шум акселерометра
+    # Accel gate: пропуск update если |‖a‖ − g| > gate·g
+    accel_gate: 0.5        # доля g (0.5 = 50%)
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)

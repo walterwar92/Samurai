@@ -3,22 +3,40 @@
 imu_node — MPU6050 6-axis IMU on I2C bus.
 
 Publishes:
-    samurai/{robot_id}/imu  — {ax,ay,az, gx,gy,gz, ts} @ 50 Hz
+    samurai/{robot_id}/imu  — {ax,ay,az, gx,gy,gz, ts, ekf?} @ 50 Hz
+
+When EKF is enabled (config imu.ekf.enabled), the payload includes
+an 'ekf' sub-dict with filtered roll/pitch/yaw and gyro bias estimates.
 """
 
 import math
 import os
 import struct
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
+
+try:
+    from config_loader import cfg
+except ImportError:
+    def cfg(key, default=None):
+        return default
 
 try:
     import smbus2
     _HW = True
 except ImportError:
     _HW = False
+
+# EKF — optional (requires numpy)
+_EKF_AVAILABLE = False
+try:
+    from pi_nodes.filters.ekf_imu import EkfImu
+    _EKF_AVAILABLE = True
+except ImportError:
+    pass
 
 MPU6050_ADDR = 0x68
 PWR_MGMT_1 = 0x6B
@@ -45,6 +63,25 @@ class IMUNode(MqttNode):
         else:
             self.log_warn('smbus2 unavailable — IMU simulated')
 
+        # EKF setup
+        self._ekf = None
+        ekf_enabled = cfg('imu.ekf.enabled', True)
+        if ekf_enabled and _EKF_AVAILABLE:
+            self._ekf = EkfImu(
+                q_angle=cfg('imu.ekf.q_angle', 0.001),
+                q_bias=cfg('imu.ekf.q_bias', 0.0001),
+                r_accel=cfg('imu.ekf.r_accel', 0.5),
+                accel_gate=cfg('imu.ekf.accel_gate', 0.5),
+            )
+            self.log_info('EKF enabled (q_angle=%.4f, q_bias=%.5f, r_accel=%.2f)',
+                          self._ekf.q_angle, self._ekf.q_bias, self._ekf.r_accel)
+        elif ekf_enabled and not _EKF_AVAILABLE:
+            self.log_warn('EKF requested but numpy/ekf_imu not available — disabled')
+        else:
+            self.log_info('EKF disabled by config')
+
+        self._last_time = time.monotonic()
+
         self.create_timer(0.02, self._read_and_publish)  # 50 Hz
 
     def _read_raw(self):
@@ -65,12 +102,33 @@ class IMUNode(MqttNode):
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 
     def _read_and_publish(self):
+        now = time.monotonic()
+        dt = now - self._last_time
+        self._last_time = now
+
         ax, ay, az, gx, gy, gz = self._read_raw()
-        self.publish('imu', {
+
+        payload = {
             'ax': round(ax, 4), 'ay': round(ay, 4), 'az': round(az, 4),
             'gx': round(gx, 5), 'gy': round(gy, 5), 'gz': round(gz, 5),
             'ts': self.timestamp(),
-        })
+        }
+
+        if self._ekf is not None:
+            self._ekf.predict(gx, gy, gz, dt)
+            self._ekf.update(ax, ay, az)
+            r, p, y = self._ekf.get_euler_deg()
+            bx, by, bz = self._ekf.gyro_bias
+            payload['ekf'] = {
+                'roll':  round(r, 2),
+                'pitch': round(p, 2),
+                'yaw':   round(y, 2),
+                'bias_gx': round(bx, 5),
+                'bias_gy': round(by, 5),
+                'bias_gz': round(bz, 5),
+            }
+
+        self.publish('imu', payload)
 
     def on_shutdown(self):
         if self._bus:
