@@ -514,6 +514,12 @@ class DashboardNode(Node):
                     'gyro':  {'x': self._imu_gyro[0],  'y': self._imu_gyro[1],  'z': self._imu_gyro[2]},
                     'accel': {'x': self._imu_accel[0], 'y': self._imu_accel[1], 'z': self._imu_accel[2]},
                 },
+                # Flat IMU fields (match simulator format, used by React frontend)
+                'imu_ypr':     list(self._imu_ypr),
+                'imu_accel_x': self._imu_accel[0],
+                'imu_gyro_z':  self._imu_gyro[2],
+                'imu_accel':   list(self._imu_accel),
+                'imu_gyro':    list(self._imu_gyro),
                 'pose':         self._robot_pose,
                 'velocity':     self._robot_velocity,
                 'cmd_velocity': self._cmd_velocity,

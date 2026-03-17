@@ -33,6 +33,11 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
               Админ
             </Button>
           </Link>
+          <Link to="/3d">
+            <Button variant="ghost" size="sm" className="text-xs">
+              3D
+            </Button>
+          </Link>
         </nav>
       </div>
 
