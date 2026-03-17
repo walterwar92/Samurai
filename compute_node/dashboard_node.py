@@ -131,6 +131,10 @@ class DashboardNode(Node):
         self._imu_ypr        = [0.0, 0.0, 0.0]
         self._imu_gyro       = [0.0, 0.0, 0.0]
         self._imu_accel      = [0.0, 0.0, 0.0]
+        self._imu_ypr_raw    = [0.0, 0.0, 0.0]
+        self._imu_ypr_ekf    = [0.0, 0.0, 0.0]
+        self._imu_ekf_bias   = [0.0, 0.0, 0.0]
+        self._imu_has_ekf    = False
         self._map_png        = None
         self._map_info       = {}
         self._robot_pose     = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
@@ -272,21 +276,35 @@ class DashboardNode(Node):
 
     def _mqtt_imu(self, payload):
         d = json.loads(payload)
-        # raw gyro/accel → compute yaw/pitch/roll if quaternion present
         gx = d.get('gx', 0.0)
         gy = d.get('gy', 0.0)
         gz = d.get('gz', 0.0)
         ax = d.get('ax', 0.0)
         ay = d.get('ay', 0.0)
         az = d.get('az', 1.0)
-        # Simple pitch/roll from accel
+        # Raw pitch/roll from accel (no yaw)
         pitch = math.degrees(math.atan2(ay, math.sqrt(ax*ax + az*az)))
         roll  = math.degrees(math.atan2(-ax, az))
+        # EKF filtered (if present in message from Pi)
+        ekf = d.get('ekf')
         with self._lock:
             self._imu_gyro  = [round(gx, 4), round(gy, 4), round(gz, 4)]
             self._imu_accel = [round(ax, 4), round(ay, 4), round(az, 4)]
-            self._imu_ypr[1] = round(pitch, 1)
-            self._imu_ypr[2] = round(roll, 1)
+            self._imu_ypr_raw = [0.0, round(pitch, 1), round(roll, 1)]
+            if ekf:
+                self._imu_ypr_ekf = [
+                    round(ekf.get('yaw', 0.0), 1),
+                    round(ekf.get('pitch', 0.0), 1),
+                    round(ekf.get('roll', 0.0), 1),
+                ]
+                self._imu_ekf_bias = [
+                    ekf.get('bias_gx', 0.0),
+                    ekf.get('bias_gy', 0.0),
+                    ekf.get('bias_gz', 0.0),
+                ]
+                self._imu_has_ekf = True
+            # Default: use EKF if available, raw otherwise
+            self._imu_ypr = list(self._imu_ypr_ekf) if self._imu_has_ekf else list(self._imu_ypr_raw)
 
     def _mqtt_battery(self, payload):
         try:
@@ -520,6 +538,11 @@ class DashboardNode(Node):
                 'imu_gyro_z':  self._imu_gyro[2],
                 'imu_accel':   list(self._imu_accel),
                 'imu_gyro':    list(self._imu_gyro),
+                # EKF vs raw YPR for frontend toggle
+                'imu_ypr_raw':   list(self._imu_ypr_raw),
+                'imu_ypr_ekf':   list(self._imu_ypr_ekf) if self._imu_has_ekf else None,
+                'imu_ekf_bias':  list(self._imu_ekf_bias) if self._imu_has_ekf else None,
+                'imu_has_ekf':   self._imu_has_ekf,
                 'pose':         self._robot_pose,
                 'velocity':     self._robot_velocity,
                 'cmd_velocity': self._cmd_velocity,
