@@ -119,6 +119,8 @@ export interface RobotState {
   imu_ypr: [number, number, number]
   imu_gyro_z: number
   imu_accel_x: number
+  imu_accel: [number, number, number]
+  imu_gyro: [number, number, number]
   pose: RobotPose
   velocity: RobotVelocity
   actuators: Actuators
