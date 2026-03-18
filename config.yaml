@@ -77,6 +77,25 @@ imu:
     # Accel gate: пропуск update если |‖a‖ − g| > gate·g
     accel_gate: 0.5        # доля g (0.5 = 50%)
 
+# Servo configuration (PCA9685 channels)
+servos:
+  head:
+    pan_channel: 5        # горизонтальный поворот камеры
+    tilt_channel: 6       # вертикальный наклон камеры
+    pan_home: 90          # центр (смотрит вперёд)
+    tilt_home: 90         # центр (смотрит вперёд)
+    pan_min: 0
+    pan_max: 180
+    tilt_min: 30          # ограничение наклона вниз
+    tilt_max: 150         # ограничение наклона вверх
+    speed: 2.0            # градусов за тик (плавное движение)
+  arm:
+    channels: [1, 2, 3, 4]   # PCA9685 каналы суставов руки
+    home_angles: [90, 90, 90, 90]
+    min_angles: [0, 0, 0, 0]
+    max_angles: [180, 180, 180, 180]
+    labels: ["Плечо", "Локоть", "Запястье", "Захват"]
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)

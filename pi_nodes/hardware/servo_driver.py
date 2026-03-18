@@ -32,15 +32,16 @@ class _FakeServo:
 
 
 class ServoDriver:
-    """Controls claw servo on PCA9685 channel 0."""
+    """Controls a servo on any PCA9685 channel."""
 
-    def __init__(self, channel: int = CLAW_CHANNEL):
+    def __init__(self, channel: int = CLAW_CHANNEL, init_angle: float = CLAW_INIT_ANGLE):
         self._pca = PCA9685Driver()
         self._pca.init()
+        self._channel = channel
         self._simulated = self._pca.simulated or not _HW_SERVO
 
         if self._simulated:
-            _log.warning('Servo hardware unavailable — running in simulation mode')
+            _log.warning('Servo ch%d hardware unavailable — simulation mode', channel)
             self._servo = _FakeServo()
         else:
             self._servo = adafruit_servo.Servo(
@@ -50,7 +51,7 @@ class ServoDriver:
                 actuation_range=ACTUATION_RANGE,
             )
 
-        self._angle = CLAW_INIT_ANGLE
+        self._angle = init_angle
         self._servo.angle = self._angle
 
     @property

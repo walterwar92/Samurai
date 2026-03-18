@@ -37,6 +37,10 @@ REST API reference:
     POST /api/fsm/command             — send voice command
     POST /api/actuators/claw          — open / close
     POST /api/actuators/laser         — on / off
+    GET  /api/actuators/head          — head pan/tilt state
+    POST /api/actuators/head          — {pan, tilt} or {command: "center"}
+    GET  /api/actuators/arm           — arm joint angles
+    POST /api/actuators/arm           — {joint, angle} or {joints} or {command: "home"}
     POST /api/speed_profile           — slow / normal / fast
     POST /api/patrol/command          — start / stop patrol
     POST /api/patrol/waypoints        — set waypoints
@@ -149,6 +153,8 @@ class DashboardNode(Node):
         self._speed_profile  = 'normal'
         self._claw_open      = False
         self._laser_on       = False
+        self._head_state     = {'pan': 90.0, 'tilt': 90.0}
+        self._arm_state      = {'j1': 90.0, 'j2': 90.0, 'j3': 90.0, 'j4': 90.0}
 
         # ── MQTT client (primary sensor source) ──────────────
         if self._mqtt_broker:
@@ -212,8 +218,8 @@ class DashboardNode(Node):
         p = self._prefix
         # Subscribe to all Pi sensor topics
         for topic in ['camera', 'range', 'imu', 'battery', 'temperature',
-                      'status', 'odom', 'claw/state', 'watchdog',
-                      'voice_command', 'speed_profile/active']:
+                      'status', 'odom', 'claw/state', 'head/state', 'arm/state',
+                      'watchdog', 'voice_command', 'speed_profile/active']:
             client.subscribe(f'{p}/{topic}', qos=0)
         self.get_logger().info(f'MQTT connected to {self._mqtt_broker} — subscribed to Pi topics')
 
@@ -241,6 +247,10 @@ class DashboardNode(Node):
                 self._mqtt_odom(msg.payload)
             elif suffix == 'claw/state':
                 self._mqtt_claw_state(msg.payload)
+            elif suffix == 'head/state':
+                self._mqtt_head_state(msg.payload)
+            elif suffix == 'arm/state':
+                self._mqtt_arm_state(msg.payload)
             elif suffix == 'watchdog':
                 self._mqtt_watchdog(msg.payload)
             elif suffix == 'voice_command':
@@ -357,6 +367,22 @@ class DashboardNode(Node):
         angle = d.get('angle', 90)
         with self._lock:
             self._claw_open = (angle < 60)
+
+    def _mqtt_head_state(self, payload):
+        try:
+            d = json.loads(payload)
+            with self._lock:
+                self._head_state = d
+        except Exception:
+            pass
+
+    def _mqtt_arm_state(self, payload):
+        try:
+            d = json.loads(payload)
+            with self._lock:
+                self._arm_state = d
+        except Exception:
+            pass
 
     def _mqtt_watchdog(self, payload):
         try:
@@ -484,6 +510,12 @@ class DashboardNode(Node):
         with self._lock:
             self._laser_on = (state == 'on')
 
+    def set_head(self, payload: dict):
+        self._mqtt_pub('head/command', json.dumps(payload), qos=1)
+
+    def set_arm(self, payload: dict):
+        self._mqtt_pub('arm/command', json.dumps(payload), qos=1)
+
     def set_speed_profile(self, profile: str):
         self._mqtt_pub('speed_profile', profile, qos=1)
 
@@ -560,6 +592,8 @@ class DashboardNode(Node):
                     'claw':  'open'  if self._claw_open else 'closed',
                     'laser': 'on'    if self._laser_on  else 'off',
                 },
+                'head': dict(self._head_state),
+                'arm':  dict(self._arm_state),
             }
 
     def _snapshot(self):
@@ -583,6 +617,8 @@ class DashboardNode(Node):
                     'claw':  'open' if self._claw_open else 'closed',
                     'laser': 'on'   if self._laser_on  else 'off',
                 },
+                'head': dict(self._head_state),
+                'arm':  dict(self._arm_state),
                 'battery':       dict(self._battery),
                 'temperature':   dict(self._temperature),
                 'watchdog':      dict(self._watchdog),
@@ -917,6 +953,51 @@ def create_app(ros_node: DashboardNode):
                 return _err('body must contain "on" (bool) or "state" ("on"/"off")')
         ros_node.set_laser(state)
         return _ok(laser=state)
+
+    @app.post('/api/actuators/head')
+    async def api_head(req: Request):
+        body = await req.json()
+        # Accept: {"pan": 90, "tilt": 90} or {"command": "center"}
+        if body.get('command') == 'center':
+            ros_node._mqtt_pub('head/command', 'center', qos=1)
+            return _ok(head='center')
+        payload = {}
+        if 'pan' in body:
+            payload['pan'] = max(0, min(180, float(body['pan'])))
+        if 'tilt' in body:
+            payload['tilt'] = max(0, min(180, float(body['tilt'])))
+        if not payload:
+            return _err('body must contain "pan", "tilt", or "command":"center"')
+        ros_node.set_head(payload)
+        return _ok(head=payload)
+
+    @app.post('/api/actuators/arm')
+    async def api_arm(req: Request):
+        body = await req.json()
+        # Accept: {"joint": 1, "angle": 90} or {"joints": [90,90,90,90]} or {"command":"home"}
+        if body.get('command') == 'home':
+            ros_node._mqtt_pub('arm/command', 'home', qos=1)
+            return _ok(arm='home')
+        if 'joint' in body and 'angle' in body:
+            joint = int(body['joint'])
+            angle = max(0, min(180, float(body['angle'])))
+            ros_node.set_arm({'joint': joint, 'angle': angle})
+            return _ok(joint=joint, angle=angle)
+        if 'joints' in body:
+            joints = [max(0, min(180, float(a))) for a in body['joints'][:4]]
+            ros_node.set_arm({'joints': joints})
+            return _ok(joints=joints)
+        return _err('body must contain "joint"+"angle", "joints", or "command":"home"')
+
+    @app.get('/api/actuators/head')
+    async def api_head_get():
+        with ros_node._lock:
+            return _ok(**ros_node._head_state)
+
+    @app.get('/api/actuators/arm')
+    async def api_arm_get():
+        with ros_node._lock:
+            return _ok(**ros_node._arm_state)
 
     @app.post('/api/speed_profile')
     async def api_speed_profile_set(req: Request):

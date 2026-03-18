@@ -6,6 +6,7 @@ import { FsmStatePanel } from '@/components/fsm/FsmStatePanel'
 import { FsmTransitionButtons } from '@/components/fsm/FsmTransitionButtons'
 import { SensorPanel } from '@/components/sensors/SensorPanel'
 import { ActuatorToggles } from '@/components/actuators/ActuatorToggles'
+import { ServoControlPanel } from '@/components/actuators/ServoControlPanel'
 import { JoystickControl } from '@/components/joystick/JoystickControl'
 import { EmergencyStop } from '@/components/controls/EmergencyStop'
 import { DetectionTable } from '@/components/detection/DetectionTable'
@@ -68,6 +69,9 @@ export function AdminPage() {
                   <ActuatorToggles actuators={state?.actuators} />
                 </CardContent>
               </Card>
+
+              {/* Servo Control (Head + Arm) */}
+              <ServoControlPanel head={state?.head} arm={state?.arm} />
 
               {/* Joystick */}
               <Card>
