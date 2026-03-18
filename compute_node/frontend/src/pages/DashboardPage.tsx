@@ -21,6 +21,7 @@ import { PatrolPanel } from '@/components/controls/PatrolPanel'
 import { MapManagerPanel } from '@/components/map/MapManagerPanel'
 import { FollowMePanel } from '@/components/controls/FollowMePanel'
 import { PathRecorderPanel } from '@/components/controls/PathRecorderPanel'
+import { ServoControlPanel } from '@/components/actuators/ServoControlPanel'
 import { SensorCharts } from '@/components/charts/SensorCharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -69,6 +70,11 @@ export function DashboardPage() {
           <FollowMePanel followMe={state?.follow_me ?? null} />
           <PathRecorderPanel pathRecorder={state?.path_recorder ?? null} />
           <MapManagerPanel />
+        </div>
+
+        {/* Servo Control Panel */}
+        <div className="lg:col-span-2">
+          <ServoControlPanel head={state?.head ?? null} arm={state?.arm ?? null} />
         </div>
 
         {/* Watchdog */}

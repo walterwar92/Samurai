@@ -153,7 +153,7 @@ class DashboardNode(Node):
         self._speed_profile  = 'normal'
         self._claw_open      = False
         self._laser_on       = False
-        self._head_state     = {'pan': 90.0, 'tilt': 90.0}
+        self._head_state     = {'angle': 90.0}
         self._arm_state      = {'j1': 90.0, 'j2': 90.0, 'j3': 90.0, 'j4': 90.0}
 
         # ── MQTT client (primary sensor source) ──────────────
@@ -381,6 +381,9 @@ class DashboardNode(Node):
             d = json.loads(payload)
             with self._lock:
                 self._arm_state = d
+                # j4 is the claw — open when angle < 60°
+                j4 = d.get('j4', 90)
+                self._claw_open = (j4 < 60)
         except Exception:
             pass
 
@@ -501,7 +504,10 @@ class DashboardNode(Node):
                                   'angular_z': round(angular_z, 3)}
 
     def set_claw(self, state: str):
-        self._mqtt_pub('claw/command', state, qos=1)
+        # Claw is arm joint 4 (index 4, 1-based). open=30°, close=130°
+        angle = 30 if state == 'open' else 130
+        self._mqtt_pub('arm/command',
+                       json.dumps({'joint': 4, 'angle': angle}), qos=1)
         with self._lock:
             self._claw_open = (state == 'open')
 
@@ -957,19 +963,15 @@ def create_app(ros_node: DashboardNode):
     @app.post('/api/actuators/head')
     async def api_head(req: Request):
         body = await req.json()
-        # Accept: {"pan": 90, "tilt": 90} or {"command": "center"}
+        # Accept: {"angle": 0-180} or {"command": "center"}
         if body.get('command') == 'center':
             ros_node._mqtt_pub('head/command', 'center', qos=1)
             return _ok(head='center')
-        payload = {}
-        if 'pan' in body:
-            payload['pan'] = max(0, min(180, float(body['pan'])))
-        if 'tilt' in body:
-            payload['tilt'] = max(0, min(180, float(body['tilt'])))
-        if not payload:
-            return _err('body must contain "pan", "tilt", or "command":"center"')
-        ros_node.set_head(payload)
-        return _ok(head=payload)
+        if 'angle' in body:
+            angle = max(0, min(180, float(body['angle'])))
+            ros_node.set_head({'angle': angle})
+            return _ok(angle=angle)
+        return _err('body must contain "angle" or "command":"center"')
 
     @app.post('/api/actuators/arm')
     async def api_arm(req: Request):
