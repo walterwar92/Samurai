@@ -56,6 +56,18 @@ export interface Actuators {
   laser_on: boolean
 }
 
+export interface HeadState {
+  pan: number
+  tilt: number
+}
+
+export interface ArmState {
+  j1: number
+  j2: number
+  j3: number
+  j4: number
+}
+
 export interface LogEntry {
   text: string
   time: string
@@ -150,4 +162,6 @@ export interface RobotState {
   qr_detection: QrDetection | null
   gesture: string
   speed_profile: string
+  head: HeadState | null
+  arm: ArmState | null
 }

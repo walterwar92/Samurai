@@ -44,6 +44,29 @@ export const api = {
   setLaser: (on: boolean) =>
     post('/api/actuators/laser', { on }),
 
+  // Head (pan/tilt camera)
+  setHead: (pan: number, tilt: number) =>
+    post('/api/actuators/head', { pan, tilt }),
+
+  setHeadPan: (pan: number) =>
+    post('/api/actuators/head', { pan }),
+
+  setHeadTilt: (tilt: number) =>
+    post('/api/actuators/head', { tilt }),
+
+  centerHead: () =>
+    post('/api/actuators/head', { command: 'center' }),
+
+  // Arm (4 joints)
+  setArmJoint: (joint: number, angle: number) =>
+    post('/api/actuators/arm', { joint, angle }),
+
+  setArmAll: (joints: number[]) =>
+    post('/api/actuators/arm', { joints }),
+
+  homeArm: () =>
+    post('/api/actuators/arm', { command: 'home' }),
+
   // Speed profiles
   setSpeedProfile: (profile: string) =>
     post('/api/speed_profile', { profile }),
