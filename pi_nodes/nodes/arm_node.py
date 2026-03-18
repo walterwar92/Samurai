@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arm_node — Robotic arm servo control (PCA9685 channels 1-4).
+arm_node — Robotic arm servo control (PCA9685 channels 0-3).
 
 4 independent joints with angle limits from config.yaml.
 

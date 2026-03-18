@@ -5,7 +5,7 @@ import { Separator } from '@/components/ui/separator'
 import { api } from '@/lib/api'
 import type { HeadState, ArmState } from '@/types/robot'
 
-const ARM_LABELS = ['Плечо', 'Локоть', 'Запястье', 'Захват']
+const ARM_LABELS = ['Основание', 'Сустав 1', 'Сустав 2', 'Клешня']
 
 interface ServoSliderProps {
   label: string
@@ -21,7 +21,7 @@ function ServoSlider({ label, value, min = 0, max = 180, onChange }: ServoSlider
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-muted-foreground">{label}</span>
         <span className="text-[11px] font-mono font-semibold tabular-nums w-10 text-right">
-          {Math.round(value)}°
+          {Math.round(value)}&deg;
         </span>
       </div>
       <input
@@ -46,8 +46,8 @@ function ServoSlider({ label, value, min = 0, max = 180, onChange }: ServoSlider
                    [&::-moz-range-thumb]:cursor-pointer"
       />
       <div className="flex justify-between text-[9px] text-muted-foreground/50">
-        <span>{min}°</span>
-        <span>{max}°</span>
+        <span>{min}&deg;</span>
+        <span>{max}&deg;</span>
       </div>
     </div>
   )
@@ -62,11 +62,10 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
   const [headThrottle, setHeadThrottle] = useState(false)
   const [armThrottle, setArmThrottle] = useState(false)
 
-  const throttledHeadChange = useCallback((key: 'pan' | 'tilt', value: number) => {
+  const throttledHeadChange = useCallback((value: number) => {
     if (headThrottle) return
     setHeadThrottle(true)
-    if (key === 'pan') api.setHeadPan(value)
-    else api.setHeadTilt(value)
+    api.setHeadAngle(value)
     setTimeout(() => setHeadThrottle(false), 80)
   }, [headThrottle])
 
@@ -77,8 +76,7 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
     setTimeout(() => setArmThrottle(false), 80)
   }, [armThrottle])
 
-  const panVal = head?.pan ?? 90
-  const tiltVal = head?.tilt ?? 90
+  const headAngle = head?.angle ?? 90
 
   const armAngles = [
     arm?.j1 ?? 90,
@@ -95,10 +93,10 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="p-3 space-y-3">
-        {/* Head (Camera) */}
+        {/* Head (Camera) — single servo ch4 */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium">Голова (камера)</span>
+            <span className="text-xs font-medium">Голова (камера) — ch4</span>
             <Button
               variant="outline"
               size="sm"
@@ -109,25 +107,18 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
             </Button>
           </div>
           <ServoSlider
-            label="Pan (горизонт)"
-            value={panVal}
-            onChange={(v) => throttledHeadChange('pan', v)}
-          />
-          <ServoSlider
-            label="Tilt (вертикаль)"
-            value={tiltVal}
-            min={30}
-            max={150}
-            onChange={(v) => throttledHeadChange('tilt', v)}
+            label="Угол поворота"
+            value={headAngle}
+            onChange={(v) => throttledHeadChange(v)}
           />
         </div>
 
         <Separator />
 
-        {/* Arm */}
+        {/* Arm — ch0-ch3 */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium">Рука (4 сустава)</span>
+            <span className="text-xs font-medium">Рука / Клешня — ch0-ch3</span>
             <Button
               variant="outline"
               size="sm"
@@ -140,7 +131,7 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
           {ARM_LABELS.map((label, i) => (
             <ServoSlider
               key={i}
-              label={`J${i + 1}: ${label}`}
+              label={`ch${i}: ${label}`}
               value={armAngles[i]}
               onChange={(v) => throttledArmChange(i + 1, v)}
             />

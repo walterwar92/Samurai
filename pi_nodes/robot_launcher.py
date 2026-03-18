@@ -38,7 +38,6 @@ NODE_REGISTRY = {
     'ultrasonic':   'pi_nodes.nodes.ultrasonic_node.UltrasonicNode',
     'battery':      'pi_nodes.nodes.battery_node.BatteryNode',
     'temperature':  'pi_nodes.nodes.temperature_node.TemperatureNode',
-    'servo':        'pi_nodes.nodes.servo_node.ServoNode',
     'head':         'pi_nodes.nodes.head_node.HeadNode',
     'arm':          'pi_nodes.nodes.arm_node.ArmNode',
     'laser':        'pi_nodes.nodes.laser_node.LaserNode',
@@ -50,7 +49,7 @@ NODE_REGISTRY = {
 
 DEFAULT_NODES = [
     'motor', 'imu', 'camera', 'ultrasonic',
-    'battery', 'temperature', 'servo', 'head', 'arm', 'laser',
+    'battery', 'temperature', 'head', 'arm', 'laser',
     'fsm', 'watchdog', 'fallback_nav',
 ]
 

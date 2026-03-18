@@ -57,8 +57,7 @@ export interface Actuators {
 }
 
 export interface HeadState {
-  pan: number
-  tilt: number
+  angle: number
 }
 
 export interface ArmState {

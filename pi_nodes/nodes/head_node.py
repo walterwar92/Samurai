@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-head_node — Camera head pan/tilt servo control (PCA9685 channels 5, 6).
+head_node — Camera head servo control (PCA9685 channel 4).
 
-Always centers on startup (looks forward). Supports smooth movement
-and absolute angle commands. Future: object tracking mode.
+Single servo for horizontal pan. Centers on startup (looks forward).
+Supports smooth movement and absolute angle commands.
+Future: object tracking mode.
 
 Subscribes:
-    samurai/{robot_id}/head/command — JSON {"pan": 0-180, "tilt": 0-180}
+    samurai/{robot_id}/head/command — JSON {"angle": 0-180}
                                      or "center" to reset to home
 Publishes:
-    samurai/{robot_id}/head/state  — JSON {"pan": float, "tilt": float} @ 10 Hz
+    samurai/{robot_id}/head/state  — JSON {"angle": float} @ 10 Hz
 """
 
 import json
@@ -31,51 +32,39 @@ class HeadNode(MqttNode):
         super().__init__('head_node', **kwargs)
 
         # Config
-        self._pan_channel = cfg('servos.head.pan_channel', 5)
-        self._tilt_channel = cfg('servos.head.tilt_channel', 6)
-        self._pan_home = cfg('servos.head.pan_home', 90)
-        self._tilt_home = cfg('servos.head.tilt_home', 90)
-        self._pan_min = cfg('servos.head.pan_min', 0)
-        self._pan_max = cfg('servos.head.pan_max', 180)
-        self._tilt_min = cfg('servos.head.tilt_min', 30)
-        self._tilt_max = cfg('servos.head.tilt_max', 150)
+        self._channel = cfg('servos.head.channel', 4)
+        self._home = cfg('servos.head.home', 90)
+        self._min = cfg('servos.head.min', 0)
+        self._max = cfg('servos.head.max', 180)
         self._speed = cfg('servos.head.speed', 2.0)
 
-        # Servo drivers
-        self._pan_servo = ServoDriver(channel=self._pan_channel)
-        self._tilt_servo = ServoDriver(channel=self._tilt_channel)
+        # Servo driver
+        self._servo = ServoDriver(channel=self._channel)
 
-        # Target angles (for smooth movement)
-        self._pan_target = self._pan_home
-        self._tilt_target = self._tilt_home
-
-        # Current angles
-        self._pan_angle = self._pan_home
-        self._tilt_angle = self._tilt_home
+        # Target & current angle (for smooth movement)
+        self._target = self._home
+        self._angle = self._home
 
         # Center on startup
-        self._pan_servo.set_angle(self._pan_home)
-        self._tilt_servo.set_angle(self._tilt_home)
+        self._servo.set_angle(self._home)
 
         # MQTT
         self.subscribe('head/command', self._cmd_cb)
         self.create_timer(0.02, self._smooth_move)   # 50 Hz servo update
         self.create_timer(0.1, self._publish_state)   # 10 Hz state
 
-        sim = self._pan_servo.simulated
+        sim = self._servo.simulated
         if sim:
-            self.log_warn('Head servos in SIMULATION mode')
+            self.log_warn('Head servo in SIMULATION mode')
         else:
-            self.log_info('Head node ready (pan=ch%d, tilt=ch%d, home=%d/%d)',
-                          self._pan_channel, self._tilt_channel,
-                          self._pan_home, self._tilt_home)
+            self.log_info('Head node ready (ch%d, home=%d)',
+                          self._channel, self._home)
 
     def _cmd_cb(self, topic, data):
         text = str(data).strip()
 
         if text.lower() == 'center':
-            self._pan_target = self._pan_home
-            self._tilt_target = self._tilt_home
+            self._target = self._home
             self.log_info('Head → CENTER')
             return
 
@@ -85,22 +74,15 @@ class HeadNode(MqttNode):
             self.log_warn('Invalid head command: %s', text)
             return
 
-        if 'pan' in d:
-            self._pan_target = max(self._pan_min,
-                                   min(self._pan_max, float(d['pan'])))
-        if 'tilt' in d:
-            self._tilt_target = max(self._tilt_min,
-                                    min(self._tilt_max, float(d['tilt'])))
-
-        self.log_info('Head target pan=%.1f tilt=%.1f',
-                      self._pan_target, self._tilt_target)
+        if 'angle' in d:
+            self._target = max(self._min,
+                               min(self._max, float(d['angle'])))
+            self.log_info('Head target=%.1f', self._target)
 
     def _smooth_move(self):
-        """Move servos towards target by _speed degrees per tick."""
-        self._pan_angle = self._step(self._pan_angle, self._pan_target)
-        self._tilt_angle = self._step(self._tilt_angle, self._tilt_target)
-        self._pan_servo.set_angle(self._pan_angle)
-        self._tilt_servo.set_angle(self._tilt_angle)
+        """Move servo towards target by _speed degrees per tick."""
+        self._angle = self._step(self._angle, self._target)
+        self._servo.set_angle(self._angle)
 
     def _step(self, current: float, target: float) -> float:
         diff = target - current
@@ -111,8 +93,7 @@ class HeadNode(MqttNode):
 
     def _publish_state(self):
         self.publish('head/state', json.dumps({
-            'pan': round(self._pan_angle, 1),
-            'tilt': round(self._tilt_angle, 1),
+            'angle': round(self._angle, 1),
         }))
 
 

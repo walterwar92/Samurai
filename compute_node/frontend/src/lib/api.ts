@@ -44,15 +44,9 @@ export const api = {
   setLaser: (on: boolean) =>
     post('/api/actuators/laser', { on }),
 
-  // Head (pan/tilt camera)
-  setHead: (pan: number, tilt: number) =>
-    post('/api/actuators/head', { pan, tilt }),
-
-  setHeadPan: (pan: number) =>
-    post('/api/actuators/head', { pan }),
-
-  setHeadTilt: (tilt: number) =>
-    post('/api/actuators/head', { tilt }),
+  // Head (single servo camera)
+  setHeadAngle: (angle: number) =>
+    post('/api/actuators/head', { angle }),
 
   centerHead: () =>
     post('/api/actuators/head', { command: 'center' }),
