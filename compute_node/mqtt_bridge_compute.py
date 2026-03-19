@@ -203,6 +203,26 @@ class MqttBridgeCompute(Node):
         odom.pose.pose.orientation.w = math.cos(theta / 2.0)
         odom.twist.twist.linear.x = d.get('vx', 0.0)
         odom.twist.twist.angular.z = d.get('vz', 0.0)
+
+        # Pose covariance (6x6 row-major, diagonal only)
+        # x, y, z, roll, pitch, yaw
+        pc = odom.pose.covariance
+        pc[0]  = 0.01   # x variance (m²)
+        pc[7]  = 0.01   # y variance
+        pc[14] = 1e6    # z — not used (2D), set very high
+        pc[21] = 1e6    # roll — not used
+        pc[28] = 1e6    # pitch — not used
+        pc[35] = 0.005  # yaw variance (rad²) — IMU-fused, good confidence
+
+        # Twist covariance
+        tc = odom.twist.covariance
+        tc[0]  = 0.01   # vx variance
+        tc[7]  = 1e6    # vy — not used
+        tc[14] = 1e6    # vz — not used
+        tc[21] = 1e6    # vroll — not used
+        tc[28] = 1e6    # vpitch — not used
+        tc[35] = 0.02   # vyaw variance
+
         self._odom_pub.publish(odom)
 
         # TF: odom → base_link
@@ -220,7 +240,29 @@ class MqttBridgeCompute(Node):
         msg = Imu()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'imu_link'
-        msg.orientation_covariance[0] = -1.0
+
+        # If Pi-side filter provides orientation (EKF roll/pitch/yaw),
+        # convert to quaternion and send it. Otherwise mark as unavailable.
+        ekf = d.get('ekf')
+        if ekf and d.get('calibrated', False):
+            roll  = math.radians(ekf.get('roll', 0.0))
+            pitch = math.radians(ekf.get('pitch', 0.0))
+            yaw   = math.radians(ekf.get('yaw', 0.0))
+            # Euler → quaternion (ZYX convention)
+            cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+            cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+            cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+            msg.orientation.x = sr * cp * cy - cr * sp * sy
+            msg.orientation.y = cr * sp * cy + sr * cp * sy
+            msg.orientation.z = cr * cp * sy - sr * sp * cy
+            msg.orientation.w = cr * cp * cy + sr * sp * sy
+            # Orientation covariance (low for yaw, high for roll/pitch)
+            msg.orientation_covariance[0] = 0.1    # roll variance
+            msg.orientation_covariance[4] = 0.1    # pitch variance
+            msg.orientation_covariance[8] = 0.005  # yaw variance — calibrated
+        else:
+            msg.orientation_covariance[0] = -1.0   # orientation unavailable
+
         msg.angular_velocity.x = d['gx']
         msg.angular_velocity.y = d['gy']
         msg.angular_velocity.z = d['gz']
@@ -230,9 +272,9 @@ class MqttBridgeCompute(Node):
         msg.linear_acceleration.x = d['ax']
         msg.linear_acceleration.y = d['ay']
         msg.linear_acceleration.z = d['az']
-        msg.linear_acceleration_covariance[0] = 0.1
-        msg.linear_acceleration_covariance[4] = 0.1
-        msg.linear_acceleration_covariance[8] = 0.1
+        msg.linear_acceleration_covariance[0] = 0.5   # higher — vibrating chassis
+        msg.linear_acceleration_covariance[4] = 0.5
+        msg.linear_acceleration_covariance[8] = 0.5
         self._imu_pub.publish(msg)
 
     def _handle_camera(self, payload):

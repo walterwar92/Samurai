@@ -57,10 +57,24 @@ DEG2RAD = math.pi / 180.0
 # Calibration: 100 samples @ 50 Hz = 2 seconds
 CALIBRATION_SAMPLES = 100
 
+# Exponential Moving Average alpha for accelerometer (0..1)
+# Lower = smoother but more lag.  0.2 @ 50Hz ≈ 8Hz cutoff — good for vibrations.
+ACCEL_EMA_ALPHA = 0.2
+# EMA for gyroscope — less aggressive, gyro is less noisy
+GYRO_EMA_ALPHA = 0.5
+
 
 class IMUNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('imu_node', **kwargs)
+
+        # EMA filter state (initialized on first reading)
+        self._ema_ax = None
+        self._ema_ay = None
+        self._ema_az = None
+        self._ema_gx = None
+        self._ema_gy = None
+        self._ema_gz = None
 
         self._bus = None
         if _HW:
@@ -132,6 +146,24 @@ class IMUNode(MqttNode):
             self._bus = None  # stop trying until restart
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 
+    def _apply_ema(self, ax, ay, az, gx, gy, gz):
+        """Exponential Moving Average — smooths vibration noise."""
+        a = ACCEL_EMA_ALPHA
+        g = GYRO_EMA_ALPHA
+        if self._ema_ax is None:
+            # First sample — initialize
+            self._ema_ax, self._ema_ay, self._ema_az = ax, ay, az
+            self._ema_gx, self._ema_gy, self._ema_gz = gx, gy, gz
+        else:
+            self._ema_ax = a * ax + (1 - a) * self._ema_ax
+            self._ema_ay = a * ay + (1 - a) * self._ema_ay
+            self._ema_az = a * az + (1 - a) * self._ema_az
+            self._ema_gx = g * gx + (1 - g) * self._ema_gx
+            self._ema_gy = g * gy + (1 - g) * self._ema_gy
+            self._ema_gz = g * gz + (1 - g) * self._ema_gz
+        return (self._ema_ax, self._ema_ay, self._ema_az,
+                self._ema_gx, self._ema_gy, self._ema_gz)
+
     def _finish_calibration(self):
         """Compute offsets from collected samples, init EKF with home position."""
         n = len(self._cal_samples)
@@ -179,6 +211,9 @@ class IMUNode(MqttNode):
         self._last_time = now
 
         ax, ay, az, gx, gy, gz = self._read_raw()
+
+        # ── EMA low-pass filter (before everything else) ──────────────
+        ax, ay, az, gx, gy, gz = self._apply_ema(ax, ay, az, gx, gy, gz)
 
         # ── Calibration phase ─────────────────────────────────────────
         if not self._calibrated:
