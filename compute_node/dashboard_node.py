@@ -598,6 +598,55 @@ class DashboardNode(Node):
         with self._lock:
             return self._map_png
 
+    def get_slam_map_png(self):
+        """Generate PNG from Pi-side SLAM map data (fallback when ROS2 SLAM unavailable)."""
+        with self._lock:
+            slam = self._slam_map
+        if not slam:
+            return None
+        try:
+            info = slam.get('info', {})
+            w = info.get('width', 200)
+            h = info.get('height', 200)
+            res = info.get('resolution', 0.05)
+            ox = info.get('origin_x', -5.0)
+            oy = info.get('origin_y', -5.0)
+
+            # Create image: gray=unknown, white=free, black=occupied
+            img = np.full((h, w, 3), 128, dtype=np.uint8)
+
+            # Mark obstacles
+            for obs in slam.get('obstacles', []):
+                ci = int((obs[0] - ox) / res)
+                cj = int((obs[1] - oy) / res)
+                if 0 <= ci < w and 0 <= cj < h:
+                    img[cj, ci] = [30, 30, 30]
+
+            # Mark trail (blue line)
+            for pt in slam.get('trail', []):
+                ci = int((pt[0] - ox) / res)
+                cj = int((pt[1] - oy) / res)
+                if 0 <= ci < w and 0 <= cj < h:
+                    img[cj, ci] = [255, 180, 50]  # blue-ish in BGR
+
+            # Mark robot position (red dot)
+            robot = slam.get('robot', {})
+            rx = robot.get('x', 0.0)
+            ry = robot.get('y', 0.0)
+            rci = int((rx - ox) / res)
+            rcj = int((ry - oy) / res)
+            for di in range(-2, 3):
+                for dj in range(-2, 3):
+                    ni, nj = rci + di, rcj + dj
+                    if 0 <= ni < w and 0 <= nj < h:
+                        img[nj, ni] = [0, 0, 255]  # red in BGR
+
+            img = cv2.flip(img, 0)  # flip Y for image coordinates
+            _, png = cv2.imencode('.png', img)
+            return png.tobytes()
+        except Exception:
+            return None
+
     def get_state(self):
         """Full state dict for SocketIO push."""
         with self._lock:
@@ -922,6 +971,9 @@ def create_app(ros_node: DashboardNode):
     async def api_map_image():
         png = ros_node.get_map_png()
         if not png:
+            # Fallback: generate PNG from Pi-side SLAM map
+            png = ros_node.get_slam_map_png()
+        if not png:
             return JSONResponse({'ok': False, 'error': 'Map not available yet'}, status_code=503)
         return Response(content=png, media_type='image/png')
 
@@ -930,6 +982,11 @@ def create_app(ros_node: DashboardNode):
         with ros_node._lock:
             info = dict(ros_node._map_info)
         if not info:
+            # Fallback: Pi-side SLAM map info
+            with ros_node._lock:
+                slam = ros_node._slam_map
+            if slam and 'info' in slam:
+                return _ok(**slam['info'])
             return JSONResponse({'ok': False, 'error': 'Map not available yet'}, status_code=503)
         return _ok(**info)
 
@@ -1114,8 +1171,9 @@ def create_app(ros_node: DashboardNode):
     async def api_path_recorder(req: Request):
         body    = await req.json()
         command = body.get('command', '').lower().strip()
-        if command not in ('start', 'stop', 'play'):
-            return _err('command must be "start", "stop", or "play"')
+        if command not in ('start', 'stop', 'play', 'record', 'replay', 'clear',
+                           'save', 'load'):
+            return _err('command must be "start"/"record", "stop", "play"/"replay"')
         ros_node.set_path_recorder(body)
         return _ok(path_recorder=command)
 

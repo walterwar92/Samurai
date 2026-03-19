@@ -216,6 +216,7 @@ fun MainScreen(applicationContext: Context) {
                     onSetClaw       = { open -> scope.launch { apiClient.setClaw(open) } },
                     onSetLaser      = { on   -> scope.launch { apiClient.setLaser(on) } },
                     onForceState    = { s    -> scope.launch { apiClient.forceTransition(s) } },
+                    onResetPosition = { scope.launch { apiClient.resetPosition() } },
                 )
 
                 AppTab.CAMERA -> CameraScreen(

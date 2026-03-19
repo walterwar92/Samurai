@@ -74,6 +74,7 @@ fun ControlScreen(
     onSetClaw: (Boolean) -> Unit,
     onSetLaser: (Boolean) -> Unit,
     onForceState: (String) -> Unit,
+    onResetPosition: () -> Unit = {},
 ) {
     var manualCommand by remember { mutableStateOf("") }
     val state = robotState.fsm.state
@@ -217,6 +218,21 @@ fun ControlScreen(
                         enabled = isConnected,
                         modifier = Modifier.weight(1f)
                     ) { Text("Вызов") }
+                }
+
+                // Reset position button (real robot)
+                if (connectionMode != ConnectionMode.SIMULATOR) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = onResetPosition,
+                        enabled = isConnected,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2196F3))
+                    ) {
+                        Icon(Icons.Default.MyLocation, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Сброс позиции (0, 0, 0)")
+                    }
                 }
 
                 if (connectionMode == ConnectionMode.SIMULATOR) {

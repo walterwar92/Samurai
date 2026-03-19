@@ -72,7 +72,13 @@ class PathRecorderNode(MqttNode):
         self._x = data.get('x', 0.0)
         self._y = data.get('y', 0.0)
         self._theta = data.get('theta', 0.0)
+        stationary = data.get('stationary', True)
         self._pose_valid = True
+
+        # Auto-start recording when robot moves (always have a path for "home")
+        if self._state == 'idle' and not stationary:
+            self._start_recording()
+            self.log_info('Auto-recording: robot is moving')
 
         # Record waypoint if recording and moved enough
         if self._state == 'recording':
@@ -84,11 +90,16 @@ class PathRecorderNode(MqttNode):
         else:
             cmd = str(data).lower().strip()
 
-        if cmd == 'record':
+        if cmd in ('record', 'start'):
+            name = data.get('name', '') if isinstance(data, dict) else ''
             self._start_recording()
         elif cmd == 'stop':
-            self._stop()
-        elif cmd == 'replay':
+            name = data.get('name', '') if isinstance(data, dict) else ''
+            self._stop(name)
+        elif cmd in ('replay', 'play'):
+            name = data.get('name', '') if isinstance(data, dict) else ''
+            if name:
+                self._load_path(name)
             self._start_replay()
         elif cmd == 'clear':
             self._clear_path()
@@ -195,13 +206,16 @@ class PathRecorderNode(MqttNode):
             })
 
     # ── Stop / Clear ───────────────────────────────────────────
-    def _stop(self):
+    def _stop(self, name: str = ''):
         if self._state == 'replaying':
             self._stop_driving()
         old = self._state
         self._state = 'idle'
         self.log_info('Path recorder stopped (was %s, %d waypoints saved)',
                       old, len(self._path))
+        # Auto-save if name was provided and we have waypoints
+        if name and self._path:
+            self._save_path(name)
 
     def _clear_path(self):
         self._stop()
