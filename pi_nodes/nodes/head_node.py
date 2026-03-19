@@ -31,11 +31,11 @@ class HeadNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('head_node', **kwargs)
 
-        # Config
+        # Config — CH4=голова, зафиксирована на 0° (смотрит вперёд)
         self._channel = cfg('servos.head.channel', 4)
-        self._home = cfg('servos.head.home', 90)
+        self._home = cfg('servos.head.home', 0)
         self._min = cfg('servos.head.min', 0)
-        self._max = cfg('servos.head.max', 180)
+        self._max = cfg('servos.head.max', 0)
         self._speed = cfg('servos.head.speed', 2.0)
 
         # Servo driver

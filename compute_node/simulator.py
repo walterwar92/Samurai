@@ -357,8 +357,8 @@ class SimRobot:
         self.v_angular = 0.0
         self.claw_open = False
         self.laser_on = False
-        self.head_angle = 90.0          # servo ch4 — camera head
-        self.arm_joints = [90.0, 90.0, 90.0, 90.0]  # ch0-ch3
+        self.head_angle = 0.0           # servo ch4 — голова (зафиксирована 0°)
+        self.arm_joints = [0.0, 120.0, 0.0, 0.0]    # ch0-ch3 home позиции
         self._prev_v_linear = 0.0
         self.max_speed = MAX_LINEAR  # updated by speed_profile
 
@@ -1655,13 +1655,11 @@ def main():
             return json_err("Request body must be JSON")
         if body.get('command') == 'center':
             with lock:
-                robot.head_angle = 90.0
+                robot.head_angle = 0.0
             return json_ok({'head': 'center'})
         if 'angle' in body:
-            angle = max(0.0, min(180.0, float(body['angle'])))
-            with lock:
-                robot.head_angle = angle
-            return json_ok({'angle': angle})
+            # Head locked at 0° — ignore movement commands
+            return json_ok({'angle': 0.0, 'locked': True})
         return json_err('body must contain "angle" or "command":"center"')
 
     # ── 5a-3. Arm servos (ch0-ch3) ──
@@ -1679,7 +1677,7 @@ def main():
             return json_err("Request body must be JSON")
         if body.get('command') == 'home':
             with lock:
-                robot.arm_joints = [90.0, 90.0, 90.0, 90.0]
+                robot.arm_joints = [0.0, 120.0, 0.0, 0.0]
             return json_ok({'arm': 'home'})
         if 'joint' in body and 'angle' in body:
             joint = int(body['joint'])       # 1-indexed

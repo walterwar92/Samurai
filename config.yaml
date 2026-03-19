@@ -81,17 +81,23 @@ imu:
 # ch0 = основание клешни, ch1 = сустав 1, ch2 = сустав 2, ch3 = клешня, ch4 = голова
 servos:
   head:
-    channel: 4            # один серво — поворот камеры
-    home: 90              # центр (смотрит вперёд)
-    min: 0
-    max: 180
+    channel: 4            # один серво — камера
+    home: 0               # всегда смотрит вперёд
+    min: 0                # заблокирован — не двигается
+    max: 0                # заблокирован — не двигается
     speed: 2.0            # градусов за тик (плавное движение)
   arm:
     channels: [0, 1, 2, 3]   # PCA9685 каналы суставов руки
-    home_angles: [90, 90, 90, 90]
-    min_angles: [0, 0, 0, 0]
-    max_angles: [180, 180, 180, 180]
+    # CH0=основание, CH1=сустав1, CH2=сустав2, CH3=клешня
+    home_angles: [0, 120, 0, 0]
+    min_angles:  [0, 0, 0, 0]
+    max_angles:  [120, 145, 180, 180]
     labels: ["Основание", "Сустав 1", "Сустав 2", "Клешня"]
+
+# Camera settings
+camera:
+  swap_rb: true                # true = RGB→BGR перед JPEG (Picamera2 отдаёт RGB)
+                               # false = без конвертации (если цвета и так верные)
 
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:

@@ -31,13 +31,13 @@ class ArmNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('arm_node', **kwargs)
 
-        # Config
-        self._channels = cfg('servos.arm.channels', [1, 2, 3, 4])
-        self._home_angles = cfg('servos.arm.home_angles', [90, 90, 90, 90])
+        # Config — CH0=основание, CH1=сустав1, CH2=сустав2, CH3=клешня
+        self._channels = cfg('servos.arm.channels', [0, 1, 2, 3])
+        self._home_angles = cfg('servos.arm.home_angles', [0, 120, 0, 0])
         self._min_angles = cfg('servos.arm.min_angles', [0, 0, 0, 0])
-        self._max_angles = cfg('servos.arm.max_angles', [180, 180, 180, 180])
+        self._max_angles = cfg('servos.arm.max_angles', [120, 145, 180, 180])
         self._labels = cfg('servos.arm.labels',
-                           ['Joint1', 'Joint2', 'Joint3', 'Joint4'])
+                           ['Основание', 'Сустав 1', 'Сустав 2', 'Клешня'])
         self._num_joints = len(self._channels)
 
         # Create servo drivers for each joint

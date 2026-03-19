@@ -153,8 +153,8 @@ class DashboardNode(Node):
         self._speed_profile  = 'normal'
         self._claw_open      = False
         self._laser_on       = False
-        self._head_state     = {'angle': 90.0}
-        self._arm_state      = {'j1': 90.0, 'j2': 90.0, 'j3': 90.0, 'j4': 90.0}
+        self._head_state     = {'angle': 0.0}
+        self._arm_state      = {'j1': 0.0, 'j2': 120.0, 'j3': 0.0, 'j4': 0.0}
 
         # ── MQTT client (primary sensor source) ──────────────
         if self._mqtt_broker:
@@ -504,8 +504,8 @@ class DashboardNode(Node):
                                   'angular_z': round(angular_z, 3)}
 
     def set_claw(self, state: str):
-        # Claw is arm joint 4 (index 4, 1-based). open=30°, close=130°
-        angle = 30 if state == 'open' else 130
+        # Claw is arm joint 4 (index 4, 1-based). open=0°, close=180°
+        angle = 0 if state == 'open' else 180
         self._mqtt_pub('arm/command',
                        json.dumps({'joint': 4, 'angle': angle}), qos=1)
         with self._lock:
