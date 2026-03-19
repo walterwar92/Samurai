@@ -39,6 +39,24 @@ class EkfImu:
         self.x = np.zeros((6, 1))
         self.P = np.diag([0.1, 0.1, 0.1, 0.01, 0.01, 0.01])
 
+    def init_from_calibration(self, roll: float, pitch: float, yaw: float,
+                              gyro_bias: tuple):
+        """Initialize EKF state from calibration data.
+
+        Sets the home orientation and known gyro biases so the filter
+        starts converged instead of drifting from zero.
+
+        Args:
+            roll, pitch, yaw: Initial orientation in radians.
+            gyro_bias: Tuple (bx, by, bz) in rad/s from static calibration.
+        """
+        self.x = np.array([
+            [roll], [pitch], [yaw],
+            [gyro_bias[0]], [gyro_bias[1]], [gyro_bias[2]],
+        ])
+        # Start with low covariance — we trust the calibration
+        self.P = np.diag([0.01, 0.01, 0.01, 0.001, 0.001, 0.001])
+
     # ── Prediction (gyroscope) ────────────────────────────────────────
 
     def predict(self, gx: float, gy: float, gz: float, dt: float):
