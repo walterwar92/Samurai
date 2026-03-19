@@ -70,18 +70,32 @@ class ArmNode(MqttNode):
         self._angles[idx] = angle
 
     def _cmd_cb(self, topic, data):
-        text = str(data).strip()
+        # MqttNode with parse_json=True already decodes JSON → dict.
+        # But "home" string stays as str.
+        if isinstance(data, str):
+            if data.strip().lower() == 'home':
+                for i in range(self._num_joints):
+                    self._set_joint(i, self._home_angles[i])
+                self.log_info('Arm → HOME')
+                return
+            # Shouldn't happen normally, but try parsing just in case
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                self.log_warn('Invalid arm command: %s', data)
+                return
 
-        if text.lower() == 'home':
+        if not isinstance(data, dict):
+            self.log_warn('Invalid arm command type: %s', type(data))
+            return
+
+        d = data
+
+        # {"command": "home"}
+        if d.get('command') == 'home':
             for i in range(self._num_joints):
                 self._set_joint(i, self._home_angles[i])
             self.log_info('Arm → HOME')
-            return
-
-        try:
-            d = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            self.log_warn('Invalid arm command: %s', text)
             return
 
         # Single joint: {"joint": 1, "angle": 90} (1-indexed)
@@ -100,7 +114,7 @@ class ArmNode(MqttNode):
             self.log_info('Arm all joints → %s', self._angles)
             return
 
-        self.log_warn('Unknown arm command format: %s', text)
+        self.log_warn('Unknown arm command format: %s', d)
 
     def _publish_state(self):
         state = {}

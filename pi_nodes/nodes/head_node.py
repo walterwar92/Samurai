@@ -61,17 +61,28 @@ class HeadNode(MqttNode):
                           self._channel, self._home)
 
     def _cmd_cb(self, topic, data):
-        text = str(data).strip()
+        # MqttNode with parse_json=True already decodes JSON → dict.
+        # But "center" string stays as str.
+        if isinstance(data, str):
+            if data.strip().lower() == 'center':
+                self._target = self._home
+                self.log_info('Head → CENTER')
+                return
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                self.log_warn('Invalid head command: %s', data)
+                return
 
-        if text.lower() == 'center':
-            self._target = self._home
-            self.log_info('Head → CENTER')
+        if not isinstance(data, dict):
+            self.log_warn('Invalid head command type: %s', type(data))
             return
 
-        try:
-            d = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            self.log_warn('Invalid head command: %s', text)
+        d = data
+
+        if d.get('command') == 'center':
+            self._target = self._home
+            self.log_info('Head → CENTER')
             return
 
         if 'angle' in d:
