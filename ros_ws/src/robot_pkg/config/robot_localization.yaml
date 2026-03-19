@@ -1,9 +1,20 @@
 # =============================================================================
-# robot_localization — EKF fusing wheel odometry + MPU6050 IMU
+# robot_localization — EKF fusing wheel+accel odometry + IMU
 # =============================================================================
 # Tuned for tracked chassis with high vibration.
-# Key: do NOT use IMU linear acceleration for position/velocity — vibrations
-# cause the EKF to diverge ("robot flies away").
+#
+# Position pipeline:
+#   Pi-side AccelPositionEstimator fuses:
+#     - Gravity removal (calibrated, orientation-aware)
+#     - Earth rotation compensation (Coriolis)
+#     - ZUPT (zero-velocity update)
+#     - Complementary filter (accel + wheel odom)
+#   Result → MQTT odom → this EKF → final /odometry/filtered
+#
+# IMU provides:
+#   - Calibrated yaw orientation (from Pi 2D filter)
+#   - Yaw rate (gz gyro, bias-corrected)
+#   - Linear acceleration is processed Pi-side, NOT used here (vibrations)
 
 ekf_filter_node:
   ros__parameters:
@@ -22,8 +33,9 @@ ekf_filter_node:
     base_link_frame: base_link
     world_frame: odom            # fuse in odom frame
 
-    # ── Wheel odometry (from motor_node via MQTT bridge) ───────
-    # Already IMU-fused on Pi side (yaw from calibrated gyro).
+    # ── Wheel+Accel fused odometry (from motor_node via MQTT bridge) ──
+    # Position already includes accelerometer correction from Pi.
+    # Heading from IMU yaw. Velocity from motor commands.
     odom0: /odom
     odom0_config: [true,  true,  false,   # x, y, z
                    false, false, true,    # roll, pitch, yaw
@@ -35,22 +47,22 @@ ekf_filter_node:
     odom0_relative: false
 
     # ── IMU (MPU6050, filtered on Pi) ──────────────────────────
-    # Orientation from Pi EKF (calibrated yaw), gyro Z for yaw rate.
-    # NO linear acceleration — tracked chassis vibrations cause divergence.
+    # Orientation: calibrated yaw from Pi 2D filter (roll/pitch informational).
+    # Angular velocity: gz for yaw rate.
+    # Linear acceleration: NOT used here — already fused Pi-side.
+    #   Tracked chassis vibrations make raw accel unusable at ROS2 level.
     imu0: /imu/data
-    imu0_config: [false, false, false,    # x, y, z  (no position from IMU)
-                  false, false, true,     # roll, pitch, yaw (yaw from Pi EKF)
+    imu0_config: [false, false, false,    # x, y, z
+                  false, false, true,     # roll, pitch, yaw
                   false, false, false,    # vx, vy, vz
                   false, false, true,     # vroll, vpitch, vyaw
-                  false, false, false]    # ax, ay, az — DISABLED (vibrations!)
+                  false, false, false]    # ax, ay, az — fused Pi-side
     imu0_queue_size: 10
     imu0_differential: false
     imu0_relative: true
     imu0_remove_gravitational_acceleration: true
 
-    # Process noise covariance (diagonal, 15x15)
-    # Tuned for tracked robot: higher noise on x/y (wheel slip),
-    # lower on yaw (IMU-fused), no trust in Z/roll/pitch.
+    # Process noise covariance (15x15 diagonal)
     process_noise_covariance: [
       0.05,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
       0.0,    0.05,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,

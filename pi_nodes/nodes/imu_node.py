@@ -103,7 +103,9 @@ class IMUNode(MqttNode):
         self._calibrated = False
         self._cal_samples = []
         self._gyro_offset = (0.0, 0.0, 0.0)  # raw gyro bias from calibration
-        self._accel_offset = (0.0, 0.0, 0.0)  # home orientation accel reference
+        self._gravity_body = (0.0, 0.0, 9.81)  # gravity vector in body frame at rest
+        self._home_roll = 0.0
+        self._home_pitch = 0.0
 
         # EKF setup
         self._ekf = None
@@ -176,21 +178,22 @@ class IMUNode(MqttNode):
         # Gyro offset: average at rest should be zero
         self._gyro_offset = (sum_gx / n, sum_gy / n, sum_gz / n)
 
-        # Accel average — used to derive initial roll/pitch (home position)
+        # Accel average — gravity vector in body frame at rest
         avg_ax = sum_ax / n
         avg_ay = sum_ay / n
         avg_az = sum_az / n
+        self._gravity_body = (avg_ax, avg_ay, avg_az)
 
         # Initial roll/pitch from gravity vector (home = 0)
-        home_roll = math.atan2(avg_ay, avg_az)
-        home_pitch = math.atan2(-avg_ax,
-                                math.sqrt(avg_ay * avg_ay + avg_az * avg_az))
+        self._home_roll = math.atan2(avg_ay, avg_az)
+        self._home_pitch = math.atan2(-avg_ax,
+                                      math.sqrt(avg_ay * avg_ay + avg_az * avg_az))
 
         # Initialize EKF with home orientation and calibrated gyro bias
         if self._ekf is not None:
             self._ekf.init_from_calibration(
-                roll=home_roll,
-                pitch=home_pitch,
+                roll=self._home_roll,
+                pitch=self._home_pitch,
                 yaw=0.0,  # yaw = 0 at startup (no magnetometer)
                 gyro_bias=self._gyro_offset,
             )
@@ -198,11 +201,14 @@ class IMUNode(MqttNode):
         self._calibrated = True
         self._cal_samples = []  # free memory
 
+        g_mag = math.sqrt(avg_ax**2 + avg_ay**2 + avg_az**2)
         self.log_info(
             'Calibration done: gyro_offset=(%.5f, %.5f, %.5f) rad/s, '
+            'gravity=(%.3f, %.3f, %.3f) |g|=%.3f m/s², '
             'home roll=%.1f° pitch=%.1f°',
             self._gyro_offset[0], self._gyro_offset[1], self._gyro_offset[2],
-            math.degrees(home_roll), math.degrees(home_pitch),
+            avg_ax, avg_ay, avg_az, g_mag,
+            math.degrees(self._home_roll), math.degrees(self._home_pitch),
         )
 
     def _read_and_publish(self):
@@ -244,16 +250,24 @@ class IMUNode(MqttNode):
         if self._ekf is not None:
             self._ekf.predict(gx, gy, gz, dt)
             self._ekf.update(ax, ay, az)
-            r, p, y = self._ekf.get_euler_deg()
+            r_deg, p_deg, y_deg = self._ekf.get_euler_deg()
             bx, by, bz = self._ekf.gyro_bias
             payload['ekf'] = {
-                'roll':  round(r, 2),
-                'pitch': round(p, 2),
-                'yaw':   round(y, 2),
+                'roll':  round(r_deg, 2),
+                'pitch': round(p_deg, 2),
+                'yaw':   round(y_deg, 2),
+                'roll_rad':  round(self._ekf.roll, 5),
+                'pitch_rad': round(self._ekf.pitch, 5),
+                'yaw_rad':   round(self._ekf.yaw, 5),
                 'bias_gx': round(bx, 5),
                 'bias_gy': round(by, 5),
                 'bias_gz': round(bz, 5),
             }
+
+        # Include calibration data for position estimator (motor_node)
+        payload['gravity_body'] = [round(self._gravity_body[0], 4),
+                                   round(self._gravity_body[1], 4),
+                                   round(self._gravity_body[2], 4)]
 
         self.publish('imu', payload)
 
