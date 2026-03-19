@@ -45,12 +45,15 @@ NODE_REGISTRY = {
     'watchdog':     'pi_nodes.nodes.watchdog_node.WatchdogNode',
     'voice':        'pi_nodes.nodes.voice_node.VoiceNode',
     'fallback_nav': 'pi_nodes.nodes.fallback_nav_node.FallbackNavNode',
+    'path_recorder': 'pi_nodes.nodes.path_recorder_node.PathRecorderNode',
+    'slam_map':      'pi_nodes.nodes.slam_map_node.SlamMapNode',
 }
 
 DEFAULT_NODES = [
     'motor', 'imu', 'camera', 'ultrasonic',
     'battery', 'temperature', 'head', 'arm', 'laser',
     'fsm', 'watchdog', 'fallback_nav',
+    'path_recorder', 'slam_map',
 ]
 
 

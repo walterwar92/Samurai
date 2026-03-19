@@ -155,6 +155,9 @@ class DashboardNode(Node):
         self._laser_on       = False
         self._head_state     = {'angle': 0.0}
         self._arm_state      = {'j1': 0.0, 'j2': 120.0, 'j3': 0.0, 'j4': 0.0}
+        self._slam_map       = {}     # Pi-side ultrasonic SLAM map
+        self._path_recorder  = {}     # path recorder status
+        self._recorded_path  = []     # recorded path waypoints
 
         # ── MQTT client (primary sensor source) ──────────────
         if self._mqtt_broker:
@@ -219,7 +222,8 @@ class DashboardNode(Node):
         # Subscribe to all Pi sensor topics
         for topic in ['camera', 'range', 'imu', 'battery', 'temperature',
                       'status', 'odom', 'claw/state', 'head/state', 'arm/state',
-                      'watchdog', 'voice_command', 'speed_profile/active']:
+                      'watchdog', 'voice_command', 'speed_profile/active',
+                      'slam_map', 'path_recorder/status', 'path_recorder/path']:
             client.subscribe(f'{p}/{topic}', qos=0)
         self.get_logger().info(f'MQTT connected to {self._mqtt_broker} — subscribed to Pi topics')
 
@@ -257,6 +261,12 @@ class DashboardNode(Node):
                 self._mqtt_voice(msg.payload)
             elif suffix == 'speed_profile/active':
                 self._mqtt_speed_profile(msg.payload)
+            elif suffix == 'slam_map':
+                self._mqtt_slam_map(msg.payload)
+            elif suffix == 'path_recorder/status':
+                self._mqtt_path_status(msg.payload)
+            elif suffix == 'path_recorder/path':
+                self._mqtt_path_data(msg.payload)
         except Exception as exc:
             self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
 
@@ -413,6 +423,30 @@ class DashboardNode(Node):
         except Exception:
             pass
 
+    def _mqtt_slam_map(self, payload):
+        try:
+            d = json.loads(payload)
+            with self._lock:
+                self._slam_map = d
+        except Exception:
+            pass
+
+    def _mqtt_path_status(self, payload):
+        try:
+            d = json.loads(payload)
+            with self._lock:
+                self._path_recorder = d
+        except Exception:
+            pass
+
+    def _mqtt_path_data(self, payload):
+        try:
+            d = json.loads(payload)
+            with self._lock:
+                self._recorded_path = d
+        except Exception:
+            pass
+
     # ── MQTT publish helpers (commands → Pi directly) ──────────
 
     def _mqtt_pub(self, subtopic: str, payload, qos=0):
@@ -537,6 +571,12 @@ class DashboardNode(Node):
     def set_path_recorder(self, payload: dict):
         self._mqtt_pub('path_recorder/command', json.dumps(payload), qos=1)
 
+    def reset_position(self):
+        """Reset robot odometry to (0,0,0) — current pose becomes home."""
+        self._mqtt_pub('reset_position', 'reset', qos=1)
+        with self._lock:
+            self._robot_pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
+
     def save_map(self, name: str):
         self._pub_str(self._pub_map_save, name)
 
@@ -600,6 +640,9 @@ class DashboardNode(Node):
                 },
                 'head': dict(self._head_state),
                 'arm':  dict(self._arm_state),
+                'slam_map':       dict(self._slam_map) if self._slam_map else None,
+                'path_recorder':  dict(self._path_recorder) if self._path_recorder else None,
+                'recorded_path':  list(self._recorded_path) if self._recorded_path else None,
             }
 
     def _snapshot(self):
@@ -750,8 +793,11 @@ def create_app(ros_node: DashboardNode):
                     '/api/fsm', '/api/actuators', '/api/battery', '/api/speed_profile',
                     '/api/camera/frame', '/api/camera/frame.json',
                     '/api/map/image', '/api/map/info', '/api/map/list',
-                    '/api/path_recorder/list', '/api/log'],
-            'POST': ['/api/emergency_stop', '/api/fsm/command',
+                    '/api/slam_map', '/api/path_recorder/status',
+                    '/api/path_recorder/path', '/api/path_recorder/list',
+                    '/api/log'],
+            'POST': ['/api/emergency_stop', '/api/robot/reset_position',
+                     '/api/fsm/command',
                      '/api/actuators/claw', '/api/actuators/laser',
                      '/api/speed_profile', '/api/patrol/command', '/api/patrol/waypoints',
                      '/api/follow_me', '/api/path_recorder/command',
@@ -913,6 +959,33 @@ def create_app(ros_node: DashboardNode):
     # ==========================================================
     # REST API — POST
     # ==========================================================
+
+    @app.post('/api/robot/reset_position')
+    async def api_reset_position():
+        """Reset odometry to (0,0,0) — current pose becomes new home."""
+        ros_node.reset_position()
+        return _ok(action='reset_position', pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0})
+
+    @app.get('/api/slam_map')
+    async def api_slam_map():
+        """Get Pi-side ultrasonic SLAM map data."""
+        with ros_node._lock:
+            slam = dict(ros_node._slam_map) if ros_node._slam_map else {}
+        if not slam:
+            return JSONResponse({'ok': False, 'error': 'SLAM map not available'}, status_code=503)
+        return _ok(**slam)
+
+    @app.get('/api/path_recorder/status')
+    async def api_path_recorder_status():
+        with ros_node._lock:
+            status = dict(ros_node._path_recorder) if ros_node._path_recorder else {}
+        return _ok(**status)
+
+    @app.get('/api/path_recorder/path')
+    async def api_path_recorder_path():
+        with ros_node._lock:
+            path = list(ros_node._recorded_path) if ros_node._recorded_path else []
+        return _ok(path=path, waypoints=len(path))
 
     @app.post('/api/emergency_stop')
     @app.post('/api/robot/stop')

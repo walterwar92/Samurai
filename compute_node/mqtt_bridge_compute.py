@@ -86,6 +86,9 @@ class MqttBridgeCompute(Node):
         self._temp_pub = self.create_publisher(Float32, '/cpu_temperature', 10)
         self._status_pub = self.create_publisher(String, '/robot_status', 10)
         self._goal_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
+        self._slam_map_pub = self.create_publisher(String, '/slam_map', 10)
+        self._path_status_pub = self.create_publisher(String, '/path_recorder/status', 10)
+        self._path_data_pub = self.create_publisher(String, '/path_recorder/path', 10)
 
         # ── TF Broadcasters ──────────────────────────────────
         self._tf_broadcaster = TransformBroadcaster(self)
@@ -117,6 +120,8 @@ class MqttBridgeCompute(Node):
             String, '/follow_me/command', self._follow_to_mqtt_cb, 10)
         self.create_subscription(
             String, '/path_recorder/command', self._path_rec_to_mqtt_cb, 10)
+        self.create_subscription(
+            String, '/reset_position', self._reset_pos_to_mqtt_cb, 10)
 
         # ── Heartbeat timer (1 Hz) → Pi knows laptop is alive ──
         self._heartbeat_timer = self.create_timer(1.0, self._heartbeat_cb)
@@ -164,6 +169,9 @@ class MqttBridgeCompute(Node):
         client.subscribe(f'{self._prefix}/temperature')
         client.subscribe(f'{self._prefix}/status')
         client.subscribe(f'{self._prefix}/goal_pose')
+        client.subscribe(f'{self._prefix}/slam_map')
+        client.subscribe(f'{self._prefix}/path_recorder/status')
+        client.subscribe(f'{self._prefix}/path_recorder/path')
 
     def _on_mqtt_message(self, client, userdata, msg):
         topic = msg.topic
@@ -186,6 +194,10 @@ class MqttBridgeCompute(Node):
                 self._handle_status(msg.payload)
             elif suffix == 'goal_pose':
                 self._handle_goal_pose(msg.payload)
+            elif suffix == 'slam_map':
+                self._handle_slam_map(msg.payload)
+            elif suffix.startswith('path_recorder/'):
+                self._handle_path_recorder(suffix, msg.payload)
         except Exception as exc:
             self.get_logger().error(f'Bridge error [{suffix}]: {exc}')
 
@@ -328,6 +340,21 @@ class MqttBridgeCompute(Node):
         goal.pose.orientation.w = math.cos(theta / 2.0)
         self._goal_pub.publish(goal)
 
+    def _handle_slam_map(self, payload):
+        """Forward Pi-side SLAM map as ROS2 String (JSON)."""
+        msg = String()
+        msg.data = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+        self._slam_map_pub.publish(msg)
+
+    def _handle_path_recorder(self, suffix, payload):
+        """Forward path recorder topics as ROS2 String."""
+        msg = String()
+        msg.data = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+        if suffix == 'path_recorder/status':
+            self._path_status_pub.publish(msg)
+        elif suffix == 'path_recorder/path':
+            self._path_data_pub.publish(msg)
+
     # ── Heartbeat → MQTT ────────────────────────────────────
     def _heartbeat_cb(self):
         import time
@@ -376,6 +403,9 @@ class MqttBridgeCompute(Node):
 
     def _path_rec_to_mqtt_cb(self, msg: String):
         self._mqtt.publish(f'{self._prefix}/path_recorder/command', msg.data)
+
+    def _reset_pos_to_mqtt_cb(self, msg: String):
+        self._mqtt.publish(f'{self._prefix}/reset_position', msg.data)
 
     # ── Cleanup ──────────────────────────────────────────────
     def destroy_node(self):

@@ -113,6 +113,26 @@ servos:
     max_angles:  [120, 145, 180, 180]
     labels: ["Основание", "Сустав 1", "Сустав 2", "Клешня"]
 
+# Path recorder (запись пути для возврата домой)
+path_recorder:
+  record_interval_m: 0.05      # записывать точку каждые 5 см
+  record_interval_rad: 0.10    # или каждые ~6° поворота
+  replay_goal_tolerance: 0.08  # м — точность достижения точки
+  replay_angle_tolerance: 0.15 # рад — точность поворота (~8.6°)
+  replay_linear_speed: 0.12    # м/с — скорость возврата
+  replay_angular_speed: 0.6    # рад/с — скорость поворота
+  max_waypoints: 5000          # лимит точек
+
+# SLAM карта (ультразвук + одометрия)
+slam_map:
+  map_size_m: 10.0             # карта ±5м от начала (10×10м)
+  cell_size_m: 0.05            # 5 см/ячейка → 200×200 сетка
+  publish_interval_s: 2.0      # публикация карты (0.5 Гц)
+  sensor_fov_rad: 0.26         # ~15° полуконус HC-SR04
+  sensor_max_range: 2.0        # м
+  l_occ: 0.85                  # log-odds прирост для занятой ячейки
+  l_free: -0.40                # log-odds прирост для свободной ячейки
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
