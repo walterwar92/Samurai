@@ -348,6 +348,11 @@ class RobotApiClient {
         httpPost("$base/api/robot/reset", emptyMap<String, Any>())
     }
 
+    suspend fun resetPosition() = withContext(Dispatchers.IO) {
+        val base = _baseUrl.value.ifEmpty { return@withContext }
+        httpPost("$base/api/robot/reset_position", emptyMap<String, Any>())
+    }
+
     // ═══════════════════════════════════════════════════════════
     // Image endpoints
     // ═══════════════════════════════════════════════════════════
