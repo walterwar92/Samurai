@@ -357,6 +357,8 @@ class SimRobot:
         self.v_angular = 0.0
         self.claw_open = False
         self.laser_on = False
+        self.head_angle = 90.0          # servo ch4 — camera head
+        self.arm_joints = [90.0, 90.0, 90.0, 90.0]  # ch0-ch3
         self._prev_v_linear = 0.0
         self.max_speed = MAX_LINEAR  # updated by speed_profile
 
@@ -1447,6 +1449,8 @@ def main():
                     'v_angular': round(robot.v_angular, 4),
                     'claw_open': robot.claw_open,
                     'laser_on': robot.laser_on,
+                    'head_angle': round(robot.head_angle, 1),
+                    'arm_joints': [round(a, 1) for a in robot.arm_joints],
                 },
                 'fsm': {
                     'state': fsm.state,
@@ -1636,6 +1640,62 @@ def main():
         with lock:
             robot.laser_on = on_val
         return json_ok({'laser_on': on_val})
+
+    # ── 5a-2. Head servo (ch4) ──
+
+    @app.route('/api/actuators/head', methods=['GET'])
+    def api_head_get():
+        with lock:
+            return json_ok({'angle': robot.head_angle})
+
+    @app.route('/api/actuators/head', methods=['POST'])
+    def api_head_post():
+        body = request.get_json(silent=True)
+        if body is None:
+            return json_err("Request body must be JSON")
+        if body.get('command') == 'center':
+            with lock:
+                robot.head_angle = 90.0
+            return json_ok({'head': 'center'})
+        if 'angle' in body:
+            angle = max(0.0, min(180.0, float(body['angle'])))
+            with lock:
+                robot.head_angle = angle
+            return json_ok({'angle': angle})
+        return json_err('body must contain "angle" or "command":"center"')
+
+    # ── 5a-3. Arm servos (ch0-ch3) ──
+
+    @app.route('/api/actuators/arm', methods=['GET'])
+    def api_arm_get():
+        with lock:
+            j = robot.arm_joints
+            return json_ok({'j1': j[0], 'j2': j[1], 'j3': j[2], 'j4': j[3]})
+
+    @app.route('/api/actuators/arm', methods=['POST'])
+    def api_arm_post():
+        body = request.get_json(silent=True)
+        if body is None:
+            return json_err("Request body must be JSON")
+        if body.get('command') == 'home':
+            with lock:
+                robot.arm_joints = [90.0, 90.0, 90.0, 90.0]
+            return json_ok({'arm': 'home'})
+        if 'joint' in body and 'angle' in body:
+            joint = int(body['joint'])       # 1-indexed
+            angle = max(0.0, min(180.0, float(body['angle'])))
+            if 1 <= joint <= 4:
+                with lock:
+                    robot.arm_joints[joint - 1] = angle
+                return json_ok({'joint': joint, 'angle': angle})
+            return json_err('joint must be 1-4')
+        if 'joints' in body:
+            joints = [max(0.0, min(180.0, float(a))) for a in body['joints'][:4]]
+            with lock:
+                for i, a in enumerate(joints):
+                    robot.arm_joints[i] = a
+            return json_ok({'joints': robot.arm_joints[:]})
+        return json_err('body must contain "joint"+"angle", "joints", or "command":"home"')
 
     # ── 5b. Speed profile ──
 
@@ -1924,6 +1984,15 @@ def main():
                     'actuators': {
                         'claw_open': robot.claw_open,
                         'laser_on': robot.laser_on,
+                    },
+                    'head': {
+                        'angle': round(robot.head_angle, 1),
+                    },
+                    'arm': {
+                        'j1': round(robot.arm_joints[0], 1),
+                        'j2': round(robot.arm_joints[1], 1),
+                        'j3': round(robot.arm_joints[2], 1),
+                        'j4': round(robot.arm_joints[3], 1),
                     },
                     'map_info': map_renderer.get_map_info(),
                     'scan_points': [],
