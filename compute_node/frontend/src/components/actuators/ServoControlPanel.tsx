@@ -5,7 +5,22 @@ import { Separator } from '@/components/ui/separator'
 import { api } from '@/lib/api'
 import type { HeadState, ArmState } from '@/types/robot'
 
-const ARM_LABELS = ['Основание', 'Сустав 1', 'Сустав 2', 'Клешня']
+/**
+ * Servo mapping (PCA9685):
+ *   CH0 — Основание   home=0   [0; 120]
+ *   CH1 — Сустав 1    home=120 [0; 145]
+ *   CH2 — Сустав 2    home=0   [0; 180]
+ *   CH3 — Клешня      home=0   [0; 180]  (0=открыта, 180=закрыта)
+ *   CH4 — Голова       home=0   locked (всегда 0°)
+ */
+
+const ARM_JOINTS = [
+  { label: 'Основание',  min: 0, max: 120, home: 0   },
+  { label: 'Сустав 1',   min: 0, max: 145, home: 120 },
+  { label: 'Сустав 2',   min: 0, max: 180, home: 0   },
+  { label: 'Клешня',     min: 0, max: 180, home: 0   },
+]
+
 const THROTTLE_MS = 80
 
 /* ─── single servo slider with local state ─────────────────────── */
@@ -17,6 +32,7 @@ interface ServoSliderProps {
   min?: number
   max?: number
   onCommit: (v: number) => void
+  disabled?: boolean
 }
 
 function ServoSlider({
@@ -25,6 +41,7 @@ function ServoSlider({
   min = 0,
   max = 180,
   onCommit,
+  disabled = false,
 }: ServoSliderProps) {
   const [local, setLocal] = useState(remoteValue)
   const dragging = useRef(false)
@@ -35,13 +52,14 @@ function ServoSlider({
   }, [remoteValue])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (disabled) return
     const v = Number(e.target.value)
     setLocal(v)
     onCommit(v)
   }
 
   return (
-    <div className="space-y-1">
+    <div className={`space-y-1 ${disabled ? 'opacity-40' : ''}`}>
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-muted-foreground">{label}</span>
         <span className="text-[11px] font-mono font-semibold tabular-nums w-10 text-right">
@@ -53,11 +71,13 @@ function ServoSlider({
         min={min}
         max={max}
         value={Math.round(local)}
+        disabled={disabled}
         onPointerDown={() => { dragging.current = true }}
         onPointerUp={() => { dragging.current = false }}
         onLostPointerCapture={() => { dragging.current = false }}
         onChange={handleChange}
         className="w-full h-2 bg-muted rounded-full appearance-none cursor-pointer
+                   disabled:cursor-not-allowed
                    [&::-webkit-slider-thumb]:appearance-none
                    [&::-webkit-slider-thumb]:w-4
                    [&::-webkit-slider-thumb]:h-4
@@ -94,14 +114,7 @@ interface ServoControlPanelProps {
 
 export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
   /* throttle refs — allow first call, then block for THROTTLE_MS */
-  const headTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const armTimers = useRef<(ReturnType<typeof setTimeout> | null)[]>([null, null, null, null])
-
-  const sendHead = useCallback((value: number) => {
-    if (headTimer.current) return
-    api.setHeadAngle(value)
-    headTimer.current = setTimeout(() => { headTimer.current = null }, THROTTLE_MS)
-  }, [])
 
   const sendArm = useCallback((joint: number, angle: number) => {
     const idx = joint - 1
@@ -110,39 +123,35 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
     armTimers.current[idx] = setTimeout(() => { armTimers.current[idx] = null }, THROTTLE_MS)
   }, [])
 
-  const headAngle = head?.angle ?? 90
+  const headAngle = head?.angle ?? 0
   const armAngles = [
-    arm?.j1 ?? 90,
-    arm?.j2 ?? 90,
-    arm?.j3 ?? 90,
-    arm?.j4 ?? 90,
+    arm?.j1 ?? 0,
+    arm?.j2 ?? 120,
+    arm?.j3 ?? 0,
+    arm?.j4 ?? 0,
   ]
 
   return (
     <Card>
       <CardHeader className="py-2 px-3">
         <CardTitle className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
-          🦾 Сервоприводы
+          Сервоприводы
         </CardTitle>
       </CardHeader>
       <CardContent className="p-3 space-y-3">
-        {/* ── Head (Camera) — ch4 ─────────────────────────── */}
+        {/* ── Head (Camera) — ch4, locked at 0° ───────────── */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium">📷 Голова (камера) — ch4</span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-6 px-2 text-[10px]"
-              onClick={() => api.centerHead()}
-            >
-              Центр
-            </Button>
+            <span className="text-xs font-medium">ch4: Голова (камера)</span>
+            <span className="text-[10px] text-muted-foreground">0° (зафикс.)</span>
           </div>
           <ServoSlider
             label="Угол поворота"
             remoteValue={headAngle}
-            onCommit={sendHead}
+            min={0}
+            max={0}
+            onCommit={() => {}}
+            disabled
           />
         </div>
 
@@ -151,7 +160,7 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
         {/* ── Arm — ch0-ch3 ───────────────────────────────── */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium">🦾 Рука / Клешня — ch0–ch3</span>
+            <span className="text-xs font-medium">Рука / Клешня — ch0-ch3</span>
             <Button
               variant="outline"
               size="sm"
@@ -161,11 +170,13 @@ export function ServoControlPanel({ head, arm }: ServoControlPanelProps) {
               Домой
             </Button>
           </div>
-          {ARM_LABELS.map((label, i) => (
+          {ARM_JOINTS.map((joint, i) => (
             <ServoSlider
               key={i}
-              label={`ch${i}: ${label}`}
+              label={`ch${i}: ${joint.label}`}
               remoteValue={armAngles[i]}
+              min={joint.min}
+              max={joint.max}
               onCommit={(v) => sendArm(i + 1, v)}
             />
           ))}
