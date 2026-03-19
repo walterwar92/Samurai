@@ -93,6 +93,7 @@ class MotorNode(MqttNode):
         self.subscribe('cmd_vel', self._cmd_vel_cb, qos=1)
         self.subscribe('speed_profile', self._profile_cb, qos=1)
         self.subscribe('imu', self._imu_cb, qos=0)
+        self.subscribe('reset_position', self._reset_position_cb, qos=1)
         self.create_timer(0.05, self._control_loop)    # 20 Hz
         self.create_timer(1.0, self._publish_profile)   # 1 Hz
 
@@ -156,6 +157,17 @@ class MotorNode(MqttNode):
             self._pos_estimator.update_imu(
                 ax, ay, az, gx, gy, gz,
                 roll_rad, pitch_rad, yaw_r, dt)
+
+    def _reset_position_cb(self, topic, data):
+        """Reset odometry to (0, 0, 0) — current pose becomes new home."""
+        self._x = 0.0
+        self._y = 0.0
+        self._theta = 0.0
+        self._vx = 0.0
+        self._vz = 0.0
+        if self._pos_estimator is not None:
+            self._pos_estimator.reset()
+        self.log_info('Position reset to (0, 0, 0) — new home set')
 
     def _profile_cb(self, topic, data):
         name = str(data).strip().lower()

@@ -45,6 +45,7 @@ _P_PATROL  = re.compile(r'патрул|обход')
 _P_FOLLOW  = re.compile(r'следуй|за мной')
 _P_RECORD  = re.compile(r'запиши путь|запись')
 _P_REPLAY  = re.compile(r'воспроизведи|повтори путь')
+_P_RESET   = re.compile(r'сбрось позицию|сброс позиции|обнули позицию|нулевая позиция')
 # Движение — прямые команды cmd_vel (только в состоянии IDLE)
 _P_FORWARD = re.compile(r'вперёд|вперед|прямо|едь вперёд|двигайся вперёд')
 _P_BACK    = re.compile(r'назад|едь назад|двигайся назад|сдай назад')
@@ -163,6 +164,11 @@ class FSMNode(MqttNode):
             self._transition(State.PATH_REPLAY)
             return
 
+        if _P_RESET.search(text):
+            self.publish('reset_position', 'reset', qos=1)
+            self.log_info('Position reset to (0, 0, 0)')
+            return
+
     # ── Gesture command handler ──────────────────────────────
     def _gesture_cb(self, topic, data):
         gesture = str(data).strip()
@@ -243,8 +249,14 @@ class FSMNode(MqttNode):
         # Entry actions
         if new_state == State.IDLE:
             self._stop_all()
+            # Stop path recording when going idle
+            if old in (State.SEARCHING, State.TARGETING, State.APPROACHING,
+                       State.GRABBING, State.BURNING):
+                self.publish('path_recorder/command', 'stop', qos=1)
         elif new_state == State.SEARCHING:
             self._search_accumulated = 0.0
+            # Auto-start path recording for return-home
+            self.publish('path_recorder/command', 'record', qos=1)
         elif new_state == State.CALLING:
             self._do_call()
         elif new_state == State.PATROLLING:
@@ -398,10 +410,13 @@ class FSMNode(MqttNode):
         self._transition(State.IDLE)
 
     def _do_return(self):
+        # Use path_recorder to replay path in reverse (same path home)
+        self.publish('path_recorder/command', 'replay', qos=1)
+        # Also publish goal_pose for Nav2 fallback (if laptop is connected)
         self.publish('goal_pose', {
             'x': 0.0, 'y': 0.0, 'theta': 0.0,
         }, qos=1)
-        self._transition(State.IDLE)
+        self._transition(State.PATH_REPLAY)
 
     # ── Helpers ──────────────────────────────────────────────
     def _colour_matches(self, det: dict) -> bool:

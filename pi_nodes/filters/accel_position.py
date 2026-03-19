@@ -266,6 +266,23 @@ class AccelPositionEstimator:
         self._accel_x = 0.995 * self._accel_x + 0.005 * self._wheel_x
         self._accel_y = 0.995 * self._accel_y + 0.005 * self._wheel_y
 
+    def reset(self):
+        """Reset position to (0, 0) — accept current pose as new home."""
+        self.x = 0.0
+        self.y = 0.0
+        self.vx = 0.0
+        self.vy = 0.0
+        self._wheel_x = 0.0
+        self._wheel_y = 0.0
+        self._accel_x = 0.0
+        self._accel_y = 0.0
+        self._prev_la_x = 0.0
+        self._prev_la_y = 0.0
+        self._stationary = True
+        self._stationary_count = 0
+        self._buf_ax.clear()
+        self._buf_ay.clear()
+
     @property
     def is_stationary(self) -> bool:
         return self._stationary
