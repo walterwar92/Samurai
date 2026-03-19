@@ -1,228 +1,170 @@
 """
-Extended Kalman Filter for 6-axis IMU (accelerometer + gyroscope).
+IMU filter for 2D ground robot (tracked chassis).
 
-State vector (6×1):
-    x = [φ, θ, ψ, b_gx, b_gy, b_gz]ᵀ
-    φ = roll,  θ = pitch,  ψ = yaw         (radians)
-    b_gx, b_gy, b_gz = gyro bias estimates  (rad/s)
+Designed for a robot that moves on a flat surface — NOT in 3D.
+Replaces the full 3D Euler EKF which was unstable due to IMU mounting
+orientation causing roll≈±180° and yaw divergence.
 
-Prediction:  gyroscope integration via Euler rate equations
-Correction:  accelerometer gravity reference (roll & pitch only)
-Yaw:         gyro integration only (drifts without magnetometer)
+Approach:
+    - Yaw:   1D Kalman filter on gz gyro integration + bias tracking.
+             ZUPT (Zero-velocity Update): if |gz| < threshold, skip integration.
+    - Roll/Pitch: direct from accelerometer (atan2), relative to home position.
+             No filtering needed — informational only for a ground robot.
+
+All angles start at 0 on boot (home position).
 """
 
-import numpy as np
-from math import sin, cos, tan, sqrt, atan2, pi
+from math import atan2, sqrt, pi, degrees
 
 
 class EkfImu:
+    """2D ground-robot IMU filter.
+
+    Keeps the same class name/interface for backward compatibility
+    with imu_node.py, but internally uses a simple 1D yaw filter
+    instead of the fragile 6-state 3D EKF.
+    """
+
     def __init__(self, q_angle: float = 0.001, q_bias: float = 0.0001,
-                 r_accel: float = 0.5, accel_gate: float = 0.5,
+                 r_accel: float = 0.5, accel_gate: float = 0.3,
                  g: float = 9.81):
-        """
-        Args:
-            q_angle:    Process noise variance for angles (rad²).
-            q_bias:     Process noise variance for gyro bias random walk.
-            r_accel:    Measurement noise variance for accelerometer (m/s²)².
-            accel_gate: Skip accel update if |‖a‖ − g| > gate·g.
-            g:          Gravitational acceleration (m/s²).
-        """
         self.q_angle = q_angle
         self.q_bias = q_bias
         self.r_accel = r_accel
         self.accel_gate = accel_gate
         self.g = g
-        self.reset()
+
+        # Yaw 1D Kalman state: [yaw, gyro_z_bias]
+        self._yaw = 0.0
+        self._gz_bias = 0.0
+        # 2x2 covariance for [yaw, bias]
+        self._P_yaw = 0.1
+        self._P_bias = 0.01
+        self._P_cross = 0.0
+
+        # Home orientation (subtracted from accel-derived angles)
+        self._home_roll = 0.0
+        self._home_pitch = 0.0
+
+        # Latest accel-derived roll/pitch (relative to home)
+        self._roll = 0.0
+        self._pitch = 0.0
+
+        # ZUPT threshold: ignore gyro below this (rad/s)
+        # Prevents drift from noise when stationary
+        self._zupt_threshold = 0.01  # ~0.6 °/s
 
     def reset(self):
-        """Reset state to zeros, covariance to initial values."""
-        self.x = np.zeros((6, 1))
-        self.P = np.diag([0.1, 0.1, 0.1, 0.01, 0.01, 0.01])
+        self._yaw = 0.0
+        self._gz_bias = 0.0
+        self._P_yaw = 0.1
+        self._P_bias = 0.01
+        self._P_cross = 0.0
+        self._roll = 0.0
+        self._pitch = 0.0
 
     def init_from_calibration(self, roll: float, pitch: float, yaw: float,
                               gyro_bias: tuple):
-        """Initialize EKF state from calibration data.
-
-        Sets the home orientation and known gyro biases so the filter
-        starts converged instead of drifting from zero.
+        """Initialize from calibration data.
 
         Args:
-            roll, pitch, yaw: Initial orientation in radians.
-            gyro_bias: Tuple (bx, by, bz) in rad/s from static calibration.
+            roll, pitch: Home orientation from accelerometer (radians).
+                         Will be subtracted so filtered output starts at 0.
+            yaw: Initial yaw (always 0 — no magnetometer).
+            gyro_bias: (bx, by, bz) in rad/s from static calibration.
         """
-        self.x = np.array([
-            [roll], [pitch], [yaw],
-            [gyro_bias[0]], [gyro_bias[1]], [gyro_bias[2]],
-        ])
-        # Start with low covariance — we trust the calibration
-        self.P = np.diag([0.01, 0.01, 0.01, 0.001, 0.001, 0.001])
-
-    # ── Prediction (gyroscope) ────────────────────────────────────────
+        self._home_roll = roll
+        self._home_pitch = pitch
+        self._yaw = yaw
+        self._gz_bias = gyro_bias[2]  # only Z-axis bias matters for yaw
+        # Low initial covariance — we trust calibration
+        self._P_yaw = 0.001
+        self._P_bias = 0.0001
+        self._P_cross = 0.0
 
     def predict(self, gx: float, gy: float, gz: float, dt: float):
-        """Predict step from gyroscope readings.
+        """Predict step: integrate gyro Z for yaw.
 
         Args:
-            gx, gy, gz: Raw gyro (rad/s).
-            dt:         Time step (seconds).
+            gx, gy, gz: Bias-corrected gyro (rad/s). Note: gx/gy ignored
+                        for yaw — only gz used. They are in the signature
+                        for API compatibility.
+            dt: Time step (seconds).
         """
         if dt <= 0:
             return
 
-        phi   = self.x[0, 0]
-        theta = self.x[1, 0]
-        bgx   = self.x[3, 0]
-        bgy   = self.x[4, 0]
-        bgz   = self.x[5, 0]
+        # Bias-corrected gz
+        wz = gz - self._gz_bias
 
-        # Bias-corrected gyro
-        wx = gx - bgx
-        wy = gy - bgy
-        wz = gz - bgz
+        # ZUPT: if angular rate is tiny, robot is stationary — don't integrate
+        if abs(wz) < self._zupt_threshold:
+            # Still update covariance (uncertainty grows slowly)
+            self._P_yaw += self.q_angle * dt * 0.1  # much slower growth
+            self._P_bias += self.q_bias * dt
+            return
 
-        sp, cp = sin(phi), cos(phi)
-        ct = cos(theta)
+        # Yaw prediction: simple integration
+        self._yaw += wz * dt
 
-        # Gimbal lock guard (pitch near ±90°)
-        if abs(ct) < 1e-6:
-            ct = 1e-6 if ct >= 0 else -1e-6
-        tt = tan(theta)
+        # Normalize to [-π, π]
+        self._yaw = (self._yaw + pi) % (2 * pi) - pi
 
-        # Euler rate equations  (body rates → Euler angle rates)
-        phi_dot   = wx + wy * sp * tt + wz * cp * tt
-        theta_dot = wy * cp - wz * sp
-        psi_dot   = (wy * sp + wz * cp) / ct
+        # Covariance prediction (2x2 manual, no numpy needed)
+        # F = [[1, -dt], [0, 1]]
+        # P = F @ P @ F.T + Q
+        p11 = self._P_yaw
+        p12 = self._P_cross
+        p22 = self._P_bias
 
-        # State prediction
-        self.x[0, 0] += phi_dot   * dt
-        self.x[1, 0] += theta_dot * dt
-        self.x[2, 0] += psi_dot   * dt
-        # biases: random walk → unchanged in prediction
-
-        # Normalize yaw to [−π, π]
-        self.x[2, 0] = (self.x[2, 0] + pi) % (2 * pi) - pi
-
-        # ── Jacobian F = I + (∂f/∂x) · dt ─────────────────────────
-        F = np.eye(6)
-
-        # ∂(φ̇)/∂φ  = wy·cos(φ)·tan(θ) − wz·sin(φ)·tan(θ)
-        F[0, 0] += (wy * cp * tt - wz * sp * tt) * dt
-        # ∂(φ̇)/∂θ  = (wy·sin(φ) + wz·cos(φ)) / cos²(θ)
-        F[0, 1] += (wy * sp + wz * cp) / (ct * ct) * dt
-        # ∂(φ̇)/∂b_gx = −1
-        F[0, 3] += -1.0 * dt
-        # ∂(φ̇)/∂b_gy = −sin(φ)·tan(θ)
-        F[0, 4] += -sp * tt * dt
-        # ∂(φ̇)/∂b_gz = −cos(φ)·tan(θ)
-        F[0, 5] += -cp * tt * dt
-
-        # ∂(θ̇)/∂φ  = −wy·sin(φ) − wz·cos(φ)
-        F[1, 0] += (-wy * sp - wz * cp) * dt
-        # ∂(θ̇)/∂b_gy = −cos(φ)
-        F[1, 4] += -cp * dt
-        # ∂(θ̇)/∂b_gz = sin(φ)
-        F[1, 5] += sp * dt
-
-        # ∂(ψ̇)/∂φ  = (wy·cos(φ) − wz·sin(φ)) / cos(θ)
-        F[2, 0] += (wy * cp - wz * sp) / ct * dt
-        # ∂(ψ̇)/∂θ  = (wy·sin(φ) + wz·cos(φ)) · tan(θ) / cos(θ)
-        F[2, 1] += (wy * sp + wz * cp) * tt / ct * dt
-        # ∂(ψ̇)/∂b_gy = −sin(φ)/cos(θ)
-        F[2, 4] += -sp / ct * dt
-        # ∂(ψ̇)/∂b_gz = −cos(φ)/cos(θ)
-        F[2, 5] += -cp / ct * dt
-
-        # Process noise Q  (scaled by dt)
-        Q = np.diag([
-            self.q_angle, self.q_angle, self.q_angle,
-            self.q_bias,  self.q_bias,  self.q_bias,
-        ]) * dt
-
-        # Covariance prediction
-        self.P = F @ self.P @ F.T + Q
-
-    # ── Update (accelerometer) ────────────────────────────────────────
+        self._P_yaw = p11 + (-dt) * p12 + (-dt) * (p12 + (-dt) * p22) + self.q_angle * dt
+        self._P_cross = p12 + (-dt) * p22
+        self._P_bias = p22 + self.q_bias * dt
 
     def update(self, ax: float, ay: float, az: float):
-        """Correction step from accelerometer (gravity reference).
+        """Update step: compute roll/pitch from accelerometer.
 
-        Corrects roll and pitch only. Yaw is unobservable from accel.
-        Skipped when acceleration magnitude deviates significantly from g
-        (robot is accelerating, not just measuring gravity).
+        For a ground robot, roll/pitch are derived directly from gravity.
+        Yaw cannot be corrected from accelerometer (no magnetometer).
 
-        Args:
-            ax, ay, az: Raw accelerometer (m/s²).
+        Accel gate: skip if acceleration magnitude is far from g
+        (robot is accelerating, not just gravity).
         """
-        # Accel gate: skip if not near free-fall/gravity
         a_mag = sqrt(ax * ax + ay * ay + az * az)
         if abs(a_mag - self.g) > self.accel_gate * self.g:
             return
 
-        phi   = self.x[0, 0]
-        theta = self.x[1, 0]
-        sp, cp = sin(phi), cos(phi)
-        st, ct = sin(theta), cos(theta)
+        # Raw roll/pitch from gravity vector
+        raw_roll = atan2(ay, az)
+        raw_pitch = atan2(-ax, sqrt(ay * ay + az * az))
 
-        # Predicted measurement: h(x) = expected accel from gravity
-        h = np.array([
-            [-self.g * st],
-            [ self.g * sp * ct],
-            [ self.g * cp * ct],
-        ])
+        # Subtract home position → angles relative to startup
+        self._roll = raw_roll - self._home_roll
+        self._pitch = raw_pitch - self._home_pitch
 
-        # Actual measurement
-        z = np.array([[ax], [ay], [az]])
+        # Normalize to [-π, π]
+        self._roll = (self._roll + pi) % (2 * pi) - pi
+        self._pitch = (self._pitch + pi) % (2 * pi) - pi
 
-        # Innovation
-        y = z - h
-
-        # Jacobian H (3×6):  ∂h/∂x
-        H = np.zeros((3, 6))
-        H[0, 1] = -self.g * ct           # ∂h₀/∂θ
-        H[1, 0] =  self.g * cp * ct      # ∂h₁/∂φ
-        H[1, 1] = -self.g * sp * st      # ∂h₁/∂θ
-        H[2, 0] = -self.g * sp * ct      # ∂h₂/∂φ
-        H[2, 1] = -self.g * cp * st      # ∂h₂/∂θ
-        # All partials wrt ψ and biases are zero
-
-        # Measurement noise
-        R = np.eye(3) * self.r_accel
-
-        # Innovation covariance
-        S = H @ self.P @ H.T + R
-
-        # Kalman gain
-        K = self.P @ H.T @ np.linalg.inv(S)
-
-        # State update
-        self.x = self.x + K @ y
-
-        # Covariance update (Joseph form for numerical stability)
-        I_KH = np.eye(6) - K @ H
-        self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
-
-        # Normalize yaw
-        self.x[2, 0] = (self.x[2, 0] + pi) % (2 * pi) - pi
-
-    # ── Accessors ─────────────────────────────────────────────────────
+    # ── Accessors (same interface as old EKF) ─────────────────────
 
     @property
     def roll(self) -> float:
-        return float(self.x[0, 0])
+        return self._roll
 
     @property
     def pitch(self) -> float:
-        return float(self.x[1, 0])
+        return self._pitch
 
     @property
     def yaw(self) -> float:
-        return float(self.x[2, 0])
+        return self._yaw
 
     @property
     def gyro_bias(self) -> tuple:
-        return (float(self.x[3, 0]), float(self.x[4, 0]), float(self.x[5, 0]))
+        """Return (0, 0, gz_bias) — only Z bias is tracked."""
+        return (0.0, 0.0, self._gz_bias)
 
     def get_euler_deg(self) -> tuple:
         """Return (roll, pitch, yaw) in degrees."""
-        r2d = 180.0 / pi
-        return (self.roll * r2d, self.pitch * r2d, self.yaw * r2d)
+        return (degrees(self._roll), degrees(self._pitch), degrees(self._yaw))
