@@ -5,8 +5,8 @@ camera_node — Raspberry Pi CSI Camera -> MQTT JPEG stream.
 Publishes:
     samurai/{robot_id}/camera  — JPEG binary @ 15 fps (configurable)
 
-Config (config.yaml):
-    camera.swap_rb: true   — swap Red↔Blue channels (fix BGR/RGB mismatch)
+Uses BGR888 pixel format so OpenCV can encode JPEG directly
+without any colour-space conversion.
 """
 
 import os
@@ -22,7 +22,6 @@ except ImportError:
 
 try:
     import cv2
-    import numpy as np
     from picamera2 import Picamera2
     _HW = True
 except ImportError:
@@ -35,24 +34,24 @@ class CameraNode(MqttNode):
 
         self._quality = cfg('mqtt.camera_jpeg_quality', 75)
         fps = cfg('mqtt.camera_fps', 15)
-        self._swap_rb = cfg('camera.swap_rb', True)
         w, h = 640, 480
 
         self._cam = None
         if not _HW:
-            self.log_error('picamera2/cv2/numpy not available — camera disabled')
+            self.log_error('picamera2/cv2 not available — camera disabled')
             return
 
         try:
             self._cam = Picamera2()
+            # BGR888 — OpenCV native byte order, no conversion needed
             config = self._cam.create_preview_configuration(
-                main={'size': (w, h), 'format': 'RGB888'},
+                main={'size': (w, h), 'format': 'BGR888'},
                 buffer_count=4,
             )
             self._cam.configure(config)
             self._cam.start()
-            self.log_info('Camera started %dx%d @ %d fps (JPEG %d%%, swap_rb=%s)',
-                          w, h, fps, self._quality, self._swap_rb)
+            self.log_info('Camera started %dx%d @ %d fps (JPEG q=%d, BGR888)',
+                          w, h, fps, self._quality)
             self.create_timer(1.0 / fps, self._capture)
         except Exception as exc:
             self.log_error('Camera init failed: %s — disabled', exc)
@@ -62,12 +61,7 @@ class CameraNode(MqttNode):
         if self._cam is None:
             return
         frame = self._cam.capture_array()
-        # Picamera2 format='RGB888' выдаёт RGB.
-        # cv2.imencode ожидает BGR.
-        # swap_rb=true (дефолт): RGB→BGR для корректных цветов в JPEG.
-        # Если цвета инвертированы — поставить swap_rb: false в config.yaml.
-        if self._swap_rb:
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        # frame уже BGR888 — cv2.imencode принимает BGR напрямую
         ok, enc = cv2.imencode('.jpg', frame,
                                [cv2.IMWRITE_JPEG_QUALITY, self._quality])
         if ok:
