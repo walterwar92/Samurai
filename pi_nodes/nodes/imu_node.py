@@ -3,7 +3,12 @@
 imu_node — MPU6050 6-axis IMU on I2C bus.
 
 Publishes:
-    samurai/{robot_id}/imu  — {ax,ay,az, gx,gy,gz, ts, ekf?} @ 50 Hz
+    samurai/{robot_id}/imu  — {ax,ay,az, gx,gy,gz, ts, ekf?, calibrated} @ 50 Hz
+
+Startup calibration:
+    Collects CALIBRATION_SAMPLES readings while robot is stationary,
+    computes gyro bias offsets and initial orientation from accelerometer.
+    All subsequent angles are relative to this "home" position.
 
 When EKF is enabled (config imu.ekf.enabled), the payload includes
 an 'ekf' sub-dict with filtered roll/pitch/yaw and gyro bias estimates.
@@ -41,9 +46,16 @@ except ImportError:
 MPU6050_ADDR = 0x68
 PWR_MGMT_1 = 0x6B
 ACCEL_XOUT_H = 0x3B
+ACCEL_CONFIG = 0x1C
+GYRO_CONFIG = 0x1B
+DLPF_CFG = 0x1A         # Digital Low Pass Filter config register
+SMPLRT_DIV = 0x19        # Sample rate divider register
 ACCEL_SCALE = 16384.0
 GYRO_SCALE = 131.0
 DEG2RAD = math.pi / 180.0
+
+# Calibration: 100 samples @ 50 Hz = 2 seconds
+CALIBRATION_SAMPLES = 100
 
 
 class IMUNode(MqttNode):
@@ -54,19 +66,35 @@ class IMUNode(MqttNode):
         if _HW:
             try:
                 bus = smbus2.SMBus(1)
+                # Wake up MPU6050
                 bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0x00)
+                time.sleep(0.1)
+                # Set DLPF to mode 3 (accel 44Hz, gyro 42Hz) — filters vibrations
+                bus.write_byte_data(MPU6050_ADDR, DLPF_CFG, 0x03)
+                # Sample rate = 1kHz / (1 + 9) = 100 Hz
+                bus.write_byte_data(MPU6050_ADDR, SMPLRT_DIV, 9)
+                # Gyro: ±250°/s (most sensitive), Accel: ±2g (most sensitive)
+                bus.write_byte_data(MPU6050_ADDR, GYRO_CONFIG, 0x00)
+                bus.write_byte_data(MPU6050_ADDR, ACCEL_CONFIG, 0x00)
                 self._bus = bus
-                self.log_info('MPU6050 initialised @ 0x%02X', MPU6050_ADDR)
+                self.log_info('MPU6050 initialised @ 0x%02X (DLPF=3, SR=100Hz)',
+                              MPU6050_ADDR)
             except Exception as e:
                 self.log_warn('MPU6050 not found (0x%02X): %s — IMU simulated',
                               MPU6050_ADDR, e)
         else:
             self.log_warn('smbus2 unavailable — IMU simulated')
 
+        # Calibration state
+        self._calibrated = False
+        self._cal_samples = []
+        self._gyro_offset = (0.0, 0.0, 0.0)  # raw gyro bias from calibration
+        self._accel_offset = (0.0, 0.0, 0.0)  # home orientation accel reference
+
         # EKF setup
         self._ekf = None
-        ekf_enabled = cfg('imu.ekf.enabled', True)
-        if ekf_enabled and _EKF_AVAILABLE:
+        self._ekf_enabled = cfg('imu.ekf.enabled', True)
+        if self._ekf_enabled and _EKF_AVAILABLE:
             self._ekf = EkfImu(
                 q_angle=cfg('imu.ekf.q_angle', 0.001),
                 q_bias=cfg('imu.ekf.q_bias', 0.0001),
@@ -75,16 +103,19 @@ class IMUNode(MqttNode):
             )
             self.log_info('EKF enabled (q_angle=%.4f, q_bias=%.5f, r_accel=%.2f)',
                           self._ekf.q_angle, self._ekf.q_bias, self._ekf.r_accel)
-        elif ekf_enabled and not _EKF_AVAILABLE:
+        elif self._ekf_enabled and not _EKF_AVAILABLE:
             self.log_warn('EKF requested but numpy/ekf_imu not available — disabled')
         else:
             self.log_info('EKF disabled by config')
 
         self._last_time = time.monotonic()
 
+        self.log_info('Starting calibration (%d samples, ~%.1f sec)...',
+                      CALIBRATION_SAMPLES, CALIBRATION_SAMPLES * 0.02)
         self.create_timer(0.02, self._read_and_publish)  # 50 Hz
 
     def _read_raw(self):
+        """Read raw sensor values (no offset correction)."""
         if not self._bus:
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
         try:
@@ -101,6 +132,47 @@ class IMUNode(MqttNode):
             self._bus = None  # stop trying until restart
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 
+    def _finish_calibration(self):
+        """Compute offsets from collected samples, init EKF with home position."""
+        n = len(self._cal_samples)
+        sum_ax = sum_ay = sum_az = 0.0
+        sum_gx = sum_gy = sum_gz = 0.0
+        for (ax, ay, az, gx, gy, gz) in self._cal_samples:
+            sum_ax += ax; sum_ay += ay; sum_az += az
+            sum_gx += gx; sum_gy += gy; sum_gz += gz
+
+        # Gyro offset: average at rest should be zero
+        self._gyro_offset = (sum_gx / n, sum_gy / n, sum_gz / n)
+
+        # Accel average — used to derive initial roll/pitch (home position)
+        avg_ax = sum_ax / n
+        avg_ay = sum_ay / n
+        avg_az = sum_az / n
+
+        # Initial roll/pitch from gravity vector (home = 0)
+        home_roll = math.atan2(avg_ay, avg_az)
+        home_pitch = math.atan2(-avg_ax,
+                                math.sqrt(avg_ay * avg_ay + avg_az * avg_az))
+
+        # Initialize EKF with home orientation and calibrated gyro bias
+        if self._ekf is not None:
+            self._ekf.init_from_calibration(
+                roll=home_roll,
+                pitch=home_pitch,
+                yaw=0.0,  # yaw = 0 at startup (no magnetometer)
+                gyro_bias=self._gyro_offset,
+            )
+
+        self._calibrated = True
+        self._cal_samples = []  # free memory
+
+        self.log_info(
+            'Calibration done: gyro_offset=(%.5f, %.5f, %.5f) rad/s, '
+            'home roll=%.1f° pitch=%.1f°',
+            self._gyro_offset[0], self._gyro_offset[1], self._gyro_offset[2],
+            math.degrees(home_roll), math.degrees(home_pitch),
+        )
+
     def _read_and_publish(self):
         now = time.monotonic()
         dt = now - self._last_time
@@ -108,9 +180,29 @@ class IMUNode(MqttNode):
 
         ax, ay, az, gx, gy, gz = self._read_raw()
 
+        # ── Calibration phase ─────────────────────────────────────────
+        if not self._calibrated:
+            self._cal_samples.append((ax, ay, az, gx, gy, gz))
+            if len(self._cal_samples) >= CALIBRATION_SAMPLES:
+                self._finish_calibration()
+            # During calibration publish raw + calibrated=false
+            self.publish('imu', {
+                'ax': round(ax, 4), 'ay': round(ay, 4), 'az': round(az, 4),
+                'gx': round(gx, 5), 'gy': round(gy, 5), 'gz': round(gz, 5),
+                'calibrated': False,
+                'ts': self.timestamp(),
+            })
+            return
+
+        # ── Apply gyro offset correction ──────────────────────────────
+        gx -= self._gyro_offset[0]
+        gy -= self._gyro_offset[1]
+        gz -= self._gyro_offset[2]
+
         payload = {
             'ax': round(ax, 4), 'ay': round(ay, 4), 'az': round(az, 4),
             'gx': round(gx, 5), 'gy': round(gy, 5), 'gz': round(gz, 5),
+            'calibrated': True,
             'ts': self.timestamp(),
         }
 

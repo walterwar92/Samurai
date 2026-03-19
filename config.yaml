@@ -67,6 +67,9 @@ simulator:
 
 # IMU filtering (Extended Kalman Filter on Pi)
 imu:
+  # Startup calibration: robot MUST be stationary during first ~2 seconds
+  calibration_samples: 100   # 100 @ 50Hz = 2 sec
+
   ekf:
     enabled: true
     # Process noise (больше = меньше доверия гироскопу, больше следования акселерометру)
@@ -75,7 +78,14 @@ imu:
     # Measurement noise (больше = меньше доверия акселерометру)
     r_accel: 0.5           # (m/s²)² — шум акселерометра
     # Accel gate: пропуск update если |‖a‖ − g| > gate·g
-    accel_gate: 0.5        # доля g (0.5 = 50%)
+    # Для гусеничного робота с вибрациями — увеличен до 0.3 (30%)
+    accel_gate: 0.3        # доля g — строже фильтрует вибрации при движении
+
+# Odometry dead zones (anti-vibration)
+odometry:
+  deadzone_linear: 0.01    # m/s — ниже = стоим
+  deadzone_angular: 0.05   # rad/s — ниже = не вращаемся
+  cmd_vel_timeout: 0.5     # sec — auto-stop без новых команд
 
 # Servo configuration (PCA9685 channels)
 # ch0 = основание клешни, ch1 = сустав 1, ch2 = сустав 2, ch3 = клешня, ch4 = голова
