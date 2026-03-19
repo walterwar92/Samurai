@@ -94,6 +94,11 @@ servos:
     max_angles:  [120, 145, 180, 180]
     labels: ["Основание", "Сустав 1", "Сустав 2", "Клешня"]
 
+# Camera settings
+camera:
+  swap_rb: true                # true = RGB→BGR перед JPEG (Picamera2 отдаёт RGB)
+                               # false = без конвертации (если цвета и так верные)
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
