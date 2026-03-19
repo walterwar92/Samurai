@@ -35,11 +35,11 @@ try:
 except ImportError:
     _HW = False
 
-# EKF — optional (requires numpy)
-_EKF_AVAILABLE = False
+# IMU filter — no longer requires numpy (pure Python 2D filter)
+_FILTER_AVAILABLE = False
 try:
     from pi_nodes.filters.ekf_imu import EkfImu
-    _EKF_AVAILABLE = True
+    _FILTER_AVAILABLE = True
 except ImportError:
     pass
 
@@ -94,7 +94,7 @@ class IMUNode(MqttNode):
         # EKF setup
         self._ekf = None
         self._ekf_enabled = cfg('imu.ekf.enabled', True)
-        if self._ekf_enabled and _EKF_AVAILABLE:
+        if self._ekf_enabled and _FILTER_AVAILABLE:
             self._ekf = EkfImu(
                 q_angle=cfg('imu.ekf.q_angle', 0.001),
                 q_bias=cfg('imu.ekf.q_bias', 0.0001),
@@ -103,7 +103,7 @@ class IMUNode(MqttNode):
             )
             self.log_info('EKF enabled (q_angle=%.4f, q_bias=%.5f, r_accel=%.2f)',
                           self._ekf.q_angle, self._ekf.q_bias, self._ekf.r_accel)
-        elif self._ekf_enabled and not _EKF_AVAILABLE:
+        elif self._ekf_enabled and not _FILTER_AVAILABLE:
             self.log_warn('EKF requested but numpy/ekf_imu not available — disabled')
         else:
             self.log_info('EKF disabled by config')
