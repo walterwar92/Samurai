@@ -5,8 +5,8 @@ camera_node — Raspberry Pi CSI Camera -> MQTT JPEG stream.
 Publishes:
     samurai/{robot_id}/camera  — JPEG binary @ 15 fps (configurable)
 
-Uses BGR888 pixel format so OpenCV can encode JPEG directly
-without any colour-space conversion.
+Uses RGB888 pixel format — on this hardware Picamera2 RGB888
+outputs BGR byte order, which cv2.imencode accepts directly.
 """
 
 import os
@@ -43,14 +43,15 @@ class CameraNode(MqttNode):
 
         try:
             self._cam = Picamera2()
-            # BGR888 — OpenCV native byte order, no conversion needed
+            # RGB888 — на данном железе Picamera2 отдаёт BGR byte order,
+            # что совпадает с ожиданиями cv2.imencode (конвертация не нужна)
             config = self._cam.create_preview_configuration(
-                main={'size': (w, h), 'format': 'BGR888'},
+                main={'size': (w, h), 'format': 'RGB888'},
                 buffer_count=4,
             )
             self._cam.configure(config)
             self._cam.start()
-            self.log_info('Camera started %dx%d @ %d fps (JPEG q=%d, BGR888)',
+            self.log_info('Camera started %dx%d @ %d fps (JPEG q=%d, RGB888)',
                           w, h, fps, self._quality)
             self.create_timer(1.0 / fps, self._capture)
         except Exception as exc:
@@ -61,7 +62,7 @@ class CameraNode(MqttNode):
         if self._cam is None:
             return
         frame = self._cam.capture_array()
-        # frame уже BGR888 — cv2.imencode принимает BGR напрямую
+        # RGB888 на этом железе = BGR byte order → imencode напрямую
         ok, enc = cv2.imencode('.jpg', frame,
                                [cv2.IMWRITE_JPEG_QUALITY, self._quality])
         if ok:
