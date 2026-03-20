@@ -5,18 +5,20 @@ slam_map_node — Lightweight occupancy grid SLAM from ultrasonic + odometry.
 Builds a 2D occupancy grid map using:
     - Robot pose from odometry (x, y, theta)
     - Ultrasonic range readings (single beam, ~15° cone)
+    - Detected objects (from object_detector_node via MQTT)
 
 The map uses a log-odds representation for efficient probabilistic updates:
     - Free cells: log-odds decreases (beam passed through)
     - Occupied cells: log-odds increases (beam hit obstacle)
     - Unknown cells: log-odds = 0
 
-The map is published as a compressed JSON grid for dashboard/3D display,
-and also as a flat occupancy array compatible with ROS2 OccupancyGrid.
+Detected objects are stored in a persistent registry with world coordinates
+and published as a separate layer in the slam_map JSON for the dashboard.
 
 Subscribes:
-    samurai/{robot_id}/odom   — {x, y, theta, ...}
-    samurai/{robot_id}/range  — {range, ts}
+    samurai/{robot_id}/odom       — {x, y, theta, ...}
+    samurai/{robot_id}/range      — {range, ts}
+    samurai/{robot_id}/detections — объекты с мировыми координатами
     samurai/{robot_id}/reset_position — reset map origin to current pose
 Publishes:
     samurai/{robot_id}/slam_map      — compressed map data (JSON)
@@ -57,6 +59,11 @@ PUBLISH_INTERVAL_S = 2.0   # publish map at 0.5 Hz (heavy payload)
 MIN_MOVE_M = 0.01          # skip update if robot hasn't moved
 ANGULAR_RESOLUTION = 0.05  # rad — angular step for ray tracing (~3°)
 
+# Detected objects registry
+OBJ_CLUSTER_RADIUS_M = 0.30  # м — два наблюдения ближе этого = один объект
+OBJ_MAX_AGE_S        = 120.0 # с — объект удаляется если не виден N секунд
+OBJ_MIN_CONF         = 0.35  # минимальная уверенность для регистрации
+
 # Map save
 MAPS_DIR = os.path.expanduser('~/maps')
 
@@ -87,9 +94,16 @@ class SlamMapNode(MqttNode):
         self._last_trail_x = 0.0
         self._last_trail_y = 0.0
 
+        # Detected objects registry
+        # key: str (уникальный ID объекта), value: dict с полями:
+        #   class, colour, x, y, conf, ts, count
+        self._objects: dict = {}
+        self._obj_counter = 0  # для генерации уникальных ID
+
         # Subscribers
-        self.subscribe('odom', self._odom_cb)
-        self.subscribe('range', self._range_cb)
+        self.subscribe('odom',           self._odom_cb)
+        self.subscribe('range',          self._range_cb)
+        self.subscribe('detections',     self._detections_cb)
         self.subscribe('reset_position', self._reset_cb, qos=1)
 
         # Timers
@@ -130,13 +144,83 @@ class SlamMapNode(MqttNode):
             self._range_m = r
             self._range_ts = time.monotonic()
 
+    def _detections_cb(self, topic, data):
+        """Обновляет реестр обнаруженных объектов из detections."""
+        if not isinstance(data, dict):
+            return
+        objects = data.get('objects', [])
+        if not isinstance(objects, list):
+            return
+
+        now = time.time()
+        for det in objects:
+            # Пропускаем объекты без мировых координат или с низкой уверенностью
+            wx = det.get('world_x')
+            wy = det.get('world_y')
+            conf = float(det.get('conf', 0.0))
+            if wx is None or wy is None or conf < OBJ_MIN_CONF:
+                continue
+
+            cls    = det.get('class',  'unknown')
+            colour = det.get('colour', 'unknown')
+            dist   = det.get('distance', -1.0)
+
+            # Ищем ближайший существующий объект того же класса и цвета
+            matched_id = None
+            for obj_id, obj in self._objects.items():
+                if obj['class'] != cls or obj['colour'] != colour:
+                    continue
+                dx = obj['x'] - wx
+                dy = obj['y'] - wy
+                if math.sqrt(dx * dx + dy * dy) < OBJ_CLUSTER_RADIUS_M:
+                    matched_id = obj_id
+                    break
+
+            if matched_id:
+                # Обновляем позицию: скользящее среднее (новые наблюдения весят больше)
+                obj = self._objects[matched_id]
+                alpha = 0.3  # вес нового наблюдения
+                obj['x']     = round(alpha * wx + (1 - alpha) * obj['x'], 3)
+                obj['y']     = round(alpha * wy + (1 - alpha) * obj['y'], 3)
+                obj['conf']  = round(max(obj['conf'], conf), 3)
+                obj['count'] += 1
+                obj['ts']    = now
+                obj['dist']  = round(dist, 3)
+            else:
+                # Новый объект
+                self._obj_counter += 1
+                obj_id = f'{cls}_{colour}_{self._obj_counter}'
+                self._objects[obj_id] = {
+                    'id':     obj_id,
+                    'class':  cls,
+                    'colour': colour,
+                    'x':      round(wx, 3),
+                    'y':      round(wy, 3),
+                    'conf':   round(conf, 3),
+                    'dist':   round(dist, 3),
+                    'count':  1,
+                    'ts':     now,
+                }
+                self.log_info('Новый объект: %s %s @ (%.2f, %.2f) dist=%.2fm',
+                              colour, cls, wx, wy, dist)
+
+    def _cleanup_stale_objects(self):
+        """Удаляет объекты, не обновлявшиеся дольше OBJ_MAX_AGE_S."""
+        now = time.time()
+        stale = [oid for oid, obj in self._objects.items()
+                 if now - obj['ts'] > OBJ_MAX_AGE_S]
+        for oid in stale:
+            obj = self._objects.pop(oid)
+            self.log_info('Объект устарел, удалён: %s %s', obj['colour'], obj['class'])
+
     def _reset_cb(self, topic, data):
         """Reset map when position resets."""
         self._grid = [0.0] * (MAP_CELLS * MAP_CELLS)
         self._trail = []
         self._last_trail_x = 0.0
         self._last_trail_y = 0.0
-        self.log_info('SLAM map reset')
+        self._objects = {}
+        self.log_info('SLAM map reset (включая реестр объектов)')
 
     # ── Map Update (ray tracing) ───────────────────────────────
     def _update_map(self):
@@ -218,6 +302,9 @@ class SlamMapNode(MqttNode):
         if not self._pose_valid:
             return
 
+        # Удаляем устаревшие объекты перед публикацией
+        self._cleanup_stale_objects()
+
         # Convert log-odds to occupancy values:
         # -1 = unknown, 0 = free, 100 = occupied
         occ_grid = []
@@ -237,6 +324,9 @@ class SlamMapNode(MqttNode):
                 else:
                     occ_grid.append(-1)
 
+        # Реестр обнаруженных объектов для дашборда
+        detected_objects = list(self._objects.values())
+
         # Publish compact map data (obstacles + metadata only, not full grid)
         map_data = {
             'obstacles': occupied_cells,
@@ -246,6 +336,7 @@ class SlamMapNode(MqttNode):
                 'y': round(self._y, 3),
                 'theta': round(self._theta, 3),
             },
+            'detected_objects': detected_objects,
             'info': {
                 'width': MAP_CELLS,
                 'height': MAP_CELLS,
@@ -255,9 +346,10 @@ class SlamMapNode(MqttNode):
                 'size_m': MAP_SIZE_M,
             },
             'stats': {
-                'occupied': len(occupied_cells),
-                'free': free_cells_count,
-                'unknown': MAP_CELLS * MAP_CELLS - len(occupied_cells) - free_cells_count,
+                'occupied':          len(occupied_cells),
+                'free':              free_cells_count,
+                'unknown':           MAP_CELLS * MAP_CELLS - len(occupied_cells) - free_cells_count,
+                'detected_objects':  len(detected_objects),
             },
             'ts': self.timestamp(),
         }
