@@ -133,6 +133,46 @@ slam_map:
   l_occ: 0.85                  # log-odds прирост для занятой ячейки
   l_free: -0.40                # log-odds прирост для свободной ячейки
 
+# Детектор объектов (compute_node/object_detector_node.py, запуск на ноутбуке)
+object_detector:
+  # Параметры камеры (должны совпадать с camera_node)
+  cam_width:        640
+  cam_height:       480
+  focal_length_px:  500.0       # пиксели — уточни через калибровку камеры
+  cam_fov_deg:      60.0        # горизонтальный FOV камеры (градусы)
+
+  # Детекция
+  confidence:       0.40        # порог уверенности YOLO / HSV blob
+  yolo_model:       yolov8n.pt  # имя файла модели (ищется в текущей папке и ~/models/)
+
+  # Оценка дистанции
+  ultrasonic_center_thr: 0.25   # |cx_norm| < порог → объект по центру
+  ultrasonic_weight:     0.65   # доля ультразвука при смешивании методов
+  ultrasonic_max_age_s:  0.5    # с — макс возраст показания УЗ
+
+  # Объекты для монокулярной глубины (реальная высота в м)
+  object_sizes:
+    sports ball: 0.04
+    ball:        0.04
+    bottle:      0.25
+    cup:         0.12
+    person:      1.70
+    chair:       0.90
+    cat:         0.30
+    dog:         0.40
+    car:         1.50
+    default:     0.10
+
+  # Публикация аннотированного кадра (увеличивает трафик)
+  publish_annotated: true
+  annotated_jpeg_quality: 70
+
+# Реестр объектов в SLAM карте (pi_nodes/nodes/slam_map_node.py)
+object_registry:
+  cluster_radius_m: 0.30   # м — два наблюдения ближе = один объект
+  max_age_s:        120.0  # с — объект удаляется если не виден N секунд
+  min_conf:         0.35   # минимальная уверенность для регистрации
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
