@@ -117,10 +117,13 @@ servos:
 path_recorder:
   record_interval_m: 0.05      # записывать точку каждые 5 см
   record_interval_rad: 0.10    # или каждые ~6° поворота
-  replay_goal_tolerance: 0.08  # м — точность достижения точки
-  replay_angle_tolerance: 0.15 # рад — точность поворота (~8.6°)
-  replay_linear_speed: 0.12    # м/с — скорость возврата
-  replay_angular_speed: 0.6    # рад/с — скорость поворота
+  replay_goal_tolerance: 0.06  # м — точность промежуточных точек
+  replay_home_tolerance: 0.03  # м — точность финальной точки (дом)
+  replay_linear_speed: 0.22    # м/с — скорость возврата (было 0.12)
+  replay_min_linear: 0.06      # м/с — минимальная скорость (антистолл)
+  replay_angular_speed: 0.8    # рад/с — макс скорость поворота
+  replay_angular_kp: 2.0       # P-коэффициент угловой коррекции
+  replay_lookahead_m: 0.12     # м — дистанция опережения (pure pursuit)
   max_waypoints: 5000          # лимит точек
 
 # SLAM карта (ультразвук + одометрия)

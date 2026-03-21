@@ -5,6 +5,7 @@ import { useRobotState } from '@/hooks/useRobotState'
 import { useSocket } from '@/providers/SocketProvider'
 import { RobotModel } from '@/components/3d/RobotModel'
 import { PathTrail } from '@/components/3d/PathTrail'
+import { PlannedPathTrail } from '@/components/3d/PlannedPathTrail'
 import { ImuVectors } from '@/components/3d/ImuVectors'
 import { InfoPanel } from '@/components/3d/InfoPanel'
 
@@ -31,6 +32,8 @@ export function Visualization3DPage() {
   const linearVel = state?.velocity?.linear ?? 0
   const angularVel = state?.velocity?.angular ?? 0
   const ekfBias: [number, number, number] | null = state?.imu_ekf_bias ?? null
+  const recordedPath = state?.recorded_path ?? null
+  const isReplaying = state?.path_recorder?.state === 'replaying'
 
   const handleClearPath = useCallback(() => {
     setClearSignal(prev => prev + 1)
@@ -107,11 +110,17 @@ export function Visualization3DPage() {
           posY={posY}
         />
 
-        {/* Path trail */}
+        {/* Path trail (real-time odometry trace) */}
         <PathTrail
           posX={posX}
           posY={posY}
           clearSignal={clearSignal}
+        />
+
+        {/* Planned return path (from path recorder) */}
+        <PlannedPathTrail
+          path={recordedPath}
+          replaying={isReplaying}
         />
 
         {/* IMU vectors */}

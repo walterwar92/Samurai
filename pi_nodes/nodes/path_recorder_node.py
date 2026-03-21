@@ -26,11 +26,13 @@ from pi_nodes.mqtt_node import MqttNode
 # ── Configuration ─────────────────────────────────────────────
 RECORD_INTERVAL_M = 0.05      # record waypoint every 5 cm moved
 RECORD_INTERVAL_RAD = 0.10    # or every ~6° turned
-REPLAY_GOAL_TOLERANCE = 0.08  # m — close enough to waypoint
-REPLAY_ANGLE_TOLERANCE = 0.15 # rad — close enough heading (~8.6°)
-REPLAY_LINEAR_SPEED = 0.12    # m/s — replay drive speed
-REPLAY_ANGULAR_SPEED = 0.6    # rad/s — replay turn speed
-REPLAY_ALIGN_FIRST = True     # rotate to face next waypoint before driving
+REPLAY_GOAL_TOLERANCE = 0.06  # m — close enough to intermediate waypoint
+REPLAY_HOME_TOLERANCE = 0.03  # m — tighter tolerance for final home point
+REPLAY_LINEAR_SPEED = 0.22    # m/s — replay drive speed (was 0.12)
+REPLAY_MIN_LINEAR = 0.06      # m/s — minimum linear speed to avoid stalls
+REPLAY_ANGULAR_SPEED = 0.8    # rad/s — max replay turn speed
+REPLAY_ANGULAR_KP = 2.0       # proportional gain for angular correction
+REPLAY_LOOKAHEAD_M = 0.12     # m — look-ahead distance for pure pursuit
 MAX_WAYPOINTS = 5000          # memory safety limit
 CONTROL_HZ = 10               # replay control loop frequency
 PATHS_DIR = os.path.expanduser('~/paths')
@@ -167,43 +169,63 @@ class PathRecorderNode(MqttNode):
             self._publish_status()
             return
 
-        # Target waypoint
-        tx, ty, t_theta = self._path[self._replay_index]
+        # ── Skip waypoints that are already behind us (look-ahead) ──
+        while self._replay_index > 0:
+            tx, ty, _ = self._path[self._replay_index]
+            dx = tx - self._x
+            dy = ty - self._y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < REPLAY_LOOKAHEAD_M:
+                self._replay_index -= 1
+            else:
+                break
 
-        # Distance and bearing to target
+        # ── Determine target ──
+        is_final = (self._replay_index == 0)
+        tx, ty, t_theta = self._path[self._replay_index]
         dx = tx - self._x
         dy = ty - self._y
         dist = math.sqrt(dx * dx + dy * dy)
+        tolerance = REPLAY_HOME_TOLERANCE if is_final else REPLAY_GOAL_TOLERANCE
 
-        if dist < REPLAY_GOAL_TOLERANCE:
-            # Reached this waypoint, move to next (going backwards through path)
+        if dist < tolerance:
             self._replay_index -= 1
+            if is_final:
+                # Final home point reached — do precision alignment
+                self.log_info('Home reached (error=%.3fm)', dist)
+                self._stop_driving()
+                self._state = 'idle'
+                self._publish_status()
             return
 
-        # Bearing to target
+        # ── Pure pursuit: simultaneous linear + angular ──
         bearing = math.atan2(dy, dx)
         angle_error = self._angle_diff(bearing, self._theta)
 
-        # If we need to turn significantly, rotate first
-        if abs(angle_error) > REPLAY_ANGLE_TOLERANCE:
-            angular = REPLAY_ANGULAR_SPEED if angle_error > 0 else -REPLAY_ANGULAR_SPEED
-            # Slow rotation for small errors
-            if abs(angle_error) < 0.3:
-                angular *= abs(angle_error) / 0.3
-            self.publish('cmd_vel', {
-                'linear_x': 0.0,
-                'angular_z': round(angular, 3),
-            })
-        else:
-            # Drive toward waypoint
-            linear = min(REPLAY_LINEAR_SPEED, dist * 1.5)
-            # Small angular correction while driving
-            angular = angle_error * 1.5
-            angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
-            self.publish('cmd_vel', {
-                'linear_x': round(linear, 3),
-                'angular_z': round(angular, 3),
-            })
+        # Angular: proportional control, clamped
+        angular = REPLAY_ANGULAR_KP * angle_error
+        angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
+
+        # Linear: scale down when turning hard or near target
+        # cos factor: full speed when heading is correct, slow when off-angle
+        cos_factor = max(0.0, math.cos(angle_error))
+        # Distance factor: slow down near waypoint
+        dist_factor = min(1.0, dist / 0.15)
+        # Final approach: extra slow for precision
+        if is_final:
+            dist_factor = min(dist_factor, dist / 0.08)
+
+        linear = REPLAY_LINEAR_SPEED * cos_factor * dist_factor
+        linear = max(REPLAY_MIN_LINEAR * cos_factor, linear)
+
+        # If angle error is very large (>90°), stop and rotate in place
+        if abs(angle_error) > 1.2:
+            linear = 0.0
+
+        self.publish('cmd_vel', {
+            'linear_x': round(linear, 3),
+            'angular_z': round(angular, 3),
+        })
 
     # ── Stop / Clear ───────────────────────────────────────────
     def _stop(self, name: str = ''):
