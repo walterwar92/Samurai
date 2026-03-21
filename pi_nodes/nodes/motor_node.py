@@ -33,6 +33,11 @@ try:
 except ImportError:
     _ACCEL_POS_AVAILABLE = False
 
+try:
+    from config_loader import cfg
+except ImportError:
+    cfg = lambda k, d=None: d
+
 WHEEL_BASE = 0.17
 
 SPEED_PROFILES = {
@@ -46,11 +51,12 @@ DEFAULT_PROFILE = 'normal'
 _PHYS_MAX_LIN, _PHYS_MAX_ANG = SPEED_PROFILES['fast']
 
 # Dead zone thresholds — commands below these are treated as zero
-DEADZONE_LINEAR  = 0.01   # m/s
-DEADZONE_ANGULAR = 0.05   # rad/s
+DEADZONE_LINEAR  = cfg('odometry.deadzone_linear', 0.01)   # m/s
+DEADZONE_ANGULAR = cfg('odometry.deadzone_angular', 0.05)  # rad/s
 
 # Auto-stop if no cmd_vel received within this time (seconds)
-CMD_VEL_TIMEOUT = 0.5
+# Увеличено с 0.5 до значения из конфига (1.0 по умолчанию) — WiFi MQTT может задерживать
+CMD_VEL_TIMEOUT = cfg('odometry.cmd_vel_timeout', 1.0)
 
 
 class MotorNode(MqttNode):

@@ -85,7 +85,7 @@ imu:
 odometry:
   deadzone_linear: 0.01    # m/s — ниже = стоим
   deadzone_angular: 0.05   # rad/s — ниже = не вращаемся
-  cmd_vel_timeout: 0.5     # sec — auto-stop без новых команд
+  cmd_vel_timeout: 1.0     # sec — auto-stop без новых команд (увеличено с 0.5 для WiFi)
 
 # Accelerometer position estimator
 accel_position:
@@ -143,7 +143,7 @@ object_detector:
 
   # Детекция
   confidence:       0.40        # порог уверенности YOLO / HSV blob
-  yolo_model:       yolov8n.pt  # имя файла модели (ищется в текущей папке и ~/models/)
+  yolo_model:       yolov11n.pt  # имя файла модели (ищется в текущей папке и ~/models/)
 
   # Оценка дистанции
   ultrasonic_center_thr: 0.25   # |cx_norm| < порог → объект по центру
@@ -178,5 +178,5 @@ mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
   port: 1883
   robot_id: "robot1"
-  camera_fps: 15               # MQTT camera framerate (lower than ROS2 30fps)
-  camera_jpeg_quality: 75
+  camera_fps: 10               # MQTT camera framerate (снижено с 15 для разгрузки MQTT)
+  camera_jpeg_quality: 60      # снижено с 75 для уменьшения размера кадра (~30% экономия)
