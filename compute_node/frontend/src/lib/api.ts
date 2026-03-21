@@ -86,6 +86,10 @@ export const api = {
   followMeCommand: (command: string) =>
     post('/api/follow_me', { command }),
 
+  // Position reset
+  resetPosition: () =>
+    post('/api/robot/reset_position'),
+
   // Path recorder
   pathRecorderCommand: (command: string) =>
     post('/api/path_recorder/command', { command }),

@@ -1,3 +1,5 @@
+import { api } from '@/lib/api'
+
 interface InfoPanelProps {
   yaw: number
   pitch: number
@@ -9,6 +11,7 @@ interface InfoPanelProps {
   linearVel: number
   angularVel: number
   onClearPath: () => void
+  onResetHome: () => void
   // EKF toggle
   useEkf: boolean
   hasEkf: boolean
@@ -35,6 +38,7 @@ export function InfoPanel({
   posX, posY,
   linearVel, angularVel,
   onClearPath,
+  onResetHome,
   useEkf, hasEkf, onToggleEkf,
   ekfBias, yprRaw,
 }: InfoPanelProps) {
@@ -123,12 +127,20 @@ export function InfoPanel({
         <V label="V ang" value={angularVel.toFixed(3)} unit="рад/с" />
       </div>
 
-      <button
-        onClick={onClearPath}
-        className="w-full mt-1 px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-600 transition-colors"
-      >
-        Очистить путь
-      </button>
+      <div className="flex gap-1 mt-1">
+        <button
+          onClick={onClearPath}
+          className="flex-1 px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-600 transition-colors"
+        >
+          Очистить путь
+        </button>
+        <button
+          onClick={onResetHome}
+          className="flex-1 px-2 py-1 text-xs bg-amber-900/80 hover:bg-amber-800/80 text-amber-200 rounded border border-amber-700 transition-colors"
+        >
+          Сброс Home
+        </button>
+      </div>
     </div>
   )
 }

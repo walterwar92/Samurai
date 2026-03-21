@@ -181,5 +181,5 @@ mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
   port: 1883
   robot_id: "robot1"
-  camera_fps: 10               # MQTT camera framerate (снижено с 15 для разгрузки MQTT)
-  camera_jpeg_quality: 60      # снижено с 75 для уменьшения размера кадра (~30% экономия)
+  camera_fps: 12               # MQTT camera framerate (было 10, увеличено для лучшей детекции)
+  camera_jpeg_quality: 70      # повышено с 60 для лучшего качества детекции
