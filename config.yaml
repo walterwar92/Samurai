@@ -91,10 +91,17 @@ odometry:
 accel_position:
   latitude: 55.75            # широта для компенсации вращения Земли (Москва)
   complementary_alpha: 0.98  # 0.98 = 98% колёсная одометрия, 2% акселерометр
-  accel_noise_threshold: 0.05  # m/s² — ниже = шум, не движение
-  zupt_gyro_threshold: 0.015   # rad/s — ниже = стоим
-  zupt_accel_threshold: 0.08   # m/s² — ниже = стоим
+  accel_noise_threshold: 0.15  # m/s² — ниже = шум, не движение (увеличено с 0.05)
   median_window: 5             # сэмплов для медианного фильтра
+  # ZUPT с гистерезисом — два порога: вход в стоянку (мягкий) и выход (жёсткий)
+  zupt_gyro_enter: 0.015     # rad/s — ниже = входим в стоянку
+  zupt_accel_enter: 0.10     # m/s² — ниже = входим в стоянку
+  zupt_gyro_exit: 0.04       # rad/s — выше = выходим из стоянки (порог выше!)
+  zupt_accel_exit: 0.25      # m/s² — выше = выходим из стоянки (порог выше!)
+  zupt_enter_count: 5        # сэмплов для входа в стоянку (100мс @ 50Hz)
+  zupt_exit_count: 3         # сэмплов для выхода из стоянки (60мс @ 50Hz)
+  velocity_decay: 0.95       # затухание скорости (было 0.98, агрессивнее для борьбы с дрифтом)
+  lateral_decay: 0.5         # затухание боковой скорости (non-holonomic: гусеницы не едут вбок)
 
 # Servo configuration (PCA9685 channels)
 # ch0 = основание клешни, ch1 = сустав 1, ch2 = сустав 2, ch3 = клешня, ch4 = голова

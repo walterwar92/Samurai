@@ -137,6 +137,7 @@ export interface RobotState {
   imu_ekf_bias: [number, number, number] | null
   imu_has_ekf: boolean
   pose: RobotPose
+  stationary: boolean
   velocity: RobotVelocity
   actuators: Actuators
   map_info: MapInfo

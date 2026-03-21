@@ -12,16 +12,44 @@ interface RobotModelProps {
 
 const DEG2RAD = Math.PI / 180
 
+// Lerp factor: 0.15 = smooth but responsive (higher = snappier)
+const POS_LERP = 0.15
+const ROT_LERP = 0.2
+
 export function RobotModel({ yaw, pitch, roll, posX, posY }: RobotModelProps) {
   const groupRef = useRef<THREE.Group>(null)
+  // Smoothed position/rotation to avoid jitter from sensor noise
+  const smoothPos = useRef(new THREE.Vector3(posX, 0.05, -posY))
+  const smoothRot = useRef(new THREE.Euler(
+    pitch * DEG2RAD, -yaw * DEG2RAD, roll * DEG2RAD, 'YXZ'
+  ))
 
   useFrame(() => {
     if (!groupRef.current) return
-    groupRef.current.position.set(posX, 0.05, -posY)
+
+    const targetX = posX
+    const targetZ = -posY
+
+    // Lerp position — smooths out micro-jitter from sensor noise
+    smoothPos.current.x += (targetX - smoothPos.current.x) * POS_LERP
+    smoothPos.current.z += (targetZ - smoothPos.current.z) * POS_LERP
+    smoothPos.current.y = 0.05
+
+    groupRef.current.position.copy(smoothPos.current)
+
+    // Lerp rotation
+    const targetPitch = pitch * DEG2RAD
+    const targetYaw = -yaw * DEG2RAD
+    const targetRoll = roll * DEG2RAD
+
+    smoothRot.current.x += (targetPitch - smoothRot.current.x) * ROT_LERP
+    smoothRot.current.y += (targetYaw - smoothRot.current.y) * ROT_LERP
+    smoothRot.current.z += (targetRoll - smoothRot.current.z) * ROT_LERP
+
     groupRef.current.rotation.set(
-      pitch * DEG2RAD,
-      -yaw * DEG2RAD,
-      roll * DEG2RAD,
+      smoothRot.current.x,
+      smoothRot.current.y,
+      smoothRot.current.z,
       'YXZ'
     )
   })

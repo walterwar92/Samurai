@@ -8,6 +8,7 @@ interface InfoPanelProps {
   gyro: [number, number, number]
   posX: number
   posY: number
+  stationary: boolean
   linearVel: number
   angularVel: number
   onClearPath: () => void
@@ -35,7 +36,7 @@ function V({ label, value, unit }: { label: string; value: string; unit?: string
 export function InfoPanel({
   yaw, pitch, roll,
   accel, gyro,
-  posX, posY,
+  posX, posY, stationary,
   linearVel, angularVel,
   onClearPath,
   onResetHome,
@@ -120,7 +121,16 @@ export function InfoPanel({
 
       {/* Odometry */}
       <div className="mb-2">
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-0.5">Позиция</div>
+        <div className="flex items-center justify-between mb-0.5">
+          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Позиция</div>
+          <span className={`px-1.5 py-0.5 text-[10px] rounded font-mono ${
+            stationary
+              ? 'bg-blue-900/60 text-blue-300 border border-blue-700'
+              : 'bg-green-900/60 text-green-300 border border-green-700'
+          }`}>
+            {stationary ? 'СТОИТ' : 'ЕДЕТ'}
+          </span>
+        </div>
         <V label="X" value={posX.toFixed(3)} unit="м" />
         <V label="Y" value={posY.toFixed(3)} unit="м" />
         <V label="V lin" value={linearVel.toFixed(3)} unit="м/с" />
