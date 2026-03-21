@@ -63,31 +63,31 @@ export function RobotModel({ yaw, pitch, roll, posX, posY }: RobotModelProps) {
       {/* Body */}
       <mesh castShadow>
         <boxGeometry args={[bodyW, bodyH, bodyD]} />
-        <meshStandardMaterial color="#334155" metalness={0.6} roughness={0.4} />
+        <meshStandardMaterial color="#4a5568" metalness={0.5} roughness={0.35} />
       </mesh>
 
       {/* Top plate */}
       <mesh position={[0, bodyH / 2 + 0.005, 0]} castShadow>
         <boxGeometry args={[bodyW * 0.9, 0.01, bodyD * 0.8]} />
-        <meshStandardMaterial color="#475569" metalness={0.5} roughness={0.3} />
+        <meshStandardMaterial color="#5a6a7e" metalness={0.4} roughness={0.3} />
       </mesh>
 
       {/* Direction arrow (front indicator) */}
       <mesh position={[0, bodyH / 2 + 0.015, -bodyD / 2 + 0.02]} rotation={[-Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.015, 0.03, 4]} />
-        <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.5} />
+        <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.8} />
       </mesh>
 
       {/* Left track */}
       <mesh position={[-(bodyW / 2 + trackW / 2), -bodyH / 2 + trackH / 2, 0]} castShadow>
         <boxGeometry args={[trackW, trackH, trackD]} />
-        <meshStandardMaterial color="#1e293b" roughness={0.8} />
+        <meshStandardMaterial color="#2d3a4d" roughness={0.7} />
       </mesh>
 
       {/* Right track */}
       <mesh position={[(bodyW / 2 + trackW / 2), -bodyH / 2 + trackH / 2, 0]} castShadow>
         <boxGeometry args={[trackW, trackH, trackD]} />
-        <meshStandardMaterial color="#1e293b" roughness={0.8} />
+        <meshStandardMaterial color="#2d3a4d" roughness={0.7} />
       </mesh>
 
       {/* Wheels (decorative) */}
@@ -103,7 +103,7 @@ export function RobotModel({ yaw, pitch, roll, posX, posY }: RobotModelProps) {
             rotation={[0, 0, Math.PI / 2]}
           >
             <cylinderGeometry args={[wheelR, wheelR, wheelH, 8]} />
-            <meshStandardMaterial color="#0f172a" />
+            <meshStandardMaterial color="#1e2a3d" />
           </mesh>
         ))
       )}
@@ -111,7 +111,7 @@ export function RobotModel({ yaw, pitch, roll, posX, posY }: RobotModelProps) {
       {/* IMU sensor (small box on top) */}
       <mesh position={[0, bodyH / 2 + 0.02, 0.01]}>
         <boxGeometry args={[0.02, 0.01, 0.02]} />
-        <meshStandardMaterial color="#16a34a" emissive="#16a34a" emissiveIntensity={0.3} />
+        <meshStandardMaterial color="#16a34a" emissive="#16a34a" emissiveIntensity={0.6} />
       </mesh>
     </group>
   )
