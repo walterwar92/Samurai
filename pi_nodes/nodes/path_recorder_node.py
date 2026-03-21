@@ -24,17 +24,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 
 # ── Configuration ─────────────────────────────────────────────
-RECORD_INTERVAL_M = 0.05      # record waypoint every 5 cm moved
-RECORD_INTERVAL_RAD = 0.10    # or every ~6° turned
-REPLAY_GOAL_TOLERANCE = 0.06  # m — close enough to intermediate waypoint
-REPLAY_HOME_TOLERANCE = 0.03  # m — tighter tolerance for final home point
-REPLAY_LINEAR_SPEED = 0.22    # m/s — replay drive speed (was 0.12)
-REPLAY_MIN_LINEAR = 0.06      # m/s — minimum linear speed to avoid stalls
+RECORD_INTERVAL_M = 0.03      # record waypoint every 3 cm moved (finer path)
+RECORD_INTERVAL_RAD = 0.08    # or every ~4.5° turned (finer turns)
+REPLAY_GOAL_TOLERANCE = 0.04  # m — close enough to intermediate waypoint
+REPLAY_HOME_TOLERANCE = 0.015 # m — tight tolerance for final home point (1.5 cm)
+REPLAY_LINEAR_SPEED = 0.20    # m/s — replay drive speed
+REPLAY_MIN_LINEAR = 0.05      # m/s — minimum linear speed to avoid stalls
 REPLAY_ANGULAR_SPEED = 0.8    # rad/s — max replay turn speed
-REPLAY_ANGULAR_KP = 2.0       # proportional gain for angular correction
-REPLAY_LOOKAHEAD_M = 0.12     # m — look-ahead distance for pure pursuit
-MAX_WAYPOINTS = 5000          # memory safety limit
-CONTROL_HZ = 10               # replay control loop frequency
+REPLAY_ANGULAR_KP = 2.5       # proportional gain for angular correction
+REPLAY_LOOKAHEAD_M = 0.10     # m — look-ahead distance for pure pursuit
+MAX_WAYPOINTS = 8000          # memory safety limit (finer recording = more pts)
+CONTROL_HZ = 15               # replay control loop frequency (smoother control)
+
+# ── Final approach (last waypoint) ───────────────────────────
+FINAL_APPROACH_RADIUS = 0.12  # m — switch to slow precision mode within this
+FINAL_LINEAR_SPEED = 0.08     # m/s — crawl speed for final approach
+FINAL_ANGULAR_KP = 3.0        # stronger angular correction in final phase
 PATHS_DIR = os.path.expanduser('~/paths')
 
 
@@ -202,25 +207,40 @@ class PathRecorderNode(MqttNode):
         bearing = math.atan2(dy, dx)
         angle_error = self._angle_diff(bearing, self._theta)
 
-        # Angular: proportional control, clamped
-        angular = REPLAY_ANGULAR_KP * angle_error
-        angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
+        # Final approach mode: within FINAL_APPROACH_RADIUS of home point
+        in_final_approach = is_final and dist < FINAL_APPROACH_RADIUS
 
-        # Linear: scale down when turning hard or near target
-        # cos factor: full speed when heading is correct, slow when off-angle
-        cos_factor = max(0.0, math.cos(angle_error))
-        # Distance factor: slow down near waypoint
-        dist_factor = min(1.0, dist / 0.15)
-        # Final approach: extra slow for precision
-        if is_final:
-            dist_factor = min(dist_factor, dist / 0.08)
+        if in_final_approach:
+            # ── Precision final approach ──
+            # Stronger angular correction, slower speed, proportional to distance
+            angular = FINAL_ANGULAR_KP * angle_error
+            angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
 
-        linear = REPLAY_LINEAR_SPEED * cos_factor * dist_factor
-        linear = max(REPLAY_MIN_LINEAR * cos_factor, linear)
+            cos_factor = max(0.0, math.cos(angle_error))
+            # Proportional slowdown: linear speed scales with remaining distance
+            dist_ratio = dist / FINAL_APPROACH_RADIUS  # 0..1
+            linear = FINAL_LINEAR_SPEED * cos_factor * dist_ratio
+            linear = max(REPLAY_MIN_LINEAR * 0.6 * cos_factor, linear)
 
-        # If angle error is very large (>90°), stop and rotate in place
-        if abs(angle_error) > 1.2:
-            linear = 0.0
+            # Rotate in place if angle error > 45° during final approach
+            if abs(angle_error) > 0.8:
+                linear = 0.0
+        else:
+            # ── Normal pure pursuit ──
+            # Angular: proportional control, clamped
+            angular = REPLAY_ANGULAR_KP * angle_error
+            angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
+
+            # Linear: scale down when turning hard or near target
+            cos_factor = max(0.0, math.cos(angle_error))
+            dist_factor = min(1.0, dist / 0.15)
+
+            linear = REPLAY_LINEAR_SPEED * cos_factor * dist_factor
+            linear = max(REPLAY_MIN_LINEAR * cos_factor, linear)
+
+            # If angle error is very large (>90°), stop and rotate in place
+            if abs(angle_error) > 1.2:
+                linear = 0.0
 
         self.publish('cmd_vel', {
             'linear_x': round(linear, 3),

@@ -51,7 +51,7 @@ export function Visualization3DPage() {
   }, [])
 
   return (
-    <div className="relative w-full h-screen bg-zinc-950">
+    <div className="relative w-full h-screen bg-[#1a1a2e]">
       {/* Connection status */}
       <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
         <a
@@ -71,28 +71,30 @@ export function Visualization3DPage() {
         camera={{ position: [0.5, 0.4, 0.5], fov: 50, near: 0.01, far: 100 }}
         shadows
       >
-        <color attach="background" args={['#09090b']} />
+        <color attach="background" args={['#1a1a2e']} />
 
-        {/* Lighting */}
-        <ambientLight intensity={0.4} />
+        {/* Lighting — brighter scene */}
+        <ambientLight intensity={0.9} />
         <directionalLight
           position={[2, 3, 1]}
-          intensity={1.2}
+          intensity={1.8}
           castShadow
           shadow-mapSize-width={1024}
           shadow-mapSize-height={1024}
         />
-        <directionalLight position={[-1, 2, -1]} intensity={0.3} />
+        <directionalLight position={[-1, 2, -1]} intensity={0.7} />
+        <directionalLight position={[0, 1, -2]} intensity={0.4} />
+        <hemisphereLight args={['#4a90d9', '#2a2a4a', 0.5]} />
 
         {/* Ground grid */}
         <Grid
           args={[10, 10]}
           cellSize={0.1}
-          cellThickness={0.5}
-          cellColor="#27272a"
+          cellThickness={0.6}
+          cellColor="#3f3f5c"
           sectionSize={0.5}
-          sectionThickness={1}
-          sectionColor="#3f3f46"
+          sectionThickness={1.2}
+          sectionColor="#5a5a7a"
           fadeDistance={5}
           fadeStrength={1}
           followCamera={false}
@@ -102,7 +104,7 @@ export function Visualization3DPage() {
         {/* Ground plane for shadows */}
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, 0]} receiveShadow>
           <planeGeometry args={[20, 20]} />
-          <shadowMaterial opacity={0.3} />
+          <shadowMaterial opacity={0.2} />
         </mesh>
 
         {/* Axis labels at origin */}
@@ -115,6 +117,7 @@ export function Visualization3DPage() {
           roll={roll}
           posX={posX}
           posY={posY}
+          stationary={stationary}
         />
 
         {/* Path trail (real-time odometry trace) */}
