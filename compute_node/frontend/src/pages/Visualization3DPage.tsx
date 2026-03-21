@@ -117,6 +117,7 @@ export function Visualization3DPage() {
           roll={roll}
           posX={posX}
           posY={posY}
+          stationary={stationary}
         />
 
         {/* Path trail (real-time odometry trace) */}
