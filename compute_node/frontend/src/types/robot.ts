@@ -157,6 +157,7 @@ export interface RobotState {
   watchdog: Record<string, { alive: boolean; last_seen_sec: number }> | null
   patrol: PatrolStatus | null
   path_recorder: PathRecorderStatus | null
+  recorded_path: [number, number][] | null
   follow_me: FollowMeStatus | null
   qr_detection: QrDetection | null
   gesture: string
