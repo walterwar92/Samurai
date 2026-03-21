@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import { useRobotState } from '@/hooks/useRobotState'
 import { useSocket } from '@/providers/SocketProvider'
+import { api } from '@/lib/api'
 import { RobotModel } from '@/components/3d/RobotModel'
 import { PathTrail } from '@/components/3d/PathTrail'
 import { PlannedPathTrail } from '@/components/3d/PlannedPathTrail'
@@ -29,6 +30,7 @@ export function Visualization3DPage() {
   const gyro: [number, number, number] = state?.imu_gyro ?? [0, 0, 0]
   const posX = state?.pose?.x ?? 0
   const posY = state?.pose?.y ?? 0
+  const stationary = state?.stationary ?? true
   const linearVel = state?.velocity?.linear ?? 0
   const angularVel = state?.velocity?.angular ?? 0
   const ekfBias: [number, number, number] | null = state?.imu_ekf_bias ?? null
@@ -37,6 +39,11 @@ export function Visualization3DPage() {
 
   const handleClearPath = useCallback(() => {
     setClearSignal(prev => prev + 1)
+  }, [])
+
+  const handleResetHome = useCallback(() => {
+    api.resetPosition()
+    setClearSignal(prev => prev + 1)  // also clear visual trail
   }, [])
 
   const handleToggleEkf = useCallback(() => {
@@ -114,6 +121,7 @@ export function Visualization3DPage() {
         <PathTrail
           posX={posX}
           posY={posY}
+          stationary={stationary}
           clearSignal={clearSignal}
         />
 
@@ -153,9 +161,11 @@ export function Visualization3DPage() {
         gyro={gyro}
         posX={posX}
         posY={posY}
+        stationary={stationary}
         linearVel={linearVel}
         angularVel={angularVel}
         onClearPath={handleClearPath}
+        onResetHome={handleResetHome}
         useEkf={useEkf}
         hasEkf={hasEkf}
         onToggleEkf={handleToggleEkf}

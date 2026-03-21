@@ -215,25 +215,41 @@ class MotorNode(MqttNode):
             self._theta += ang_cmd * dt
 
         # ── Position ──────────────────────────────────────────────
+        cmd_is_moving = (abs(lin_cmd) >= DEADZONE_LINEAR or
+                         abs(ang_cmd) >= DEADZONE_ANGULAR)
+
         if self._pos_estimator_ready:
+            # Hint estimator about motor command state
+            self._pos_estimator.set_cmd_moving(cmd_is_moving)
             # Feed wheel odometry to estimator
             self._pos_estimator.update_wheel_odom(lin_cmd, self._theta, dt)
             # Blend accelerometer + wheel odometry
             self._pos_estimator.blend()
+
+            is_stationary = self._pos_estimator.is_stationary
+
+            # Position from estimator (frozen when stationary)
             self._x = self._pos_estimator.x
             self._y = self._pos_estimator.y
-            self._vx = lin_cmd
-            self._vz = ang_cmd
+
+            # Velocity: zero when stationary (no phantom drift)
+            if is_stationary:
+                self._vx = 0.0
+                self._vz = 0.0
+            else:
+                self._vx = lin_cmd
+                self._vz = ang_cmd
 
             # Get linear acceleration for publishing
             la_x, la_y = self._pos_estimator.linear_accel_world
         else:
             # Fallback: wheel-only odometry
-            if abs(lin_cmd) >= DEADZONE_LINEAR:
+            is_stationary = not cmd_is_moving
+            if cmd_is_moving:
                 self._x += lin_cmd * math.cos(self._theta) * dt
                 self._y += lin_cmd * math.sin(self._theta) * dt
-            self._vx = lin_cmd
-            self._vz = ang_cmd
+            self._vx = 0.0 if is_stationary else lin_cmd
+            self._vz = 0.0 if is_stationary else ang_cmd
             la_x, la_y = 0.0, 0.0
 
         self.publish('odom', {
@@ -244,8 +260,7 @@ class MotorNode(MqttNode):
             'vz': round(self._vz, 3),
             'accel_x': round(la_x, 4),
             'accel_y': round(la_y, 4),
-            'stationary': self._pos_estimator.is_stationary
-                          if self._pos_estimator_ready else (lin_cmd == 0.0),
+            'stationary': is_stationary,
             'ts': self.timestamp(),
         })
 

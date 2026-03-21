@@ -143,6 +143,7 @@ class DashboardNode(Node):
         self._map_info       = {}
         self._robot_pose     = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
         self._robot_velocity = {'linear_x': 0.0, 'linear_y': 0.0, 'angular_z': 0.0}
+        self._robot_stationary = True
         self._cmd_velocity   = {'linear_x': 0.0, 'angular_z': 0.0}
         self._scan_points    = []
         self._voice_log      = deque(maxlen=20)
@@ -361,12 +362,14 @@ class DashboardNode(Node):
         theta = d.get('theta', 0.0)
         vx    = d.get('vx', 0.0)
         vz    = d.get('vz', 0.0)
+        stationary = d.get('stationary', False)
         with self._lock:
             self._robot_pose     = {'x': round(x, 3), 'y': round(y, 3),
                                     'yaw': round(theta, 3)}
             self._robot_velocity = {'linear_x': round(vx, 3),
                                     'linear_y': 0.0,
                                     'angular_z': round(vz, 3)}
+            self._robot_stationary = stationary
 
     def _mqtt_claw_state(self, payload):
         try:
@@ -576,6 +579,7 @@ class DashboardNode(Node):
         self._mqtt_pub('reset_position', 'reset', qos=1)
         with self._lock:
             self._robot_pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
+            self._robot_stationary = True
 
     def save_map(self, name: str):
         self._pub_str(self._pub_map_save, name)
@@ -671,6 +675,7 @@ class DashboardNode(Node):
                 'imu_ekf_bias':  list(self._imu_ekf_bias) if self._imu_has_ekf else None,
                 'imu_has_ekf':   self._imu_has_ekf,
                 'pose':         self._robot_pose,
+                'stationary':   self._robot_stationary,
                 'velocity':     self._robot_velocity,
                 'cmd_velocity': self._cmd_velocity,
                 'map_info':     self._map_info,

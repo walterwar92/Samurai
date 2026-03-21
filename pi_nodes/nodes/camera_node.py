@@ -12,6 +12,7 @@ outputs BGR byte order, which cv2.imencode accepts directly.
 import os
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
@@ -29,7 +30,6 @@ except ImportError:
     _HW = False
 
 # Максимальное время ожидания кадра от камеры (сек).
-# Если capture_array() не вернулась за это время — кадр пропускается.
 _CAPTURE_TIMEOUT_S = 1.0
 
 
@@ -37,13 +37,14 @@ class CameraNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('camera_node', **kwargs)
 
-        self._quality = cfg('mqtt.camera_jpeg_quality', 75)
-        fps = cfg('mqtt.camera_fps', 10)
+        self._quality = cfg('mqtt.camera_jpeg_quality', 70)
+        fps = cfg('mqtt.camera_fps', 12)
         w, h = 640, 480
 
         self._cam = None
-        self._capture_lock = threading.Lock()  # предотвращает наслоение захватов
-        self._error_count = 0                  # счётчик ошибок для авторестарта
+        self._capturing = False      # non-blocking flag instead of Lock
+        self._capture_start = 0.0    # when current capture started
+        self._error_count = 0
 
         if not _HW:
             self.log_error('picamera2/cv2 not available — camera disabled')
@@ -80,57 +81,44 @@ class CameraNode(MqttNode):
         if self._cam is None:
             return
 
-        # Не запускать новый захват если предыдущий ещё не завершён
-        if not self._capture_lock.acquire(blocking=False):
-            return
-
-        try:
-            # capture_array() может зависнуть при проблемах с железом.
-            # Запускаем в отдельном потоке с таймаутом _CAPTURE_TIMEOUT_S.
-            result = [None]
-            exc_holder = [None]
-
-            def _do_capture():
-                try:
-                    result[0] = self._cam.capture_array()
-                except Exception as e:
-                    exc_holder[0] = e
-
-            t = threading.Thread(target=_do_capture, daemon=True)
-            t.start()
-            t.join(timeout=_CAPTURE_TIMEOUT_S)
-
-            if t.is_alive():
-                # Камера зависла — пропускаем кадр, считаем ошибку
+        # Non-blocking: skip if previous capture still in flight
+        if self._capturing:
+            # Check timeout — if capture hung too long, count error
+            elapsed = time.monotonic() - self._capture_start
+            if elapsed > _CAPTURE_TIMEOUT_S:
+                self._capturing = False
                 self._error_count += 1
                 self.log_warn('Camera capture timed out (%d/5)', self._error_count)
                 if self._error_count >= 5:
                     self.log_error('Camera hung repeatedly — disabling')
                     self._cam = None
-                return
+            return
 
-            if exc_holder[0] is not None:
+        self._capturing = True
+        self._capture_start = time.monotonic()
+
+        def _do_capture():
+            try:
+                frame = self._cam.capture_array()
+                if frame is None:
+                    return
+
+                self._error_count = 0
+                ok, enc = cv2.imencode('.jpg', frame,
+                                       [cv2.IMWRITE_JPEG_QUALITY, self._quality])
+                if ok:
+                    self.publish('camera', enc.tobytes())
+            except Exception as exc:
                 self._error_count += 1
                 self.log_error('Camera capture error: %s (%d/5)',
-                               exc_holder[0], self._error_count)
+                               exc, self._error_count)
                 if self._error_count >= 5:
                     self.log_error('Too many camera errors — disabling')
                     self._cam = None
-                return
+            finally:
+                self._capturing = False
 
-            frame = result[0]
-            if frame is None:
-                return
-
-            self._error_count = 0  # успех — сбрасываем счётчик ошибок
-
-            ok, enc = cv2.imencode('.jpg', frame,
-                                   [cv2.IMWRITE_JPEG_QUALITY, self._quality])
-            if ok:
-                self.publish('camera', enc.tobytes())
-
-        finally:
-            self._capture_lock.release()
+        threading.Thread(target=_do_capture, daemon=True).start()
 
     def on_shutdown(self):
         if self._cam is not None:

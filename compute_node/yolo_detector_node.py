@@ -23,16 +23,16 @@ from std_msgs.msg import String
 
 from ultralytics import YOLO
 
-# HSV colour ranges for ball classification
+# HSV colour ranges for ball classification (widened for varying lighting)
 COLOUR_RANGES = {
-    'red':    [((0, 100, 100), (10, 255, 255)),
-               ((160, 100, 100), (180, 255, 255))],
-    'orange': [((10, 100, 100), (25, 255, 255))],
-    'yellow': [((25, 100, 100), (35, 255, 255))],
-    'green':  [((35, 100, 100), (85, 255, 255))],
-    'blue':   [((85, 100, 100), (130, 255, 255))],
-    'white':  [((0, 0, 200), (180, 30, 255))],
-    'black':  [((0, 0, 0), (180, 255, 50))],
+    'red':    [((0, 70, 70), (10, 255, 255)),
+               ((160, 70, 70), (180, 255, 255))],
+    'orange': [((10, 80, 80), (25, 255, 255))],
+    'yellow': [((22, 80, 80), (38, 255, 255))],
+    'green':  [((35, 60, 60), (85, 255, 255))],
+    'blue':   [((85, 60, 60), (135, 255, 255))],
+    'white':  [((0, 0, 180), (180, 40, 255))],
+    'black':  [((0, 0, 0), (180, 255, 60))],
 }
 
 # Known ball diameter for distance estimation (metres)
@@ -45,7 +45,7 @@ class YoloDetectorNode(Node):
         super().__init__('yolo_detector')
 
         self.declare_parameter('model', 'yolov8n.pt')
-        self.declare_parameter('confidence', 0.45)
+        self.declare_parameter('confidence', 0.40)
         self.declare_parameter('device', 'cpu')
 
         model_path = self.get_parameter('model').value
@@ -54,9 +54,9 @@ class YoloDetectorNode(Node):
 
         onnx_path = model_path.replace('.pt', '.onnx')
         if model_path.endswith('.pt') and not os.path.exists(onnx_path):
-            self.get_logger().info(f'Exporting {model_path} → {onnx_path} (ONNX, imgsz=320)...')
+            self.get_logger().info(f'Exporting {model_path} → {onnx_path} (ONNX, imgsz=416)...')
             tmp = YOLO(model_path)
-            tmp.export(format='onnx', imgsz=320, optimize=True, simplify=True)
+            tmp.export(format='onnx', imgsz=416, optimize=True, simplify=True)
             self.get_logger().info('ONNX export complete')
 
         if os.path.exists(onnx_path):
@@ -65,7 +65,7 @@ class YoloDetectorNode(Node):
                         if device == 'cuda' else ['CPUExecutionProvider']
             self._ort = ort.InferenceSession(onnx_path, providers=providers)
             self._input_name = self._ort.get_inputs()[0].name
-            self._imgsz = 320
+            self._imgsz = 416
             self._use_onnx = True
             _tmp = YOLO(model_path) if os.path.exists(model_path) else None
             self._names = _tmp.names if _tmp else {0: 'object'}
@@ -188,7 +188,7 @@ class YoloDetectorNode(Node):
             for (lo, hi) in ranges:
                 mask |= cv2.inRange(roi_hsv, np.array(lo), np.array(hi))
             ratio = np.count_nonzero(mask) / total_px
-            if ratio > best_ratio and ratio > 0.15:
+            if ratio > best_ratio and ratio > 0.10:
                 best_ratio = ratio
                 best_colour = colour
         return best_colour

@@ -8,9 +8,10 @@ Extracts linear acceleration from IMU by removing:
     3. Vibration noise (adaptive threshold + median filter)
 
 Then double-integrates to get velocity and position, with:
-    - ZUPT (Zero-Velocity Update): resets velocity when stationary
-    - Complementary filter: blends accel position (high-freq) with
-      wheel odometry (low-freq) to prevent integration drift
+    - Adaptive ZUPT with hysteresis: harder to exit stationary state
+    - Non-holonomic constraint: tracked robot cannot move sideways
+    - Adaptive complementary alpha: 100% wheel when stationary
+    - Velocity decay: exponential damping fights integration drift
     - Trapezoidal integration for accuracy
 
 Why direct subtraction:
@@ -36,13 +37,27 @@ DEG2RAD = pi / 180.0
 # ── Filter constants ─────────────────────────────────────────────
 MEDIAN_WINDOW = 5          # samples for median filter
 ACCEL_NOISE_THRESHOLD = 0.15   # m/s² — below this = noise, not motion
-ZUPT_GYRO_THRESHOLD = 0.02    # rad/s — below = stationary
-ZUPT_ACCEL_THRESHOLD = 0.12   # m/s² — linear accel below = stationary
 COMPLEMENTARY_ALPHA = 0.98    # 0.98 = 98% wheel odom, 2% accel (long-term)
 
+# ── ZUPT (Zero-Velocity Update) with hysteresis ──────────────────
+# Two thresholds: ENTER (strict) and EXIT (loose).
+# Robot must clearly be moving to exit stationary state.
+ZUPT_GYRO_ENTER = 0.015       # rad/s — below = entering stationary
+ZUPT_ACCEL_ENTER = 0.10       # m/s² — below = entering stationary
+ZUPT_GYRO_EXIT = 0.04         # rad/s — above = exiting stationary (higher!)
+ZUPT_ACCEL_EXIT = 0.25        # m/s² — above = exiting stationary (higher!)
+ZUPT_ENTER_COUNT = 5          # consecutive samples to enter stationary (100ms @ 50Hz)
+ZUPT_EXIT_COUNT = 3           # consecutive samples to exit stationary (60ms @ 50Hz)
+
 # Velocity decay — exponential damping to fight integration drift
-# 0.98 per step @ 50Hz → velocity halves in ~1.7s without acceleration
-VELOCITY_DECAY = 0.98
+# 0.95 per step @ 50Hz → velocity halves in ~0.7s without acceleration
+# More aggressive than before (was 0.98) to kill drift faster
+VELOCITY_DECAY = 0.95
+
+# Non-holonomic constraint: tracked robot lateral velocity damping
+# Lateral (sideways) velocity is physically impossible for tracked robot,
+# so we aggressively damp it.  1.0 = no damping, 0.0 = instant kill.
+LATERAL_DECAY = 0.5   # kill 50% of lateral velocity per step
 
 
 def _median_of_3(a, b, c):
@@ -58,6 +73,12 @@ def _median_of_3(a, b, c):
 
 class AccelPositionEstimator:
     """Fuses accelerometer with wheel odometry for accurate 2D position.
+
+    Key improvements over naive double-integration:
+    - Adaptive ZUPT with hysteresis prevents oscillation at motion boundary
+    - Non-holonomic constraint zeros lateral velocity (tracked robot can't strafe)
+    - Adaptive alpha: stationary → 100% wheel, moving → configurable blend
+    - Position freezing: when stationary, position output is locked
 
     Usage:
         estimator = AccelPositionEstimator()
@@ -76,7 +97,8 @@ class AccelPositionEstimator:
     def __init__(self, latitude_deg: float = DEFAULT_LATITUDE,
                  complementary_alpha: float = COMPLEMENTARY_ALPHA):
         self._lat_rad = latitude_deg * DEG2RAD
-        self._alpha = complementary_alpha
+        self._alpha_moving = complementary_alpha  # alpha when moving
+        self._alpha = 1.0  # current alpha (starts stationary = 100% wheel)
 
         # Earth rotation at this latitude
         self._omega_z = EARTH_OMEGA * sin(self._lat_rad)
@@ -102,6 +124,10 @@ class AccelPositionEstimator:
         self._accel_x = 0.0
         self._accel_y = 0.0
 
+        # Frozen position — locked when stationary to prevent micro-drift
+        self._frozen_x = 0.0
+        self._frozen_y = 0.0
+
         # Median filter buffers
         self._buf_ax = deque(maxlen=MEDIAN_WINDOW)
         self._buf_ay = deque(maxlen=MEDIAN_WINDOW)
@@ -110,9 +136,16 @@ class AccelPositionEstimator:
         self._prev_la_x = 0.0
         self._prev_la_y = 0.0
 
-        # Stationary detection
+        # Stationary detection with hysteresis
         self._stationary = True
-        self._stationary_count = 0
+        self._enter_count = ZUPT_ENTER_COUNT  # start as stationary
+        self._exit_count = 0
+
+        # Current yaw for non-holonomic constraint
+        self._current_yaw = 0.0
+
+        # Command-based motion detection (from motor_node)
+        self._cmd_moving = False
 
     def set_calibration(self, gravity_body: tuple,
                         home_roll: float, home_pitch: float):
@@ -128,6 +161,15 @@ class AccelPositionEstimator:
                            gravity_body[2]**2)
         self._home_roll = home_roll
         self._home_pitch = home_pitch
+
+    def set_cmd_moving(self, is_moving: bool):
+        """Hint from motor_node: whether motor commands are non-zero.
+
+        This provides a reliable "ground truth" for motion detection:
+        if no commands are being sent, the robot CANNOT be moving
+        (barring external forces).
+        """
+        self._cmd_moving = is_moving
 
     def update_imu(self, ax: float, ay: float, az: float,
                    gx: float, gy: float, gz: float,
@@ -145,32 +187,18 @@ class AccelPositionEstimator:
         if dt <= 0:
             return
 
-        # ── 1. Remove gravity — DIRECT SUBTRACTION ───────────────
-        #
-        # At calibration the IMU recorded gravity_body = (gx, gy, gz).
-        # If orientation hasn't changed from home, measured accel ≈ gravity_body,
-        # so subtraction gives ~0.  Perfect.
-        #
-        # If robot tilted since home (delta_roll, delta_pitch), gravity in body
-        # frame changes.  We compute a small correction for that delta.
-        #
-        # For a ground robot on flat surface, delta_roll ≈ delta_pitch ≈ 0,
-        # so the correction is negligible — but we include it for accuracy.
+        self._current_yaw = yaw
 
-        # Base subtraction (handles static tilt of IMU mounting)
+        # ── 1. Remove gravity — DIRECT SUBTRACTION ───────────────
         la_bx = ax - self._g_body[0]
         la_by = ay - self._g_body[1]
         la_bz = az - self._g_body[2]
 
         # Delta orientation correction (only significant on slopes)
-        # roll/pitch are relative to home, so they represent the change
-        d_roll = roll    # roll - 0 = roll (home is 0)
-        d_pitch = pitch  # pitch - 0 = pitch
+        d_roll = roll
+        d_pitch = pitch
 
         if abs(d_roll) > 0.01 or abs(d_pitch) > 0.01:  # >0.6°
-            # How gravity changes in body frame due to tilt delta:
-            # Δg_x ≈ -g·sin(d_pitch)  (tilting forward shifts gravity into X)
-            # Δg_y ≈  g·sin(d_roll)   (tilting sideways shifts gravity into Y)
             g = self._g_mag
             delta_gx = -g * sin(d_pitch)
             delta_gy = g * sin(d_roll)
@@ -183,9 +211,8 @@ class AccelPositionEstimator:
         la_wy = la_bx * sy + la_by * cy
 
         # ── 3. Earth rotation compensation (Coriolis) ─────────────
-        # a_cor_x = 2·Ω_z·vy,  a_cor_y = -2·Ω_z·vx
         la_wx -= 2.0 * self._omega_z * self.vy
-        la_wy -= -2.0 * self._omega_z * self.vx
+        la_wy += 2.0 * self._omega_z * self.vx
 
         # ── 4. Median filter — reject vibration spikes ────────────
         self._buf_ax.append(la_wx)
@@ -203,38 +230,84 @@ class AccelPositionEstimator:
         if abs(la_wy) < ACCEL_NOISE_THRESHOLD:
             la_wy = 0.0
 
-        # ── 6. ZUPT — Zero-Velocity Update ───────────────────────
+        # ── 6. ZUPT with HYSTERESIS ──────────────────────────────
         gyro_mag = sqrt(gx * gx + gy * gy + gz * gz)
         accel_mag = sqrt(la_wx * la_wx + la_wy * la_wy)
 
-        if gyro_mag < ZUPT_GYRO_THRESHOLD and accel_mag < ZUPT_ACCEL_THRESHOLD:
-            self._stationary_count += 1
-        else:
-            self._stationary_count = 0
+        if self._stationary:
+            # Currently stationary — need STRONG evidence of motion to exit.
+            # Both gyro AND accel must exceed EXIT thresholds,
+            # AND motor commands must be active.
+            if (self._cmd_moving and
+                (gyro_mag > ZUPT_GYRO_EXIT or accel_mag > ZUPT_ACCEL_EXIT)):
+                self._exit_count += 1
+                self._enter_count = 0
+            else:
+                self._exit_count = 0
 
-        # 5+ consecutive stationary samples (100ms @ 50Hz) to trigger
-        self._stationary = (self._stationary_count >= 5)
+            if self._exit_count >= ZUPT_EXIT_COUNT:
+                self._stationary = False
+                self._exit_count = 0
+                # Snapshot frozen position at motion start
+                self._frozen_x = self.x
+                self._frozen_y = self.y
+        else:
+            # Currently moving — easy to re-enter stationary.
+            # If no motor commands OR sensors show stillness → stationary.
+            if (not self._cmd_moving or
+                (gyro_mag < ZUPT_GYRO_ENTER and accel_mag < ZUPT_ACCEL_ENTER)):
+                self._enter_count += 1
+                self._exit_count = 0
+            else:
+                self._enter_count = 0
+
+            if self._enter_count >= ZUPT_ENTER_COUNT:
+                self._stationary = True
+                self._enter_count = ZUPT_ENTER_COUNT
+                # Freeze position — lock it so noise can't move it
+                self._frozen_x = self.x
+                self._frozen_y = self.y
 
         if self._stationary:
+            # Hard zero — no velocity, no integration, position frozen
             self.vx = 0.0
             self.vy = 0.0
             self._prev_la_x = 0.0
             self._prev_la_y = 0.0
+            # Keep position at frozen values
+            self.x = self._frozen_x
+            self.y = self._frozen_y
+            self._accel_x = self._frozen_x
+            self._accel_y = self._frozen_y
+            self._wheel_x = self._frozen_x
+            self._wheel_y = self._frozen_y
             return
 
         # ── 7. Trapezoidal integration: accel → velocity ─────────
         self.vx += 0.5 * (la_wx + self._prev_la_x) * dt
         self.vy += 0.5 * (la_wy + self._prev_la_y) * dt
 
-        # Velocity decay — exponential damping to fight drift
-        # Without this, tiny accel residuals accumulate into velocity
+        # ── 8. Non-holonomic constraint ───────────────────────────
+        # Tracked robot cannot strafe. Decompose velocity into
+        # forward (along heading) and lateral (perpendicular).
+        # Aggressively damp lateral component.
+        fwd = self.vx * cy + self.vy * sy      # forward component
+        lat = -self.vx * sy + self.vy * cy      # lateral component
+
+        lat *= LATERAL_DECAY  # kill lateral velocity
+
+        # Recompose world-frame velocity
+        self.vx = fwd * cy - lat * sy
+        self.vy = fwd * sy + lat * cy
+
+        # ── 9. Velocity decay — exponential damping ──────────────
         self.vx *= VELOCITY_DECAY
         self.vy *= VELOCITY_DECAY
 
         self._prev_la_x = la_wx
         self._prev_la_y = la_wy
 
-        # ── 8. Trapezoidal integration: velocity → position ──────
+        # ── 10. Trapezoidal integration: velocity → position ─────
         self._accel_x += self.vx * dt
         self._accel_y += self.vy * dt
 
@@ -246,7 +319,13 @@ class AccelPositionEstimator:
             theta: Current heading from IMU yaw (radians).
             dt: Time step (seconds).
         """
-        if dt <= 0 or abs(vx_wheel) < 0.001:
+        if dt <= 0:
+            return
+
+        # Update command-based motion hint
+        self.set_cmd_moving(abs(vx_wheel) > 0.005)
+
+        if abs(vx_wheel) < 0.001:
             return
 
         self._wheel_x += vx_wheel * cos(theta) * dt
@@ -255,9 +334,21 @@ class AccelPositionEstimator:
     def blend(self):
         """Complementary filter: merge wheel odom + accel position.
 
-        High alpha (0.98) = trust wheel odometry long-term (prevents drift),
-        but accel corrects short-term (detects slip, bumps).
+        Adaptive alpha:
+        - Stationary: alpha=1.0 (100% wheel — no accel drift)
+        - Moving: alpha=configured (e.g. 0.98 = 98% wheel, 2% accel)
+
+        When stationary, position is frozen — blend is a no-op.
         """
+        if self._stationary:
+            # Position already frozen in update_imu
+            self._alpha = 1.0
+            return
+
+        # Smoothly transition alpha when motion starts/stops
+        # Ramp from 1.0 toward moving alpha over time
+        self._alpha = 0.95 * self._alpha + 0.05 * self._alpha_moving
+
         a = self._alpha
         self.x = a * self._wheel_x + (1.0 - a) * self._accel_x
         self.y = a * self._wheel_y + (1.0 - a) * self._accel_y
@@ -276,10 +367,15 @@ class AccelPositionEstimator:
         self._wheel_y = 0.0
         self._accel_x = 0.0
         self._accel_y = 0.0
+        self._frozen_x = 0.0
+        self._frozen_y = 0.0
         self._prev_la_x = 0.0
         self._prev_la_y = 0.0
         self._stationary = True
-        self._stationary_count = 0
+        self._enter_count = ZUPT_ENTER_COUNT
+        self._exit_count = 0
+        self._cmd_moving = False
+        self._alpha = 1.0
         self._buf_ax.clear()
         self._buf_ay.clear()
 

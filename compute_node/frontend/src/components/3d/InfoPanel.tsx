@@ -1,3 +1,5 @@
+import { api } from '@/lib/api'
+
 interface InfoPanelProps {
   yaw: number
   pitch: number
@@ -6,9 +8,11 @@ interface InfoPanelProps {
   gyro: [number, number, number]
   posX: number
   posY: number
+  stationary: boolean
   linearVel: number
   angularVel: number
   onClearPath: () => void
+  onResetHome: () => void
   // EKF toggle
   useEkf: boolean
   hasEkf: boolean
@@ -32,9 +36,10 @@ function V({ label, value, unit }: { label: string; value: string; unit?: string
 export function InfoPanel({
   yaw, pitch, roll,
   accel, gyro,
-  posX, posY,
+  posX, posY, stationary,
   linearVel, angularVel,
   onClearPath,
+  onResetHome,
   useEkf, hasEkf, onToggleEkf,
   ekfBias, yprRaw,
 }: InfoPanelProps) {
@@ -116,19 +121,36 @@ export function InfoPanel({
 
       {/* Odometry */}
       <div className="mb-2">
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-0.5">Позиция</div>
+        <div className="flex items-center justify-between mb-0.5">
+          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Позиция</div>
+          <span className={`px-1.5 py-0.5 text-[10px] rounded font-mono ${
+            stationary
+              ? 'bg-blue-900/60 text-blue-300 border border-blue-700'
+              : 'bg-green-900/60 text-green-300 border border-green-700'
+          }`}>
+            {stationary ? 'СТОИТ' : 'ЕДЕТ'}
+          </span>
+        </div>
         <V label="X" value={posX.toFixed(3)} unit="м" />
         <V label="Y" value={posY.toFixed(3)} unit="м" />
         <V label="V lin" value={linearVel.toFixed(3)} unit="м/с" />
         <V label="V ang" value={angularVel.toFixed(3)} unit="рад/с" />
       </div>
 
-      <button
-        onClick={onClearPath}
-        className="w-full mt-1 px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-600 transition-colors"
-      >
-        Очистить путь
-      </button>
+      <div className="flex gap-1 mt-1">
+        <button
+          onClick={onClearPath}
+          className="flex-1 px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-600 transition-colors"
+        >
+          Очистить путь
+        </button>
+        <button
+          onClick={onResetHome}
+          className="flex-1 px-2 py-1 text-xs bg-amber-900/80 hover:bg-amber-800/80 text-amber-200 rounded border border-amber-700 transition-colors"
+        >
+          Сброс Home
+        </button>
+      </div>
     </div>
   )
 }
