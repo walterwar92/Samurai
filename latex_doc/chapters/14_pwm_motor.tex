@@ -1,0 +1,215 @@
+% ============================================================
+%  Глава 14 — ШИМ-управление моторами и PCA9685
+%  Файл: ros_ws/src/robot_pkg_cpp/src/motor_node.cpp
+% ============================================================
+\chapter{ШИМ-управление моторами и PCA9685}
+\label{ch:pwm_motor}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{ros\_ws/src/robot\_pkg\_cpp/src/motor\_node.cpp} \quad (343 строки, C++)
+\end{filebox}
+
+\section{Контроллер PCA9685}
+
+PCA9685 --- 16-канальный ШИМ-контроллер на I2C (адрес \texttt{0x5F}).
+Каждый канал формирует ШИМ-сигнал с 12-битным разрешением ($0\dots4095$).
+
+\subsection{Вычисление прескейлера}
+
+\begin{filebox}[title={\filepath{motor\_node.cpp}, строки 91--94}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=91]
+// prescale = round(osc / (4096 * freq)) - 1
+uint8_t prescale = static_cast<uint8_t>(
+  std::round(static_cast<double>(OSC_FREQ_HZ) /
+             (4096.0 * static_cast<double>(PWM_FREQ_HZ))) - 1.0);
+\end{lstlisting}
+\end{filebox}
+
+Формула прескейлера для заданной частоты ШИМ:
+
+\begin{equation}
+  \boxed{\text{prescale} = \left\lfloor \frac{f_{\text{osc}}}{4096 \cdot f_{\text{PWM}}} + 0.5 \right\rfloor - 1}
+  \label{eq:prescale}
+\end{equation}
+
+Для $f_{\text{osc}} = 25\,\text{МГц}$, $f_{\text{PWM}} = 50\,\text{Гц}$:
+
+\begin{equation}
+  \text{prescale} = \left\lfloor \frac{25{,}000{,}000}{4096 \times 50} + 0.5 \right\rfloor - 1
+  = \left\lfloor 122.07 + 0.5 \right\rfloor - 1 = 121
+  \label{eq:prescale_val}
+\end{equation}
+
+\section{Slow-Decay режим управления мотором}
+
+\begin{filebox}[title={\filepath{motor\_node.cpp}, строки 210--232 --- setMotor()}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=210]
+void setMotor(int idx, double throttle)
+{
+  throttle = std::clamp(throttle, -1.0, 1.0);
+  int in1, in2;
+  if (throttle > 0.001) {
+    // Forward: IN1 = 4095,  IN2 = 4095*(1-t)
+    in1 = PWM_MAX;
+    in2 = static_cast<int>(PWM_MAX * (1.0 - throttle));
+  } else if (throttle < -0.001) {
+    // Reverse: IN1 = 4095*(1+t),  IN2 = 4095
+    in1 = static_cast<int>(PWM_MAX * (1.0 + throttle));
+    in2 = PWM_MAX;
+  } else {
+    // Active brake: IN1 = IN2 = 4095
+    in1 = PWM_MAX;
+    in2 = PWM_MAX;
+  }
+  pca_->setPwm(MOTORS[idx].in1, in1);
+  pca_->setPwm(MOTORS[idx].in2, in2);
+}
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Формулы Slow-Decay}
+
+В режиме \textbf{Slow Decay} (медленное затухание тока) оба вывода
+активны, что обеспечивает плавное торможение:
+
+\textbf{Вперёд} ($t > 0$, throttle $\in (0, 1]$):
+\begin{equation}
+  \text{IN1} = 4095, \quad \text{IN2} = 4095 \cdot (1 - t)
+  \label{eq:forward_pwm}
+\end{equation}
+
+\textbf{Назад} ($t < 0$, throttle $\in [-1, 0)$):
+\begin{equation}
+  \text{IN1} = 4095 \cdot (1 + t), \quad \text{IN2} = 4095
+  \label{eq:reverse_pwm}
+\end{equation}
+
+\textbf{Активное торможение} ($t = 0$):
+\begin{equation}
+  \text{IN1} = \text{IN2} = 4095 \quad \text{(обе обмотки замкнуты)}
+  \label{eq:brake_pwm}
+\end{equation}
+
+\subsection{Схема каналов моторов}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Мотор} & \textbf{Позиция} & \textbf{IN1 канал} & \textbf{IN2 канал}\\
+\midrule
+M1 & Правый передний & ch15 & ch14\\
+M2 & Левый передний  & ch12 & ch13\\
+M3 & Левый задний    & ch11 & ch10\\
+M4 & Правый задний   & ch8  & ch9\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Дифференциальный микшер}
+
+\begin{filebox}[title={\filepath{motor\_node.cpp}, строки 251--266}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=251]
+double lin_t = (max_lin_ > 0.0) ? (linear_  / max_lin_) : 0.0;
+double ang_t = (max_ang_ > 0.0) ? (angular_ / max_ang_) : 0.0;
+
+double left  = lin_t + ang_t;
+double right = lin_t - ang_t;
+
+double max_val = std::max({std::abs(left), std::abs(right), 1.0});
+if (max_val > 1.0) { left /= max_val; right /= max_val; }
+\end{lstlisting}
+\end{filebox}
+
+Нормализованные команды ($\ell \in [-1, 1]$):
+
+\begin{align}
+  \ell_{\text{lin}} &= \frac{v}{v_{\max}}, \quad
+  \ell_{\text{ang}} = \frac{\omega}{\omega_{\max}} \label{eq:norm_cmd}\\[6pt]
+  \text{left}  &= \ell_{\text{lin}} + \ell_{\text{ang}} \label{eq:left_mix}\\
+  \text{right} &= \ell_{\text{lin}} - \ell_{\text{ang}} \label{eq:right_mix}
+\end{align}
+
+\textbf{Нормализация} (сохранение пропорции при насыщении):
+
+\begin{equation}
+  m = \max(1, |\text{left}|, |\text{right}|), \quad
+  \text{left} \leftarrow \frac{\text{left}}{m}, \quad
+  \text{right} \leftarrow \frac{\text{right}}{m}
+  \label{eq:mix_normalize}
+\end{equation}
+
+\section{Теоретическое обоснование: электропривод}
+
+\subsection{Модель двигателя постоянного тока}
+
+Электродвигатели робота описываются дифференциальным уравнением
+(гл.~\ref{ch:theory}, раздел~\ref{sec:dc_motor}):
+
+\begin{equation}
+  L_a \frac{dI}{dt} + R_a I = U - C_e \omega, \qquad
+  J \frac{d\omega}{dt} = C_m I - M_{\text{нагр}}
+  \label{eq:motor_electrical}
+\end{equation}
+
+где $L_a$, $R_a$ --- индуктивность и сопротивление якоря, $I$ --- ток,
+$C_e$ --- коэффициент ЭДС, $C_m$ --- коэффициент момента,
+$J$ --- момент инерции, $M_{\text{нагр}}$ --- момент нагрузки.
+
+Исключая ток, получаем передаточную функцию:
+
+\begin{equation}
+  W(p) = \frac{\omega(p)}{U(p)} = \frac{K_m}{T_m T_e p^2 + T_m p + 1}
+  \label{eq:motor_full_tf}
+\end{equation}
+
+\subsection{Slow-Decay и эффективный момент}
+
+В режиме Slow Decay эффективное напряжение на двигателе:
+
+\begin{equation}
+  U_{\text{эфф}} = U_{\text{пит}} \cdot t, \quad t \in [-1, 1]
+  \label{eq:slow_decay_voltage}
+\end{equation}
+
+При активном торможении ($t = 0$, $\text{IN1} = \text{IN2} = 4095$)
+обмотки замкнуты, и ЭДС двигателя создаёт тормозной ток:
+
+\begin{equation}
+  I_{\text{торм}} = \frac{C_e \omega}{R_a}, \qquad
+  M_{\text{торм}} = C_m I_{\text{торм}} = \frac{C_e C_m}{R_a}\omega
+  \label{eq:brake_torque}
+\end{equation}
+
+Это обеспечивает плавное торможение, пропорциональное скорости
+(вязкое демпфирование).
+
+\subsection{Замкнутый контур <<микшер + двигатель>>}
+
+Передаточная функция от команды $(v_{\text{lin}}, \omega_{\text{ang}})$
+до скоростей бортов:
+
+\begin{equation}
+  \begin{pmatrix} V_L(p) \\ V_R(p) \end{pmatrix}
+  = \frac{K_m}{T_m p + 1}
+  \begin{pmatrix} 1 & 1 \\ 1 & -1 \end{pmatrix}
+  \begin{pmatrix} \ell_{\text{lin}}(p) \\ \ell_{\text{ang}}(p) \end{pmatrix}
+  \label{eq:mixer_motor}
+\end{equation}
+
+При $T_m \ll T_{\text{control}}$ система упрощается до
+статической модели $V_L \approx K_m(\ell_{\text{lin}} + \ell_{\text{ang}})$.
+
+\section{Параметры}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{PCA9685\_ADDR} & \texttt{0x5F} & I2C-адрес контроллера\\
+\texttt{PWM\_FREQ\_HZ} & $50\,\text{Гц}$ & Частота ШИМ\\
+\texttt{PWM\_MAX}       & $4095$ & 12-бит макс. значение\\
+\texttt{WHEEL\_BASE}    & $0.17\,\text{м}$ & Расстояние между гусеницами\\
+\bottomrule
+\end{tabular}
+\end{center}

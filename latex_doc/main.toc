@@ -1,0 +1,209 @@
+\babel@toc {english}{}\relax 
+\contentsline {chapter}{Введение}{7}{chapter*.2}%
+\contentsline {chapter}{\numberline {1}Теоретические основы систем управления}{8}{chapter.1}%
+\contentsline {section}{\numberline {1.1}Модель в пространстве состояний}{8}{section.1.1}%
+\contentsline {subsection}{\numberline {1.1.1}Применение в проекте SAMURAI}{8}{subsection.1.1.1}%
+\contentsline {section}{\numberline {1.2}Линеаризация нелинейных систем}{9}{section.1.2}%
+\contentsline {subsection}{\numberline {1.2.1}Пример: транспортная тележка}{9}{subsection.1.2.1}%
+\contentsline {subsection}{\numberline {1.2.2}Метод линеаризации по Тейлору (матрица Якоби)}{9}{subsection.1.2.2}%
+\contentsline {subsection}{\numberline {1.2.3}Пример: якобиан для транспортной тележки}{10}{subsection.1.2.3}%
+\contentsline {subsection}{\numberline {1.2.4}Связь с EKF в проекте SAMURAI}{10}{subsection.1.2.4}%
+\contentsline {section}{\numberline {1.3}Передаточная функция}{10}{section.1.3}%
+\contentsline {subsection}{\numberline {1.3.1}Характеристический полином и резольвента}{10}{subsection.1.3.1}%
+\contentsline {subsection}{\numberline {1.3.2}Алгоритм Фаддеева--Леверье}{11}{subsection.1.3.2}%
+\contentsline {subsection}{\numberline {1.3.3}Уравнение <<вход--выход>>}{11}{subsection.1.3.3}%
+\contentsline {section}{\numberline {1.4}Устойчивость систем управления}{11}{section.1.4}%
+\contentsline {subsection}{\numberline {1.4.1}Определение устойчивости}{11}{subsection.1.4.1}%
+\contentsline {subsection}{\numberline {1.4.2}Критерий собственных значений}{11}{subsection.1.4.2}%
+\contentsline {subsection}{\numberline {1.4.3}Критерий Гурвица}{12}{subsection.1.4.3}%
+\contentsline {subsection}{\numberline {1.4.4}Решение уравнения состояния}{12}{subsection.1.4.4}%
+\contentsline {subsection}{\numberline {1.4.5}Жорданова форма и матричная экспонента}{12}{subsection.1.4.5}%
+\contentsline {section}{\numberline {1.5}Дискретные системы и фильтр Калмана}{12}{section.1.5}%
+\contentsline {subsection}{\numberline {1.5.1}Дискретная модель в пространстве состояний}{12}{subsection.1.5.1}%
+\contentsline {subsection}{\numberline {1.5.2}Общие уравнения фильтра Калмана}{13}{subsection.1.5.2}%
+\contentsline {subsection}{\numberline {1.5.3}Расширенный фильтр Калмана (EKF)}{13}{subsection.1.5.3}%
+\contentsline {section}{\numberline {1.6}Модель электродвигателя постоянного тока}{14}{section.1.6}%
+\contentsline {subsection}{\numberline {1.6.1}Пространство состояний для двигателя}{14}{subsection.1.6.1}%
+\contentsline {subsection}{\numberline {1.6.2}Передаточная функция двигателя}{14}{subsection.1.6.2}%
+\contentsline {section}{\numberline {1.7}Пропорциональный регулятор (P-регулятор)}{15}{section.1.7}%
+\contentsline {subsection}{\numberline {1.7.1}Закон управления}{15}{subsection.1.7.1}%
+\contentsline {subsection}{\numberline {1.7.2}Передаточная функция замкнутой системы}{15}{subsection.1.7.2}%
+\contentsline {subsection}{\numberline {1.7.3}Статическая ошибка}{15}{subsection.1.7.3}%
+\contentsline {subsection}{\numberline {1.7.4}Применение P-регуляторов в проекте}{15}{subsection.1.7.4}%
+\contentsline {section}{\numberline {1.8}Переходная характеристика}{15}{section.1.8}%
+\contentsline {section}{\numberline {1.9}Управляемость и наблюдаемость}{16}{section.1.9}%
+\contentsline {subsection}{\numberline {1.9.1}Матрица управляемости}{16}{subsection.1.9.1}%
+\contentsline {subsection}{\numberline {1.9.2}Матрица наблюдаемости}{16}{subsection.1.9.2}%
+\contentsline {section}{\numberline {1.10}Сводная таблица: теория $\to $ реализация}{16}{section.1.10}%
+\contentsline {chapter}{\numberline {2}2D Velocity Extended Kalman Filter}{17}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Постановка задачи}{17}{section.2.1}%
+\contentsline {section}{\numberline {2.2}Вектор состояния и модель}{17}{section.2.2}%
+\contentsline {subsection}{\numberline {2.2.1}Вектор состояния}{17}{subsection.2.2.1}%
+\contentsline {subsection}{\numberline {2.2.2}Матрица ковариации}{17}{subsection.2.2.2}%
+\contentsline {section}{\numberline {2.3}Шаг предсказания (Prediction)}{18}{section.2.3}%
+\contentsline {section}{\numberline {2.4}Шаг коррекции (Update) по акселерометру}{19}{section.2.4}%
+\contentsline {section}{\numberline {2.5}ZUPT --- обновление нулевой скорости}{20}{section.2.5}%
+\contentsline {section}{\numberline {2.6}Неголономное ограничение}{21}{section.2.6}%
+\contentsline {section}{\numberline {2.7}Модуль скорости}{21}{section.2.7}%
+\contentsline {section}{\numberline {2.8}Теоретическое обоснование: связь с ТАУ}{21}{section.2.8}%
+\contentsline {subsection}{\numberline {2.8.1}Модель в пространстве состояний}{21}{subsection.2.8.1}%
+\contentsline {subsection}{\numberline {2.8.2}Устойчивость фильтра}{22}{subsection.2.8.2}%
+\contentsline {subsection}{\numberline {2.8.3}Оптимальность усиления Калмана}{22}{subsection.2.8.3}%
+\contentsline {section}{\numberline {2.9}Сводная таблица параметров}{22}{section.2.9}%
+\contentsline {chapter}{\numberline {3}IMU EKF: одномерный фильтр Калмана для угла курса}{23}{chapter.3}%
+\contentsline {section}{\numberline {3.1}Постановка задачи}{23}{section.3.1}%
+\contentsline {section}{\numberline {3.2}Вектор состояния}{23}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Шаг предсказания: интегрирование гироскопа}{24}{section.3.3}%
+\contentsline {section}{\numberline {3.4}Шаг коррекции: крен и тангаж из акселерометра}{25}{section.3.4}%
+\contentsline {section}{\numberline {3.5}Теоретическое обоснование: линеаризация и устойчивость}{26}{section.3.5}%
+\contentsline {subsection}{\numberline {3.5.1}Нелинейная модель и якобиан}{26}{subsection.3.5.1}%
+\contentsline {subsection}{\numberline {3.5.2}Устойчивость фильтра}{26}{subsection.3.5.2}%
+\contentsline {subsection}{\numberline {3.5.3}Наблюдаемость}{26}{subsection.3.5.3}%
+\contentsline {subsection}{\numberline {3.5.4}Связь с передаточной функцией}{27}{subsection.3.5.4}%
+\contentsline {section}{\numberline {3.6}Сводная таблица параметров}{27}{section.3.6}%
+\contentsline {chapter}{\numberline {4}Оценка позиции по акселерометру с слиянием датчиков}{28}{chapter.4}%
+\contentsline {section}{\numberline {4.1}Архитектура системы слияния датчиков}{28}{section.4.1}%
+\contentsline {section}{\numberline {4.2}Константы физики}{28}{section.4.2}%
+\contentsline {section}{\numberline {4.3}Шаг 1: Вычитание гравитации}{29}{section.4.3}%
+\contentsline {section}{\numberline {4.4}Шаг 2: Поворот из тела в мировую СК}{30}{section.4.4}%
+\contentsline {section}{\numberline {4.5}Шаг 3: Компенсация эффекта Кориолиса}{30}{section.4.5}%
+\contentsline {section}{\numberline {4.6}Шаг 4: Адаптивный медианный фильтр}{31}{section.4.6}%
+\contentsline {section}{\numberline {4.7}Шаг 5: ZUPT с гистерезисом}{31}{section.4.7}%
+\contentsline {section}{\numberline {4.8}Шаг 6: Трапецеидальное интегрирование (резервный режим)}{32}{section.4.8}%
+\contentsline {section}{\numberline {4.9}Шаг 7: Комплементарный фильтр (резервный режим)}{33}{section.4.9}%
+\contentsline {section}{\numberline {4.10}Теоретическое обоснование: слияние датчиков}{33}{section.4.10}%
+\contentsline {subsection}{\numberline {4.10.1}Комплементарный фильтр как частный случай фильтра Калмана}{33}{subsection.4.10.1}%
+\contentsline {subsection}{\numberline {4.10.2}Частотная интерпретация}{33}{subsection.4.10.2}%
+\contentsline {subsection}{\numberline {4.10.3}Трапецеидальное vs.\ Эйлерово интегрирование}{34}{subsection.4.10.3}%
+\contentsline {subsection}{\numberline {4.10.4}Дискретная модель пространства состояний}{34}{subsection.4.10.4}%
+\contentsline {section}{\numberline {4.11}Сводная схема конвейера обработки}{34}{section.4.11}%
+\contentsline {chapter}{\numberline {5}Pure Pursuit: алгоритм возврата домой}{35}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Постановка задачи}{35}{section.5.1}%
+\contentsline {section}{\numberline {5.2}Запись путевых точек}{35}{section.5.2}%
+\contentsline {section}{\numberline {5.3}Алгоритм Pure Pursuit}{36}{section.5.3}%
+\contentsline {subsection}{\numberline {5.3.1}Вычисление угла на цель}{36}{subsection.5.3.1}%
+\contentsline {subsection}{\numberline {5.3.2}Пропорциональный угловой регулятор}{36}{subsection.5.3.2}%
+\contentsline {subsection}{\numberline {5.3.3}Косинусное масштабирование линейной скорости}{37}{subsection.5.3.3}%
+\contentsline {subsection}{\numberline {5.3.4}Финальный подход}{37}{subsection.5.3.4}%
+\contentsline {section}{\numberline {5.4}Нормализация угла}{37}{section.5.4}%
+\contentsline {section}{\numberline {5.5}Геометрия алгоритма Pure Pursuit}{38}{section.5.5}%
+\contentsline {section}{\numberline {5.6}Теоретическое обоснование: замкнутая система управления}{38}{section.5.6}%
+\contentsline {subsection}{\numberline {5.6.1}Структура контура управления}{38}{subsection.5.6.1}%
+\contentsline {subsection}{\numberline {5.6.2}Нелинейное масштабирование и устойчивость}{38}{subsection.5.6.2}%
+\contentsline {subsection}{\numberline {5.6.3}Связь с кинематической моделью}{39}{subsection.5.6.3}%
+\contentsline {chapter}{\numberline {6}SLAM: вероятностная карта занятости на log-odds}{40}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Вероятностная модель карты}{40}{section.6.1}%
+\contentsline {subsection}{\numberline {6.1.1}Log-odds представление}{40}{subsection.6.1.1}%
+\contentsline {section}{\numberline {6.2}Трассировка лучей (Ray Tracing)}{41}{section.6.2}%
+\contentsline {section}{\numberline {6.3}Ультразвуковой конус}{42}{section.6.3}%
+\contentsline {section}{\numberline {6.4}Преобразование координат}{42}{section.6.4}%
+\contentsline {section}{\numberline {6.5}Кластеризация объектов с Евклидовой метрикой}{43}{section.6.5}%
+\contentsline {section}{\numberline {6.6}Параметры сетки}{43}{section.6.6}%
+\contentsline {chapter}{\numberline {7}Одометрия: кинематика дифференциального привода}{44}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Модель дифференциального привода}{44}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Микшер дифференциального привода}{44}{section.7.2}%
+\contentsline {section}{\numberline {7.3}Интегрирование одометрии (кинематические уравнения)}{45}{section.7.3}%
+\contentsline {section}{\numberline {7.4}Кватернионное кодирование угла курса}{46}{section.7.4}%
+\contentsline {section}{\numberline {7.5}Сводная диаграмма}{46}{section.7.5}%
+\contentsline {section}{\numberline {7.6}Теоретическое обоснование: кинематика и динамика}{46}{section.7.6}%
+\contentsline {subsection}{\numberline {7.6.1}Неголономная модель робота}{46}{subsection.7.6.1}%
+\contentsline {subsection}{\numberline {7.6.2}Модель unicycle в пространстве состояний}{47}{subsection.7.6.2}%
+\contentsline {subsection}{\numberline {7.6.3}Связь с моделью двигателя}{47}{subsection.7.6.3}%
+\contentsline {subsection}{\numberline {7.6.4}Погрешность метода Эйлера}{47}{subsection.7.6.4}%
+\contentsline {section}{\numberline {7.7}Параметры}{47}{section.7.7}%
+\contentsline {chapter}{\numberline {8}Кватернионы, проекции и преобразования ориентации}{48}{chapter.8}%
+\contentsline {section}{\numberline {8.1}Углы Эйлера из акселерометра (сырые)}{48}{section.8.1}%
+\contentsline {section}{\numberline {8.2}Кватернион $\to $ угол курса (yaw из ROS2 Odometry)}{49}{section.8.2}%
+\contentsline {subsection}{\numberline {8.2.1}Кватернионы и ориентация в 3D}{49}{subsection.8.2.1}%
+\contentsline {subsection}{\numberline {8.2.2}Формула извлечения угла курса}{49}{subsection.8.2.2}%
+\contentsline {section}{\numberline {8.3}Полярные координаты лазерного сканера $\to $ декартовы}{49}{section.8.3}%
+\contentsline {section}{\numberline {8.4}Геометрическое представление кватерниона}{50}{section.8.4}%
+\contentsline {section}{\numberline {8.5}Полная матрица вращения из кватерниона}{50}{section.8.5}%
+\contentsline {chapter}{\numberline {9}Калибровка IMU и цифровая фильтрация}{51}{chapter.9}%
+\contentsline {section}{\numberline {9.1}Аппаратная часть: MPU6050}{51}{section.9.1}%
+\contentsline {subsection}{\numberline {9.1.1}Масштабные коэффициенты}{51}{subsection.9.1.1}%
+\contentsline {section}{\numberline {9.2}Цифровой фильтр нижних частот (DLPF)}{52}{section.9.2}%
+\contentsline {section}{\numberline {9.3}Экспоненциальное скользящее среднее (EMA)}{53}{section.9.3}%
+\contentsline {section}{\numberline {9.4}Калибровка при старте}{54}{section.9.4}%
+\contentsline {subsection}{\numberline {9.4.1}Смещение нуля гироскопа}{54}{subsection.9.4.1}%
+\contentsline {subsection}{\numberline {9.4.2}Вектор гравитации в системе координат тела}{54}{subsection.9.4.2}%
+\contentsline {subsection}{\numberline {9.4.3}Начальная ориентация (home)}{54}{subsection.9.4.3}%
+\contentsline {section}{\numberline {9.5}Конвейер обработки IMU}{55}{section.9.5}%
+\contentsline {section}{\numberline {9.6}Сводная таблица параметров}{55}{section.9.6}%
+\contentsline {section}{\numberline {9.7}C++ реализация (оптимизированная)}{55}{section.9.7}%
+\contentsline {section}{\numberline {9.8}Теоретическое обоснование: цифровая фильтрация}{56}{section.9.8}%
+\contentsline {subsection}{\numberline {9.8.1}EMA как дискретный ФНЧ}{56}{subsection.9.8.1}%
+\contentsline {subsection}{\numberline {9.8.2}Частотная характеристика EMA}{56}{subsection.9.8.2}%
+\contentsline {subsection}{\numberline {9.8.3}Связь с аналоговым RC-фильтром}{56}{subsection.9.8.3}%
+\contentsline {subsection}{\numberline {9.8.4}DLPF как аппаратный ФНЧ}{57}{subsection.9.8.4}%
+\contentsline {chapter}{\numberline {10}A* Pathfinding и алгоритм Брезенхэма}{58}{chapter.10}%
+\contentsline {section}{\numberline {10.1}Постановка задачи}{58}{section.10.1}%
+\contentsline {section}{\numberline {10.2}Построение сетки занятости}{59}{section.10.2}%
+\contentsline {section}{\numberline {10.3}Преобразование координат}{59}{section.10.3}%
+\contentsline {section}{\numberline {10.4}Алгоритм A*}{60}{section.10.4}%
+\contentsline {subsection}{\numberline {10.4.1}Оценочная функция A*}{60}{subsection.10.4.1}%
+\contentsline {subsection}{\numberline {10.4.2}Октильная эвристика}{60}{subsection.10.4.2}%
+\contentsline {subsection}{\numberline {10.4.3}Стоимость переходов}{61}{subsection.10.4.3}%
+\contentsline {section}{\numberline {10.5}Алгоритм Брезенхэма (Line-of-Sight)}{61}{section.10.5}%
+\contentsline {section}{\numberline {10.6}Сглаживание пути (Line-of-Sight Pruning)}{62}{section.10.6}%
+\contentsline {section}{\numberline {10.7}Геометрия A* на сетке}{62}{section.10.7}%
+\contentsline {section}{\numberline {10.8}Сводная таблица параметров}{62}{section.10.8}%
+\contentsline {chapter}{\numberline {11}Физический симулятор: кинематика, сенсоры, камера}{63}{chapter.11}%
+\contentsline {section}{\numberline {11.1}Кинематика робота (SimRobot)}{63}{section.11.1}%
+\contentsline {subsection}{\numberline {11.1.1}Дифференциальные уравнения кинематики}{64}{subsection.11.1.1}%
+\contentsline {subsection}{\numberline {11.1.2}Нормализация угла}{64}{subsection.11.1.2}%
+\contentsline {subsection}{\numberline {11.1.3}Коллизия со стенами}{64}{subsection.11.1.3}%
+\contentsline {section}{\numberline {11.2}Ультразвуковой сенсор (SimSensors)}{65}{section.11.2}%
+\contentsline {subsection}{\numberline {11.2.1}Пересечение луч--плоскость (стены)}{65}{subsection.11.2.1}%
+\contentsline {subsection}{\numberline {11.2.2}Пересечение луч--сфера (шарики)}{66}{subsection.11.2.2}%
+\contentsline {subsection}{\numberline {11.2.3}Шумовая модель}{66}{subsection.11.2.3}%
+\contentsline {section}{\numberline {11.3}Симуляция IMU}{66}{section.11.3}%
+\contentsline {section}{\numberline {11.4}Модель перспективной камеры (SimDetector)}{67}{section.11.4}%
+\contentsline {subsection}{\numberline {11.4.1}Проверка видимости (Field of View)}{67}{subsection.11.4.1}%
+\contentsline {subsection}{\numberline {11.4.2}Горизонтальная проекция на экран}{67}{subsection.11.4.2}%
+\contentsline {subsection}{\numberline {11.4.3}Модель pinhole-камеры (размер объекта)}{67}{subsection.11.4.3}%
+\contentsline {subsection}{\numberline {11.4.4}Вертикальная позиция (глубинная подсказка)}{68}{subsection.11.4.4}%
+\contentsline {subsection}{\numberline {11.4.5}Модель доверия (confidence)}{68}{subsection.11.4.5}%
+\contentsline {section}{\numberline {11.5}Параметры симулятора}{68}{section.11.5}%
+\contentsline {chapter}{\numberline {12}Следование за человеком: оценка дистанции и P-регулятор}{69}{chapter.12}%
+\contentsline {section}{\numberline {12.1}Постановка задачи}{69}{section.12.1}%
+\contentsline {section}{\numberline {12.2}Оценка расстояния по bounding box}{69}{section.12.2}%
+\contentsline {section}{\numberline {12.3}Рулевое управление (P-регулятор по углу)}{70}{section.12.3}%
+\contentsline {subsection}{\numberline {12.3.1}Нормализованная ошибка центрирования}{70}{subsection.12.3.1}%
+\contentsline {subsection}{\numberline {12.3.2}Угловая скорость (P-регулятор)}{70}{subsection.12.3.2}%
+\contentsline {subsection}{\numberline {12.3.3}Линейная скорость (P-регулятор с мёртвой зоной)}{70}{subsection.12.3.3}%
+\contentsline {section}{\numberline {12.4}Теоретическое обоснование: замкнутая система слежения}{71}{section.12.4}%
+\contentsline {subsection}{\numberline {12.4.1}Двухконтурная структура}{71}{subsection.12.4.1}%
+\contentsline {subsection}{\numberline {12.4.2}Передаточные функции контуров}{71}{subsection.12.4.2}%
+\contentsline {subsection}{\numberline {12.4.3}Мёртвая зона и устойчивость}{71}{subsection.12.4.3}%
+\contentsline {section}{\numberline {12.5}Таймаут потери цели}{71}{section.12.5}%
+\contentsline {section}{\numberline {12.6}Сводная таблица параметров}{72}{section.12.6}%
+\contentsline {chapter}{\numberline {13}Патрулирование: навигация по точкам и кватернионы}{73}{chapter.13}%
+\contentsline {section}{\numberline {13.1}Постановка задачи}{73}{section.13.1}%
+\contentsline {section}{\numberline {13.2}Проверка достижения точки}{73}{section.13.2}%
+\contentsline {section}{\numberline {13.3}Формирование цели Nav2 (кватернион из yaw)}{74}{section.13.3}%
+\contentsline {section}{\numberline {13.4}Геометрия патрулирования}{74}{section.13.4}%
+\contentsline {section}{\numberline {13.5}Параметры}{75}{section.13.5}%
+\contentsline {chapter}{\numberline {14}Геозона, преобразование сенсоров и реактивная навигация}{76}{chapter.14}%
+\contentsline {section}{\numberline {14.1}Геозона: алгоритм Point-in-Polygon}{76}{section.14.1}%
+\contentsline {subsection}{\numberline {14.1.1}Алгоритм трассировки луча (Ray Casting)}{76}{subsection.14.1.1}%
+\contentsline {subsection}{\numberline {14.1.2}Построение карты занятости}{77}{subsection.14.1.2}%
+\contentsline {section}{\numberline {14.2}Ультразвук $\to $ LaserScan: синтетическое сканирование}{77}{section.14.2}%
+\contentsline {subsection}{\numberline {14.2.1}Геометрия конуса ультразвука}{78}{subsection.14.2.1}%
+\contentsline {section}{\numberline {14.3}Реактивная навигация (fallback)}{78}{section.14.3}%
+\contentsline {subsection}{\numberline {14.3.1}Пропорциональное масштабирование скорости}{79}{subsection.14.3.1}%
+\contentsline {subsection}{\numberline {14.3.2}Конечный автомат реактивной навигации}{79}{subsection.14.3.2}%
+\contentsline {subsection}{\numberline {14.3.3}Теоретическое обоснование: конечный автомат как дискретная система}{79}{subsection.14.3.3}%
+\contentsline {section}{\numberline {14.4}Сводная таблица параметров}{80}{section.14.4}%
+\contentsline {chapter}{\numberline {15}ШИМ-управление моторами и PCA9685}{81}{chapter.15}%
+\contentsline {section}{\numberline {15.1}Контроллер PCA9685}{81}{section.15.1}%
+\contentsline {subsection}{\numberline {15.1.1}Вычисление прескейлера}{81}{subsection.15.1.1}%
+\contentsline {section}{\numberline {15.2}Slow-Decay режим управления мотором}{82}{section.15.2}%
+\contentsline {subsection}{\numberline {15.2.1}Формулы Slow-Decay}{82}{subsection.15.2.1}%
+\contentsline {subsection}{\numberline {15.2.2}Схема каналов моторов}{82}{subsection.15.2.2}%
+\contentsline {section}{\numberline {15.3}Дифференциальный микшер}{83}{section.15.3}%
+\contentsline {section}{\numberline {15.4}Теоретическое обоснование: электропривод}{83}{section.15.4}%
+\contentsline {subsection}{\numberline {15.4.1}Модель двигателя постоянного тока}{83}{subsection.15.4.1}%
+\contentsline {subsection}{\numberline {15.4.2}Slow-Decay и эффективный момент}{83}{subsection.15.4.2}%
+\contentsline {subsection}{\numberline {15.4.3}Замкнутый контур <<микшер + двигатель>>}{84}{subsection.15.4.3}%
+\contentsline {section}{\numberline {15.5}Параметры}{84}{section.15.5}%

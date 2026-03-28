@@ -9,6 +9,8 @@ import { PathTrail } from '@/components/3d/PathTrail'
 import { PlannedPathTrail } from '@/components/3d/PlannedPathTrail'
 import { ImuVectors } from '@/components/3d/ImuVectors'
 import { InfoPanel } from '@/components/3d/InfoPanel'
+import { SlamMap3D } from '@/components/3d/SlamMap3D'
+import { CoverageHeatmap } from '@/components/3d/CoverageHeatmap'
 
 export function Visualization3DPage() {
   const state = useRobotState()
@@ -36,6 +38,7 @@ export function Visualization3DPage() {
   const ekfBias: [number, number, number] | null = state?.imu_ekf_bias ?? null
   const recordedPath = state?.recorded_path ?? null
   const isReplaying = state?.path_recorder?.state === 'replaying'
+  const slamMap = state?.slam_map ?? null
 
   const handleClearPath = useCallback(() => {
     setClearSignal(prev => prev + 1)
@@ -133,6 +136,12 @@ export function Visualization3DPage() {
           path={recordedPath}
           replaying={isReplaying}
         />
+
+        {/* SLAM map obstacles + detected objects */}
+        <SlamMap3D slamMap={slamMap} />
+
+        {/* Coverage heatmap from trail */}
+        <CoverageHeatmap trail={slamMap?.trail ?? null} cellSize={slamMap?.info?.resolution ?? 0.05} />
 
         {/* IMU vectors */}
         <ImuVectors

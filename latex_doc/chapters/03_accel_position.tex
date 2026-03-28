@@ -1,0 +1,396 @@
+% ============================================================
+%  Глава 3 — AccelPositionEstimator: оценка позиции
+%  Файл: pi_nodes/filters/accel_position.py
+% ============================================================
+\chapter{Оценка позиции по акселерометру с слиянием датчиков}
+\label{ch:accel_position}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/filters/accel\_position.py} \quad (420 строк, Python)
+\end{filebox}
+
+\section{Архитектура системы слияния датчиков}
+
+Модуль объединяет три источника информации:
+
+\begin{enumerate}
+  \item \textbf{Акселерометр} --- мгновенное линейное ускорение (50 Гц)
+  \item \textbf{Колёсная одометрия} --- команды моторов (20 Гц)
+  \item \textbf{Orientation from IMU} --- углы Эйлера для поворота фреймов
+\end{enumerate}
+
+\section{Константы физики}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 44--69}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=44]
+EARTH_OMEGA = 7.2921e-5   # rad/s -- Earth angular velocity
+DEFAULT_LATITUDE = 55.75  # Moscow
+
+ZUPT_GYRO_ENTER  = 0.015  # rad/s
+ZUPT_ACCEL_ENTER = 0.10   # m/s^2
+ZUPT_GYRO_EXIT   = 0.04   # rad/s
+ZUPT_ACCEL_EXIT  = 0.25   # m/s^2
+ZUPT_ENTER_COUNT = 5      # 100ms @ 50Hz
+ZUPT_EXIT_COUNT  = 3      # 60ms  @ 50Hz
+
+LATERAL_DECAY = 0.5       # kill 50% lateral velocity per step
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Угловая скорость Земли} (для компенсации Кориолиса):
+
+\begin{equation}
+  \Omega = 7.2921 \times 10^{-5}\,\text{рад/с}
+  \label{eq:earth_omega}
+\end{equation}
+
+\textbf{Проекция на широту} (Москва, $\varphi = 55.75^\circ$):
+
+\begin{equation}
+  \omega_z = \Omega \sin\varphi
+  \label{eq:omega_z}
+\end{equation}
+
+\section{Шаг 1: Вычитание гравитации}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 211--225 --- update\_imu()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=211]
+# Remove gravity -- DIRECT SUBTRACTION
+la_bx = ax - self._g_body[0]
+la_by = ay - self._g_body[1]
+la_bz = az - self._g_body[2]
+
+# Delta orientation correction (slopes only)
+d_roll  = roll
+d_pitch = pitch
+if abs(d_roll) > 0.01 or abs(d_pitch) > 0.01:
+    g = self._g_mag
+    delta_gx = -g * sin(d_pitch)
+    delta_gy  =  g * sin(d_roll)
+    la_bx -= delta_gx
+    la_by -= delta_gy
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Прямое вычитание} вектора гравитации, откалиброванного при старте:
+
+\begin{equation}
+  \vect{a}^{\text{lin}}_{\text{body}} = \vect{a}_{\text{meas}} - \vect{g}_{\text{body}}
+  \label{eq:gravity_subtract}
+\end{equation}
+
+\begin{notebox}
+\textbf{Почему прямое вычитание, а не ротационный метод?}\\
+IMU физически наклонён на шасси. В покое он показывает, например,
+$a_x = 0.707\,\text{м/с}^2$ --- чистая гравитация через наклон.
+При вычитании: $0.707 - 0.707 = 0$ --- нет ложного движения.
+Ротационный метод предполагает $\text{крен}=\text{тангаж}=0$, давая $g_{\text{body}} = (0, 0, 9.81)$,
+и оставляет $0.707\,\text{м/с}^2$ как «движение».
+\end{notebox}
+
+Поправка на наклон (при нахождении на уклоне $> 0.6^\circ$):
+
+\begin{equation}
+  \Delta g_x = -g \sin\theta_{\text{pitch}}, \quad
+  \Delta g_y = g \sin\phi_{\text{roll}}
+  \label{eq:slope_correction}
+\end{equation}
+
+\section{Шаг 2: Поворот из тела в мировую СК}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 227--230}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=227]
+# Body -> World frame (rotate by yaw)
+cy, sy = cos(yaw), sin(yaw)
+la_wx = la_bx * cy - la_by * sy
+la_wy = la_bx * sy + la_by * cy
+\end{lstlisting}
+\end{filebox}
+
+Матрица поворота вокруг вертикальной оси ($z$-axis rotation):
+
+\begin{equation}
+  \boxed{
+  \begin{pmatrix} a^{\text{world}}_x \\ a^{\text{world}}_y \end{pmatrix}
+  = \mat{R}(\psi)\,
+  \begin{pmatrix} a^{\text{body}}_x \\ a^{\text{body}}_y \end{pmatrix},
+  \quad
+  \mat{R}(\psi) = \begin{pmatrix} \cos\psi & -\sin\psi \\ \sin\psi & \cos\psi \end{pmatrix}
+  }
+  \label{eq:body_to_world}
+\end{equation}
+
+\section{Шаг 3: Компенсация эффекта Кориолиса}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 232--234}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=232]
+# Earth rotation compensation (Coriolis)
+la_wx -= 2.0 * self._omega_z * self.vy
+la_wy += 2.0 * self._omega_z * self.vx
+\end{lstlisting}
+\end{filebox}
+
+Сила Кориолиса на единицу массы:
+
+\begin{equation}
+  \vect{a}_{\text{Cor}} = -2\,\vect{\Omega} \times \vect{v}
+  \label{eq:coriolis}
+\end{equation}
+
+В 2D (только вертикальная проекция $\omega_z = \Omega\sin\varphi$):
+
+\begin{equation}
+  \begin{cases}
+    a_{Cx} = -2\,\omega_z\,v_y \\
+    a_{Cy} = +2\,\omega_z\,v_x
+  \end{cases}
+  \label{eq:coriolis_2d}
+\end{equation}
+
+Вычитание ускорения Кориолиса из измеренного:
+
+\begin{equation}
+  a^{\text{lin}}_x \leftarrow a^{\text{lin}}_x - 2\omega_z v_y, \quad
+  a^{\text{lin}}_y \leftarrow a^{\text{lin}}_y + 2\omega_z v_x
+  \label{eq:coriolis_remove}
+\end{equation}
+
+\section{Шаг 4: Адаптивный медианный фильтр}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 236--250}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=236]
+# Median filter (reject vibration spikes)
+self._buf_ax.append(la_wx)
+self._buf_ay.append(la_wy)
+
+if len(self._buf_ax) >= 3:
+    la_wx = _median_of_3(
+        self._buf_ax[-1], self._buf_ax[-2], self._buf_ax[-3])
+    la_wy = _median_of_3(
+        self._buf_ay[-1], self._buf_ay[-2], self._buf_ay[-3])
+
+# Noise threshold -- zero out tiny accelerations
+if abs(la_wx) < ACCEL_NOISE_THRESHOLD:   # 0.15 m/s^2
+    la_wx = 0.0
+\end{lstlisting}
+\end{filebox}
+
+Медиана трёх последних значений (без сортировки --- одно ветвление):
+
+\begin{equation}
+  \hat{a} = \mathrm{median}(a_{k},\, a_{k-1},\, a_{k-2})
+  \label{eq:median3}
+\end{equation}
+
+Пороговое обнуление шума: $|a| < 0.15\,\text{м/с}^2 \Rightarrow a = 0$.
+
+\section{Шаг 5: ZUPT с гистерезисом}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 252--305}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=252]
+gyro_mag  = sqrt(gx*gx + gy*gy + gz*gz)
+accel_mag = sqrt(la_wx*la_wx + la_wy*la_wy)
+
+if self._stationary:
+    # Need STRONG evidence of motion to exit
+    if (self._cmd_moving and
+        (gyro_mag > ZUPT_GYRO_EXIT or       # 0.04 rad/s
+         accel_mag > ZUPT_ACCEL_EXIT)):      # 0.25 m/s^2
+        self._exit_count += 1
+    if self._exit_count >= ZUPT_EXIT_COUNT:  # 3 samples
+        self._stationary = False
+else:
+    # Easy to re-enter stationary
+    if (not self._cmd_moving or
+        (gyro_mag < ZUPT_GYRO_ENTER and     # 0.015 rad/s
+         accel_mag < ZUPT_ACCEL_ENTER)):    # 0.10 m/s^2
+        self._enter_count += 1
+    if self._enter_count >= ZUPT_ENTER_COUNT: # 5 samples
+        self._stationary = True
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Двухпороговый автомат состояний (гистерезис):}
+
+\begin{center}
+\begin{tikzpicture}[
+  state/.style={rectangle, rounded corners, draw=blue!60, fill=blue!10,
+                minimum width=3cm, minimum height=1.2cm, font=\bfseries},
+  arrow/.style={-{Stealth[length=8pt]}, thick}
+]
+  \node[state] (S) {STATIONARY};
+  \node[state, right=5cm of S] (M) {MOVING};
+
+  \draw[arrow, bend left=20] (S) to node[above, font=\small, align=center]{
+    $|\omega|>0.04$ \textbf{или} $|a|>0.25$ м/с$^2$\\
+    \textit{за 3 последовательных шага}
+  } (M);
+
+  \draw[arrow, bend left=20] (M) to node[below, font=\small, align=center]{
+    $|\omega|<0.015$ \textbf{и} $|a|<0.10$ м/с$^2$\\
+    \textit{за 5 последовательных шагов}
+  } (S);
+\end{tikzpicture}
+\end{center}
+
+Высокие пороги \textit{выхода} ($> 0.04, > 0.25$) и низкие пороги \textit{входа}
+($< 0.015, < 0.10$) предотвращают ложные переходы на границе движения/покоя.
+
+\section{Шаг 6: Трапецеидальное интегрирование (резервный режим)}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 315--334 --- fallback}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=315]
+# Trapezoidal integration (more accurate than Euler)
+self.vx += 0.5 * (la_wx + self._prev_la_x) * dt
+self.vy += 0.5 * (la_wy + self._prev_la_y) * dt
+
+# Non-holonomic constraint
+fwd = self.vx * cy + self.vy * sy
+lat = -self.vx * sy + self.vy * cy
+lat *= LATERAL_DECAY
+self.vx = fwd * cy - lat * sy
+self.vy = fwd * sy + lat * cy
+
+# Position integration
+self._accel_x += self.vx * dt
+self._accel_y += self.vy * dt
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Метод трапеций} (порядок точности $O(\Delta t^2)$, лучше Эйлера $O(\Delta t)$):
+
+\begin{equation}
+  v_{k} = v_{k-1} + \frac{\Delta t}{2}\bigl(a_{k} + a_{k-1}\bigr)
+  \label{eq:trapezoidal}
+\end{equation}
+
+\section{Шаг 7: Комплементарный фильтр (резервный режим)}
+
+\begin{filebox}[title={\filepath{accel\_position.py}, строки 376--386 --- blend()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=378]
+# Complementary filter: alpha*wheel + (1-alpha)*accel
+self._alpha = 0.95 * self._alpha + 0.05 * self._alpha_moving
+a = self._alpha
+self.x = a * self._wheel_x + (1.0 - a) * self._accel_x
+self.y = a * self._wheel_y + (1.0 - a) * self._accel_y
+
+# Slow drift correction of accel toward wheel
+self._accel_x = 0.995 * self._accel_x + 0.005 * self._wheel_x
+self._accel_y = 0.995 * self._accel_y + 0.005 * self._wheel_y
+\end{lstlisting}
+\end{filebox}
+
+Комплементарный фильтр с адаптивным $\alpha$:
+
+\begin{equation}
+  \vect{p} = \alpha\,\vect{p}_{\text{wheel}} + (1-\alpha)\,\vect{p}_{\text{accel}}
+  \label{eq:complementary}
+\end{equation}
+
+где $\alpha \in [0.95, 1.0]$ (при движении растёт вес одометрии).
+Медленная коррекция дрейфа акселерометра:
+$\vect{p}_{\text{accel}} \leftarrow 0.995\,\vect{p}_{\text{accel}} + 0.005\,\vect{p}_{\text{wheel}}$.
+
+\section{Теоретическое обоснование: слияние датчиков}
+
+\subsection{Комплементарный фильтр как частный случай фильтра Калмана}
+
+Комплементарный фильтр~\eqref{eq:complementary} можно рассматривать
+как \textbf{стационарный фильтр Калмана} с фиксированным усилением:
+
+\begin{equation}
+  \hat{x} = \alpha\,x_{\text{odom}} + (1-\alpha)\,x_{\text{accel}}
+  = x_{\text{accel}} + \alpha\,(x_{\text{odom}} - x_{\text{accel}})
+  \label{eq:comp_as_kalman}
+\end{equation}
+
+Сравнивая с~\eqref{eq:kf_update_x}: $\hat{x} = \hat{x}^- + K\cdot y$,
+видим что $\alpha$ играет роль \textbf{усиления Калмана} $K$.
+
+\subsection{Частотная интерпретация}
+
+В частотной области комплементарный фильтр выделяет:
+\begin{itemize}
+  \item \textbf{Низкие частоты} из одометрии (стабильная, но дрейфующая)
+  \item \textbf{Высокие частоты} из акселерометра (шумный, но без дрейфа)
+\end{itemize}
+
+\begin{equation}
+  X(p) = \underbrace{\frac{\alpha}{1 + \alpha/p}}_{\text{ФНЧ}} X_{\text{odom}}(p)
+       + \underbrace{\frac{p/\alpha}{1 + p/\alpha}}_{\text{ФВЧ}} X_{\text{accel}}(p)
+  \label{eq:comp_frequency}
+\end{equation}
+
+Частота среза: $f_c = \alpha/(2\pi\Delta t) \approx 0.95/(2\pi \cdot 0.02) \approx 7.6\,\text{Гц}$.
+
+\subsection{Трапецеидальное vs.\ Эйлерово интегрирование}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Метод} & \textbf{Формула} & \textbf{Погрешность}\\
+\midrule
+Эйлер вперёд & $v_k = v_{k-1} + a_k \Delta t$ & $O(\Delta t)$\\
+Трапеция & $v_k = v_{k-1} + \frac{a_k + a_{k-1}}{2}\Delta t$ & $O(\Delta t^2)$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+При частоте $50\,\text{Гц}$ ($\Delta t = 0.02\,\text{с}$) разница в погрешности
+составляет $\Delta t/2 = 0.01$, т.е.\ трапеция точнее Эйлера в ${\approx}100$ раз
+для гладких сигналов.
+
+\subsection{Дискретная модель пространства состояний}
+
+Полная система AccelPosition в форме пространства состояний
+(гл.~\ref{ch:theory}, формула~\eqref{eq:discrete_ss}):
+
+\begin{equation}
+  \underbrace{\begin{pmatrix} x \\ y \\ v_x \\ v_y \end{pmatrix}_{k}}_{\vect{x}_k}
+  = \underbrace{\begin{pmatrix}
+    1 & 0 & \Delta t & 0 \\
+    0 & 1 & 0 & \Delta t \\
+    0 & 0 & 1 & 0 \\
+    0 & 0 & 0 & 1
+  \end{pmatrix}}_{\mat{F}}
+  \vect{x}_{k-1}
+  + \underbrace{\begin{pmatrix}
+    \Delta t^2/2 & 0 \\
+    0 & \Delta t^2/2 \\
+    \Delta t & 0 \\
+    0 & \Delta t
+  \end{pmatrix}}_{\mat{B}}
+  \begin{pmatrix} a_x \\ a_y \end{pmatrix}
+  \label{eq:accel_ss}
+\end{equation}
+
+\section{Сводная схема конвейера обработки}
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=0.6cm,
+  block/.style={rectangle, draw=blue!50, fill=blue!8, rounded corners,
+                minimum width=4.5cm, minimum height=0.8cm,
+                font=\small\bfseries, align=center},
+  arrow/.style={-{Stealth}, thick, blue!60}
+]
+  \node[block] (raw) {Акселерометр \\ $\vect{a}_{\text{meas}}$};
+  \node[block, below=of raw] (grav) {Вычитание гравитации \\ $\vect{a}^{\text{lin}} = \vect{a} - \vect{g}_{\text{body}}$};
+  \node[block, below=of grav] (rot)  {Поворот СК \\ $\vect{a}^{\text{world}} = \mat{R}(\psi)\vect{a}^{\text{lin}}$};
+  \node[block, below=of rot]  (cor)  {Компенсация Кориолиса};
+  \node[block, below=of cor]  (med)  {Медианный фильтр + порог шума};
+  \node[block, below=of med]  (zupt) {ZUPT с гистерезисом};
+  \node[block, below=of zupt] (ekf)  {Velocity EKF \\ (слияние с одометрией)};
+  \node[block, below=of ekf]  (nh)   {Неголономное ограничение};
+  \node[block, below=of nh]   (pos)  {Позиция $(x, y)$};
+
+  \draw[arrow] (raw)  -- (grav);
+  \draw[arrow] (grav) -- (rot);
+  \draw[arrow] (rot)  -- (cor);
+  \draw[arrow] (cor)  -- (med);
+  \draw[arrow] (med)  -- (zupt);
+  \draw[arrow] (zupt) -- (ekf);
+  \draw[arrow] (ekf)  -- (nh);
+  \draw[arrow] (nh)   -- (pos);
+\end{tikzpicture}
+\end{center}

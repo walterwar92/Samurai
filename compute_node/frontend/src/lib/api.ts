@@ -96,4 +96,12 @@ export const api = {
 
   listPaths: () =>
     get('/api/path_recorder/list'),
+
+  // Detection toggle
+  setDetectionEnabled: (enabled: boolean) =>
+    post('/api/detection/toggle', { enabled }),
+
+  // Obstacle avoidance toggle
+  setObstacleAvoidance: (enabled: boolean) =>
+    post('/api/obstacle_avoidance/toggle', { enabled }),
 }

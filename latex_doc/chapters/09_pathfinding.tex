@@ -1,0 +1,276 @@
+% ============================================================
+%  Глава 9 — A* Pathfinding и Bresenham Line-of-Sight
+%  Файл: compute_node/simulator.py (строки 103--280)
+% ============================================================
+\chapter{A* Pathfinding и алгоритм Брезенхэма}
+\label{ch:pathfinding}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{compute\_node/simulator.py} \quad (строки 103--280, Python)
+\end{filebox}
+
+\section{Постановка задачи}
+
+Робот должен найти оптимальный путь от текущей позиции до цели,
+обходя стены арены и запретные зоны. Используется \textbf{A*} ---
+классический информированный алгоритм поиска на графе.
+
+\section{Построение сетки занятости}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 109--137 --- \_build\_grid()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=109]
+def _build_grid(arena, zones, robot_radius):
+    """Build occupancy grid: True = blocked, False = free."""
+    cols = int(arena.width / PATH_GRID_RES)   # 0.05 m/cell
+    rows = int(arena.height / PATH_GRID_RES)
+    grid = [[False] * cols for _ in range(rows)]
+    margin = robot_radius + PATH_SAFETY_MARGIN  # 0.12 + 0.10 = 0.22 m
+
+    for r in range(rows):
+        for c in range(cols):
+            wx = (c + 0.5) * PATH_GRID_RES
+            wy = (r + 0.5) * PATH_GRID_RES
+            # Block near arena walls
+            if (wx < margin or wx > arena.width - margin or
+                    wy < margin or wy > arena.height - margin):
+                grid[r][c] = True
+                continue
+            # Block inside forbidden zones (with safety margin)
+            for z in zones:
+                zx1, zy1 = z['x1'] - margin, z['y1'] - margin
+                zx2, zy2 = z['x2'] + margin, z['y2'] + margin
+                if zx1 <= wx <= zx2 and zy1 <= wy <= zy2:
+                    grid[r][c] = True
+                    break
+    return grid, rows, cols
+\end{lstlisting}
+\end{filebox}
+
+Арена дискретизируется на ячейки $\delta = 5\,\text{см}$:
+
+\begin{equation}
+  \text{cols} = \left\lfloor \frac{W}{\delta} \right\rfloor, \quad
+  \text{rows} = \left\lfloor \frac{H}{\delta} \right\rfloor
+  \label{eq:grid_size}
+\end{equation}
+
+Зона безопасности вокруг каждого препятствия --- \textbf{раздутие Минковского}:
+
+\begin{equation}
+  \text{margin} = r_{\text{robot}} + r_{\text{safety}} = 0.12 + 0.10 = 0.22\,\text{м}
+  \label{eq:minkowski_margin}
+\end{equation}
+
+\section{Преобразование координат}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 140--147}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=140]
+def _world_to_grid(wx, wy):
+    return int(wx / PATH_GRID_RES), int(wy / PATH_GRID_RES)
+
+def _grid_to_world(c, r):
+    return (c + 0.5) * PATH_GRID_RES, (r + 0.5) * PATH_GRID_RES
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Мир $\to$ сетка:}
+\begin{equation}
+  c = \left\lfloor \frac{w_x}{\delta} \right\rfloor, \quad
+  r = \left\lfloor \frac{w_y}{\delta} \right\rfloor
+  \label{eq:world2grid_sim}
+\end{equation}
+
+\textbf{Сетка $\to$ мир} (центр ячейки):
+\begin{equation}
+  w_x = (c + 0.5)\,\delta, \quad w_y = (r + 0.5)\,\delta
+  \label{eq:grid2world_sim}
+\end{equation}
+
+\section{Алгоритм A*}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 150--213 --- find\_path()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=173]
+# A* with 8-directional movement
+DIRS  = [(-1,0),(1,0),(0,-1),(0,1), (-1,-1),(-1,1),(1,-1),(1,1)]
+COSTS = [1.0, 1.0, 1.0, 1.0,  1.414, 1.414, 1.414, 1.414]
+
+def heuristic(r1, c1, r2, c2):
+    dr = abs(r1 - r2)
+    dc = abs(c1 - c2)
+    return max(dr, dc) + 0.414 * min(dr, dc)  # octile distance
+
+open_set = [(heuristic(sr, sc, gr, gc), 0.0, sr, sc)]
+g_cost = {(sr, sc): 0.0}
+came_from = {}
+
+while open_set:
+    _f, g, r, c = heapq.heappop(open_set)
+    if r == gr and c == gc:
+        # Reconstruct path ...
+        break
+    for (dr, dc), cost in zip(DIRS, COSTS):
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < rows and 0 <= nc < cols and not grid[nr][nc]:
+            ng = g + cost
+            if ng < g_cost.get((nr, nc), float('inf')):
+                g_cost[(nr, nc)] = ng
+                f = ng + heuristic(nr, nc, gr, gc)
+                came_from[(nr, nc)] = (r, c)
+                heapq.heappush(open_set, (f, ng, nr, nc))
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Оценочная функция A*}
+
+A* расширяет вершину с минимальным $f$:
+
+\begin{equation}
+  \boxed{f(n) = g(n) + h(n)}
+  \label{eq:astar_f}
+\end{equation}
+
+где $g(n)$ --- стоимость пути от старта до $n$, $h(n)$ --- эвристика от $n$ до цели.
+
+\subsection{Октильная эвристика}
+
+Для 8-связного графа (с диагоналями) оптимальная допустимая эвристика:
+
+\begin{equation}
+  \boxed{h(n) = \max(\Delta r, \Delta c) + (\sqrt{2} - 1)\,\min(\Delta r, \Delta c)}
+  \label{eq:octile}
+\end{equation}
+
+где $\Delta r = |r_n - r_g|$, $\Delta c = |c_n - c_g|$. В коде $\sqrt{2}-1 \approx 0.414$.
+
+\textbf{Свойства:}
+\begin{itemize}
+  \item \textbf{Допустимая} (admissible): $h(n) \leq h^*(n)$ --- не переоценивает.
+  \item \textbf{Монотонная} (consistent): $h(n) \leq c(n,n') + h(n')$ --- гарантирует
+    оптимальность без повторного посещения.
+\end{itemize}
+
+\subsection{Стоимость переходов}
+
+\begin{equation}
+  c(n, n') = \begin{cases}
+    1.0   & \text{кардинальное направление (4 стороны)} \\
+    \sqrt{2} \approx 1.414 & \text{диагональное направление (4 угла)}
+  \end{cases}
+  \label{eq:move_cost}
+\end{equation}
+
+\section{Алгоритм Брезенхэма (Line-of-Sight)}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 234--258 --- \_line\_of\_sight()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=234]
+def _line_of_sight(x0, y0, x1, y1, grid, rows, cols):
+    """Bresenham: True if straight line is obstacle-free."""
+    c0, r0 = _world_to_grid(x0, y0)
+    c1, r1 = _world_to_grid(x1, y1)
+    dc = abs(c1 - c0)
+    dr = abs(r1 - r0)
+    sc = 1 if c0 < c1 else -1
+    sr = 1 if r0 < r1 else -1
+    err = dc - dr
+    while True:
+        if grid[r0][c0]:
+            return False         # blocked cell
+        if r0 == r1 and c0 == c1:
+            break
+        e2 = 2 * err
+        if e2 > -dr:
+            err -= dr
+            c0 += sc
+        if e2 < dc:
+            err += dc
+            r0 += sr
+    return True
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Алгоритм Брезенхэма} растеризует отрезок прямой на целочисленной сетке:
+
+\begin{equation}
+  \text{err} = \Delta c - \Delta r, \quad
+  e_2 = 2 \cdot \text{err}
+  \label{eq:bresenham_err}
+\end{equation}
+
+На каждом шаге:
+\begin{itemize}
+  \item Если $e_2 > -\Delta r$: $\text{err} \leftarrow \text{err} - \Delta r$, сдвиг по $c$.
+  \item Если $e_2 < \Delta c$: $\text{err} \leftarrow \text{err} + \Delta c$, сдвиг по $r$.
+\end{itemize}
+
+Алгоритм работает за $O(\max(\Delta c, \Delta r))$ целочисленных операций (без деления и плавающей точки).
+
+\section{Сглаживание пути (Line-of-Sight Pruning)}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 261--279 --- \_smooth\_path()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=261]
+def _smooth_path(path, grid, rows, cols):
+    """Reduce points via line-of-sight pruning."""
+    smoothed = [path[0]]
+    i = 0
+    while i < len(path) - 1:
+        best = i + 1
+        for j in range(len(path) - 1, i + 1, -1):
+            if _line_of_sight(path[i][0], path[i][1],
+                              path[j][0], path[j][1],
+                              grid, rows, cols):
+                best = j
+                break
+        smoothed.append(path[best])
+        i = best
+    return smoothed
+\end{lstlisting}
+\end{filebox}
+
+Удаляет промежуточные точки, если прямая видимость (Bresenham check) свободна.
+Уменьшает число путевых точек с $O(N)$ до $O(\sqrt{N})$.
+
+\section{Геометрия A* на сетке}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.6]
+  % Grid
+  \draw[step=1, gray!30, very thin] (0,0) grid (8,6);
+
+  % Obstacles
+  \fill[red!20] (3,2) rectangle (5,4);
+  \draw[red!60, thick] (3,2) rectangle (5,4);
+  \node[font=\tiny, red!80] at (4,3) {Запретная зона};
+
+  % Margin
+  \draw[red!30, dashed] (2.5,1.5) rectangle (5.5,4.5);
+  \node[font=\tiny, red!40] at (4,1.2) {margin};
+
+  % Start
+  \filldraw[blue!70] (1,1) circle (0.15);
+  \node[below, font=\tiny, blue!70] at (1,0.85) {Start};
+
+  % Goal
+  \filldraw[green!70!black] (7,5) circle (0.15);
+  \node[below, font=\tiny, green!70!black] at (7,4.85) {Goal};
+
+  % Path
+  \draw[blue!60, very thick, ->] (1,1) -- (2,2) -- (2,4.5) -- (3,5) -- (7,5);
+  \node[font=\tiny, blue!60] at (0.5,3.5) {A* путь};
+\end{tikzpicture}
+\end{center}
+
+\section{Сводная таблица параметров}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{PATH\_GRID\_RES}     & $0.05\,\text{м}$ & Размер ячейки сетки\\
+\texttt{PATH\_SAFETY\_MARGIN} & $0.10\,\text{м}$ & Запас безопасности\\
+\texttt{ROBOT\_RADIUS}        & $0.12\,\text{м}$ & Радиус робота\\
+Кардинальная стоимость        & $1.0$   & 4 направления\\
+Диагональная стоимость        & $\sqrt{2} \approx 1.414$ & 4 диагонали\\
+\bottomrule
+\end{tabular}
+\end{center}

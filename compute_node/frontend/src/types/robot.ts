@@ -165,4 +165,61 @@ export interface RobotState {
   speed_profile: string
   head: HeadState | null
   arm: ArmState | null
+  // SLAM map data from Pi ultrasonic
+  slam_map: SlamMapData | null
+  detection_enabled: boolean
+  obstacle_avoidance_enabled: boolean
+  // Calibration
+  calibration: { state?: string; type?: string; progress?: number } | null
+  calibration_result: {
+    type?: string
+    scale_factor?: number
+    recommendation?: string
+    odom_distance?: number
+    actual_distance?: number
+    odom_angle_deg?: number
+  } | null
+  // Explorer
+  explorer: { state?: string; strategy?: string; progress?: number; covered_cells?: number } | null
+  // Mission
+  mission: { state?: string; name?: string; events_count?: number; progress?: number } | null
+  // TTS
+  tts_enabled: boolean
+}
+
+export interface SlamMapObstacle {
+  0: number  // x
+  1: number  // y
+}
+
+export interface SlamDetectedObject {
+  id: string
+  class: string
+  colour: string
+  x: number
+  y: number
+  conf: number
+  dist: number
+  count: number
+}
+
+export interface SlamMapData {
+  obstacles: [number, number][]
+  trail: [number, number][]
+  robot: { x: number; y: number; theta: number }
+  detected_objects: SlamDetectedObject[]
+  info: {
+    width: number
+    height: number
+    resolution: number
+    origin_x: number
+    origin_y: number
+    size_m: number
+  }
+  stats: {
+    occupied: number
+    free: number
+    unknown: number
+    detected_objects: number
+  }
 }

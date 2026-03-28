@@ -1,0 +1,231 @@
+% ============================================================
+%  Глава 13 — Геозона, преобразование сенсоров, реактивная навигация
+%  Файлы: geofence_map_publisher.py, depth_to_scan_node.py, fallback_nav_node.py
+% ============================================================
+\chapter{Геозона, преобразование сенсоров и реактивная навигация}
+\label{ch:geofence_sensors}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Геозона: алгоритм Point-in-Polygon}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{compute\_node/geofence\_map\_publisher.py} \quad (108 строк, Python)
+\end{filebox}
+
+\begin{filebox}[title={\filepath{geofence\_map\_publisher.py}, строки 79--91 --- \_point\_in\_polygon()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=79]
+@staticmethod
+def _point_in_polygon(x, y, poly):
+    """Ray-casting algorithm."""
+    n = len(poly)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > y) != (yj > y)) and \
+           (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Алгоритм трассировки луча (Ray Casting)}
+
+Для определения, находится ли точка $(x, y)$ внутри полигона,
+из неё проводится горизонтальный луч вправо и считается число
+пересечений с рёбрами:
+
+\begin{equation}
+  \text{inside} = \bigl(\text{число пересечений}\bigr) \bmod 2 = 1
+  \label{eq:raycasting}
+\end{equation}
+
+Для каждого ребра $(x_i, y_i) \to (x_j, y_j)$:
+
+\textbf{1. Проверка пересечения по $y$:}
+\begin{equation}
+  (y_i > y) \neq (y_j > y) \quad\text{(ребро пересекает горизонталь $y$)}
+  \label{eq:edge_cross}
+\end{equation}
+
+\textbf{2. Вычисление $x$-координаты пересечения} (линейная интерполяция):
+\begin{equation}
+  x_{\text{cross}} = x_i + \frac{(x_j - x_i)(y - y_i)}{y_j - y_i}
+  \label{eq:x_intersect}
+\end{equation}
+
+\textbf{3. Если} $x < x_{\text{cross}}$ --- луч пересекает ребро, инвертируем флаг.
+
+\subsection{Построение карты занятости}
+
+\begin{filebox}[title={\filepath{geofence\_map\_publisher.py}, строки 46--77}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=47]
+poly = np.array(self._polygon, dtype=np.float64)
+x_min = poly[:, 0].min() - self._padding   # 0.5 m padding
+x_max = poly[:, 0].max() + self._padding
+width  = int((x_max - x_min) / self._resolution)  # 0.05 m/cell
+height = int((y_max - y_min) / self._resolution)
+
+# 0=free inside, 100=lethal outside
+grid = np.full((height, width), 100, dtype=np.int8)
+for iy in range(height):
+    for ix in range(width):
+        px = x_min + ix * self._resolution
+        py = y_min + iy * self._resolution
+        if self._point_in_polygon(px, py, poly):
+            grid[iy, ix] = 0
+\end{lstlisting}
+\end{filebox}
+
+Карта создаётся как \texttt{OccupancyGrid} (ROS2 nav\_msgs):
+\begin{itemize}
+  \item $0$ --- свободная ячейка (внутри полигона)
+  \item $100$ --- летальное препятствие (за пределами арены)
+\end{itemize}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Ультразвук $\to$ LaserScan: синтетическое сканирование}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{compute\_node/depth\_to\_scan\_node.py} \quad (82 строки, Python)
+\end{filebox}
+
+\begin{filebox}[title={\filepath{depth\_to\_scan\_node.py}, строки 43--65}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=43]
+def _publish_scan(self):
+    scan = LaserScan()
+    scan.angle_min = -math.pi / 2.0        # -90 deg
+    scan.angle_max =  math.pi / 2.0        # +90 deg
+    scan.angle_increment = (ANGLE_MAX - ANGLE_MIN) / NUM_BEAMS  # 180 beams
+    scan.range_min = 0.02
+    scan.range_max = 3.0
+
+    ranges = [MAX_RANGE] * NUM_BEAMS        # all unknown
+    centre = NUM_BEAMS // 2
+    # Spread ultrasonic over ~15 deg cone
+    cone_beams = int(0.26 / scan.angle_increment)
+    for i in range(max(0, centre - cone_beams),
+                   min(NUM_BEAMS, centre + cone_beams + 1)):
+        ranges[i] = min(self._latest_range, MAX_RANGE)
+    scan.ranges = ranges
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Геометрия конуса ультразвука}
+
+Один ультразвуковой датчик HC-SR04 даёт единственное расстояние
+с конусом обзора ${\approx}30^\circ$. Для совместимости с slam\_toolbox
+это значение «размазывается» по нескольким лучам:
+
+\begin{equation}
+  \Delta\alpha = \frac{\alpha_{\max} - \alpha_{\min}}{N_{\text{beams}}}
+  = \frac{\pi}{180} \approx 0.0175\,\text{рад/луч}
+  \label{eq:angle_incr}
+\end{equation}
+
+\begin{equation}
+  N_{\text{cone}} = \left\lfloor \frac{0.26}{\Delta\alpha} \right\rfloor
+  \approx 15\,\text{лучей в полуконусе}
+  \label{eq:cone_beams}
+\end{equation}
+
+Итого ${\approx}30$ центральных лучей получают реальное измерение,
+остальные 150 --- значение $r_{\max} = 3.0\,\text{м}$ (неизвестно).
+
+% ═══════════════════════════════════════════════════════════════
+\section{Реактивная навигация (fallback)}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/nodes/fallback\_nav\_node.py} \quad (176 строк, Python)
+\end{filebox}
+
+\begin{filebox}[title={\filepath{fallback\_nav\_node.py}, строки 122--150 --- \_run\_fallback\_drive()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=136]
+if r > SAFE_M:                          # r > 0.40 m
+    cmd['linear_x'] = FWD_SPEED        # 0.10 m/s
+    self._state = STATE_FORWARD
+elif r > STOP_M:                        # 0.20 < r < 0.40
+    scale = (r - STOP_M) / (SAFE_M - STOP_M)
+    cmd['linear_x'] = SLOW_SPEED + scale * (FWD_SPEED - SLOW_SPEED)
+    self._state = STATE_CAUTION
+else:                                   # r < 0.20 m
+    self._state = STATE_ROTATE
+    cmd['angular_z'] = ROT_SPEED * self._rotate_dir  # +/- 0.8 rad/s
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Пропорциональное масштабирование скорости}
+
+В зоне осторожности ($r_{\text{stop}} < r < r_{\text{safe}}$):
+
+\begin{equation}
+  \text{scale} = \frac{r - r_{\text{stop}}}{r_{\text{safe}} - r_{\text{stop}}}
+  = \frac{r - 0.20}{0.40 - 0.20} \in [0, 1]
+  \label{eq:caution_scale}
+\end{equation}
+
+\begin{equation}
+  \boxed{v = v_{\text{slow}} + \text{scale} \cdot (v_{\text{fwd}} - v_{\text{slow}})}
+  \label{eq:caution_speed}
+\end{equation}
+
+Это \textbf{линейная интерполяция} между $v_{\text{slow}} = 0.05\,\text{м/с}$
+и $v_{\text{fwd}} = 0.10\,\text{м/с}$.
+
+\subsection{Конечный автомат реактивной навигации}
+
+\begin{center}
+\begin{tikzpicture}[
+  state/.style={rectangle, rounded corners, draw=blue!60, fill=blue!10,
+                minimum width=2.5cm, minimum height=0.9cm, font=\small\bfseries},
+  arrow/.style={-{Stealth[length=6pt]}, thick}
+]
+  \node[state] (F) {FORWARD};
+  \node[state, right=3cm of F] (C) {CAUTION};
+  \node[state, below=1.5cm of C] (R) {ROTATE};
+
+  \draw[arrow] (F) to node[above, font=\tiny]{$r < 0.40$} (C);
+  \draw[arrow] (C) to node[right, font=\tiny]{$r < 0.20$} (R);
+  \draw[arrow] (R) to[bend right=30] node[left, font=\tiny]{$r > 0.40$} (F);
+  \draw[arrow] (C) to[bend left=20] node[above, font=\tiny]{$r > 0.40$} (F);
+\end{tikzpicture}
+\end{center}
+
+\subsection{Теоретическое обоснование: конечный автомат как дискретная система}
+
+Реактивная навигация реализует \textbf{гибридную систему} ---
+комбинацию непрерывной динамики (скорость) и дискретных переключений
+(состояния автомата). В терминах ТАУ это \textbf{переключающаяся система}:
+
+\begin{equation}
+  \dot{\vect{x}} = \vect{f}_{q(t)}(\vect{x}), \quad q \in \{\text{FWD}, \text{CAUT}, \text{ROT}\}
+  \label{eq:switching_system}
+\end{equation}
+
+\textbf{Устойчивость} переключающейся системы гарантирована, если
+каждая подсистема устойчива и переключения не слишком частые
+(условие dwell time).
+
+Линейная интерполяция~\eqref{eq:caution_speed} в зоне CAUTION
+обеспечивает \textbf{непрерывность} скорости на границах переключений,
+предотвращая рывки.
+
+\section{Сводная таблица параметров}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Модуль} & \textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+Геозона & Разрешение & $0.05\,\text{м}$ & Размер ячейки\\
+Геозона & Отступ & $0.5\,\text{м}$ & Запас за полигоном\\
+LaserScan & $N_{\text{beams}}$ & $180$ & Кол-во лучей\\
+LaserScan & FOV & $180^\circ$ & Поле зрения\\
+Fallback & $r_{\text{safe}}$ & $0.40\,\text{м}$ & Безопасная дистанция\\
+Fallback & $r_{\text{stop}}$ & $0.20\,\text{м}$ & Стоп-дистанция\\
+Fallback & $\omega_{\text{rot}}$ & $0.8\,\text{рад/с}$ & Скорость поворота\\
+\bottomrule
+\end{tabular}
+\end{center}

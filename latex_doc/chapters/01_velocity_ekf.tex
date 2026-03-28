@@ -1,0 +1,330 @@
+% ============================================================
+%  Глава 1 — 2D Velocity Extended Kalman Filter
+%  Файл: pi_nodes/filters/velocity_ekf.py
+% ============================================================
+\chapter{2D Velocity Extended Kalman Filter}
+\label{ch:velocity_ekf}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/filters/velocity\_ekf.py} \quad (251 строка, Python)
+\end{filebox}
+
+\section{Постановка задачи}
+
+Для точного позиционирования гусеничного робота необходимо объединить два
+источника скорости:
+
+\begin{itemize}
+  \item \textbf{Колёсная одометрия} --- стабильна, не имеет дрейфа, но не учитывает
+    проскальзывание гусениц на неровном покрытии.
+  \item \textbf{Акселерометр (однократное интегрирование)} --- улавливает реальное
+    скольжение, но накапливает ошибку интегрирования (дрейф).
+\end{itemize}
+
+Оба источника объединяются \textbf{фильтром Калмана}, который автоматически
+взвешивает вклад каждого по его статистическим шумовым характеристикам.
+
+\section{Вектор состояния и модель}
+
+\subsection{Вектор состояния}
+
+Состояние фильтра --- скорость робота в \emph{мировой} системе координат:
+
+\begin{equation}
+  \vect{x} = \begin{pmatrix} v_x \\ v_y \end{pmatrix} \in \mathbb{R}^2
+  \label{eq:ekf_state}
+\end{equation}
+
+Позиция получается последовательным интегрированием фильтрованной скорости.
+
+\subsection{Матрица ковариации}
+
+Поскольку numpy не используется, матрица $2\times 2$ хранится в четырёх скалярах:
+
+\begin{equation}
+  \mat{P} = \begin{pmatrix} p_{00} & p_{01} \\ p_{10} & p_{11} \end{pmatrix}
+  \label{eq:cov_matrix}
+\end{equation}
+
+Начальное значение: $\mat{P} = 0.01 \cdot \mat{I}$.
+
+\section{Шаг предсказания (Prediction)}
+\label{sec:ekf_predict}
+
+\begin{filebox}[title={\filepath{velocity\_ekf.py}, строки 90--120 --- predict\_wheel()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=104]
+# Wheel-predicted velocity in world frame
+vx_wheel = vx_cmd * cos(theta)
+vy_wheel = vx_cmd * sin(theta)
+
+# Prediction: state transitions toward wheel command
+alpha = 0.5
+self.vx = (1 - alpha) * self.vx + alpha * vx_wheel
+self.vy = (1 - alpha) * self.vy + alpha * vy_wheel
+
+# Process noise: covariance grows
+self._p00 += self.q_wheel * dt
+self._p11 += self.q_wheel * dt
+
+# Integrate position using current fused velocity
+self.x += self.vx * dt
+self.y += self.vy * dt
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Математика предсказания:}
+
+Команда колёс задаёт вперёд\-направленную скорость $v_{\text{cmd}}$ в теле робота.
+Поворот на угол курса $\theta$ (из IMU) переводит её в мировую систему координат:
+
+\begin{equation}
+  \begin{pmatrix} v_x^{\text{wheel}} \\ v_y^{\text{wheel}} \end{pmatrix}
+  = v_{\text{cmd}} \begin{pmatrix} \cos\theta \\ \sin\theta \end{pmatrix}
+  \label{eq:wheel_world}
+\end{equation}
+
+Смешивание с текущим состоянием ($\alpha = 0.5$):
+
+\begin{equation}
+  \vect{x}^- = (1-\alpha)\,\vect{x} + \alpha\,\vect{x}^{\text{wheel}}
+  \label{eq:blend}
+\end{equation}
+
+Рост ковариации (процессный шум $q_{\text{wheel}} = 0.01$):
+
+\begin{equation}
+  p_{00}^- = p_{00} + q_{\text{wheel}} \cdot \Delta t, \quad
+  p_{11}^- = p_{11} + q_{\text{wheel}} \cdot \Delta t
+  \label{eq:cov_grow}
+\end{equation}
+
+Интегрирование позиции (правило Эйлера):
+
+\begin{equation}
+  \boxed{x \mathrel{+}= v_x \cdot \Delta t, \quad y \mathrel{+}= v_y \cdot \Delta t}
+  \label{eq:pos_integrate}
+\end{equation}
+
+\section{Шаг коррекции (Update) по акселерометру}
+\label{sec:ekf_update}
+
+\begin{filebox}[title={\filepath{velocity\_ekf.py}, строки 122--173 --- update\_accel()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=135]
+# Integrate accel to get velocity measurement
+self._accel_vx += la_wx * dt
+self._accel_vy += la_wy * dt
+
+# Decay accel velocity to prevent unbounded drift
+self._accel_vx *= 0.98
+self._accel_vy *= 0.98
+
+# Innovation: y = z - H*x  (H = I)
+yx = self._accel_vx - self.vx
+yy = self._accel_vy - self.vy
+
+# S = P + R (innovation covariance)
+r = self.r_accel + self.q_accel * dt
+s00 = self._p00 + r
+s11 = self._p11 + r
+
+# Kalman gain: K = P * S^-1
+k00 = self._p00 / s00
+k11 = self._p11 / s11
+
+# State update
+self.vx += k00 * yx
+self.vy += k11 * yy
+
+# Covariance update: P = (I - K*H) * P
+self._p00 *= (1 - k00)
+self._p11 *= (1 - k11)
+self._p01 *= (1 - 0.5 * (k00 + k11))
+self._p10 *= (1 - 0.5 * (k00 + k11))
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Математика коррекции:}
+
+Однократное интегрирование ускорения (измерение скорости):
+
+\begin{equation}
+  \vect{v}^{\text{accel}}_{k} = \vect{v}^{\text{accel}}_{k-1}
+  + \vect{a}^{\text{world}} \cdot \Delta t
+  \label{eq:accel_integrate}
+\end{equation}
+
+Экспоненциальное затухание для борьбы с дрейфом:
+
+\begin{equation}
+  \vect{v}^{\text{accel}} \leftarrow 0.98 \cdot \vect{v}^{\text{accel}}
+  \label{eq:decay}
+\end{equation}
+
+Инновация (невязка):
+
+\begin{equation}
+  \vect{y} = \vect{z} - \mat{H}\,\vect{x}^-, \quad \mat{H} = \mat{I}
+  \quad\Rightarrow\quad
+  \vect{y} = \vect{v}^{\text{accel}} - \vect{v}^{\text{state}}
+  \label{eq:innovation}
+\end{equation}
+
+Ковариация инновации:
+
+\begin{equation}
+  \mat{S} = \mat{P}^- + \mat{R}, \quad
+  R = r_{\text{accel}} + q_{\text{accel}} \cdot \Delta t
+  \label{eq:S_matrix}
+\end{equation}
+
+\textbf{Усиление Калмана} (для диагональной $\mat{S}$, т.е. поэлементно):
+
+\begin{equation}
+  \boxed{K_{ii} = \frac{p_{ii}^-}{S_{ii}}, \quad i \in \{0,1\}}
+  \label{eq:kalman_gain}
+\end{equation}
+
+\textbf{Обновление состояния:}
+
+\begin{equation}
+  \vect{x} = \vect{x}^- + \mat{K}\,\vect{y}
+  \label{eq:state_update}
+\end{equation}
+
+\textbf{Обновление ковариации} (формула Джозефа в диагональном виде):
+
+\begin{equation}
+  \boxed{p_{ii} \leftarrow (1 - K_{ii})\,p_{ii}}
+  \label{eq:cov_update}
+\end{equation}
+
+\section{ZUPT --- обновление нулевой скорости}
+
+\begin{filebox}[title={\filepath{velocity\_ekf.py}, строки 181--207 --- update\_zupt()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=186]
+# Kalman gain (measurement = zero, R = r_zupt)
+s00 = self._p00 + r
+s11 = self._p11 + r
+k00 = self._p00 / s00
+k11 = self._p11 / s11
+
+# Update: z = [0, 0], innovation = -[vx, vy]
+self.vx -= k00 * self.vx
+self.vy -= k11 * self.vy
+
+# Covariance update
+self._p00 *= (1 - k00)
+self._p11 *= (1 - k11)
+\end{lstlisting}
+\end{filebox}
+
+Когда робот стоит, измерение $\vect{z} = \vect{0}$ с очень малым шумом
+$r_{\text{zupt}} = 10^{-4}$. Инновация: $\vect{y} = \vect{0} - \vect{v} = -\vect{v}$.
+Это приводит к быстрому обнулению скорости через стандартный шаг Калмана.
+
+\section{Неголономное ограничение}
+\label{sec:nonholomic}
+
+\begin{filebox}[title={\filepath{velocity\_ekf.py}, строки 209--228 --- apply\_nonholonomic()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=213]
+cy, sy = cos(theta), sin(theta)
+fwd = self.vx * cy + self.vy * sy    # forward component
+lat = -self.vx * sy + self.vy * cy   # lateral component
+
+lat *= self._lateral_decay           # kill 70% of lateral vel
+
+self.vx = fwd * cy - lat * sy
+self.vy = fwd * sy + lat * cy
+\end{lstlisting}
+\end{filebox}
+
+Гусеничный робот \textbf{не может двигаться боком}. После шага Калмана
+производится проекция скорости на направление движения:
+
+\begin{align}
+  v_{\text{fwd}} &= v_x \cos\theta + v_y \sin\theta \label{eq:fwd} \\
+  v_{\text{lat}} &= -v_x \sin\theta + v_y \cos\theta \label{eq:lat}
+\end{align}
+
+Боковая составляющая подавляется: $v_{\text{lat}} \leftarrow 0.3 \cdot v_{\text{lat}}$.
+
+Обратное преобразование в мировую СК (поворот матрицей $\mat{R}^{-1} = \mat{R}\T$):
+
+\begin{equation}
+  \begin{pmatrix} v_x \\ v_y \end{pmatrix}
+  = \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix}
+  \begin{pmatrix} v_{\text{fwd}} \\ v_{\text{lat}} \end{pmatrix}
+  \label{eq:rot_back}
+\end{equation}
+
+\section{Модуль скорости}
+
+\begin{filebox}[title={\filepath{velocity\_ekf.py}, строки 243--245}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=243]
+@property
+def velocity_magnitude(self) -> float:
+    return sqrt(self.vx * self.vx + self.vy * self.vy)
+\end{lstlisting}
+\end{filebox}
+
+\begin{equation}
+  |\vect{v}| = \sqrt{v_x^2 + v_y^2}
+  \label{eq:vmag}
+\end{equation}
+
+\section{Теоретическое обоснование: связь с ТАУ}
+
+\subsection{Модель в пространстве состояний}
+
+Velocity EKF реализует дискретную модель в пространстве состояний
+(см.\ гл.~\ref{ch:theory}, формула~\eqref{eq:state_space}):
+
+\begin{equation}
+  \underbrace{\begin{pmatrix} v_x \\ v_y \end{pmatrix}_{k}}_{\vect{x}_k}
+  = \underbrace{\begin{pmatrix} 1-\alpha & 0 \\ 0 & 1-\alpha \end{pmatrix}}_{\mat{F}}
+  \underbrace{\begin{pmatrix} v_x \\ v_y \end{pmatrix}_{k-1}}_{\vect{x}_{k-1}}
+  + \underbrace{\begin{pmatrix} \alpha\cos\theta & 0 \\ 0 & \alpha\sin\theta \end{pmatrix}}_{\mat{B}}
+  \underbrace{\begin{pmatrix} v_{\text{cmd}} \\ v_{\text{cmd}} \end{pmatrix}}_{\vect{u}}
+  \label{eq:vekf_ss}
+\end{equation}
+
+\subsection{Устойчивость фильтра}
+
+Собственные числа матрицы перехода $\mat{F}$:
+$\lambda_{1,2} = 1 - \alpha = 0.5$.
+Поскольку $|\lambda_i| < 1$ для дискретной системы,
+фильтр \textbf{асимптотически устойчив} (ошибка сходится к нулю).
+
+Это дискретный аналог критерия устойчивости~\eqref{eq:stability_eigenvalues}:
+для дискретных систем все собственные числа должны лежать
+внутри единичного круга $|\lambda_i| < 1$.
+
+\subsection{Оптимальность усиления Калмана}
+
+Усиление Калмана $K_{ii} = p_{ii}/(p_{ii} + R)$
+минимизирует апостериорную дисперсию оценки:
+
+\begin{equation}
+  \frac{\partial}{\partial K}\,E\!\left[(x - \hat{x})^2\right] = 0
+  \quad\Rightarrow\quad K^* = \frac{P^-}{P^- + R}
+  \label{eq:optimal_K}
+\end{equation}
+
+При $R \to 0$ (идеальный датчик): $K \to 1$, фильтр доверяет измерению.
+При $R \to \infty$ (шумный датчик): $K \to 0$, фильтр доверяет модели.
+
+\section{Сводная таблица параметров}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Параметр} & \textbf{Символ} & \textbf{Значение} & \textbf{Физический смысл}\\
+\midrule
+\texttt{q\_wheel} & $q_w$ & $0.01\,(m/s)^2$ & Шум процесса (колёса)\\
+\texttt{q\_accel} & $q_a$ & $0.05\,(m/s)^2$ & Скорость дрейфа акселерометра\\
+\texttt{r\_accel} & $r_a$ & $0.1\,(m/s)^2$ & Шум измерения акселерометра\\
+\texttt{r\_zupt}  & $r_z$ & $10^{-4}\,(m/s)^2$ & Доверие к нулевой скорости\\
+\texttt{lateral\_decay} & --- & $0.3$ & Подавление бокового движения\\
+\bottomrule
+\end{tabular}
+\end{center}

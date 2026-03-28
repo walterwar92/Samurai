@@ -1,0 +1,273 @@
+% ============================================================
+%  Глава 4 — Pure Pursuit: алгоритм следования по пути
+%  Файл: pi_nodes/nodes/path_recorder_node.py
+% ============================================================
+\chapter{Pure Pursuit: алгоритм возврата домой}
+\label{ch:pure_pursuit}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/nodes/path\_recorder\_node.py} \quad (342 строки, Python)
+\end{filebox}
+
+\section{Постановка задачи}
+
+Модуль записывает путь робота в виде набора опорных точек и затем проводит
+робота обратно по тому же пути в обратном порядке (возврат домой).
+
+\begin{itemize}
+  \item \textbf{Запись}: каждые $3\,\text{см}$ или $4.5^\circ$ поворота.
+  \item \textbf{Воспроизведение}: алгоритм Pure Pursuit с финальным фазой
+    точного наведения.
+\end{itemize}
+
+\section{Запись путевых точек}
+
+\begin{filebox}[title={\filepath{path\_recorder\_node.py}, строки 135--148 --- \_maybe\_record\_waypoint()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=139]
+dx = self._x - self._last_record_x
+dy = self._y - self._last_record_y
+dist = math.sqrt(dx * dx + dy * dy)
+dtheta = abs(self._angle_diff(self._theta, self._last_record_theta))
+
+if dist >= RECORD_INTERVAL_M or dtheta >= RECORD_INTERVAL_RAD:
+    self._path.append((self._x, self._y, self._theta))
+    # RECORD_INTERVAL_M = 0.03 m, RECORD_INTERVAL_RAD = 0.08 rad
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Расстояние между точками} (Евклидова метрика):
+
+\begin{equation}
+  d = \sqrt{(x - x_{\text{last}})^2 + (y - y_{\text{last}})^2}
+  \label{eq:waypoint_dist}
+\end{equation}
+
+Запись происходит при: $d \geq 0.03\,\text{м}$ ИЛИ $|\Delta\theta| \geq 0.08\,\text{рад}$.
+
+\section{Алгоритм Pure Pursuit}
+\label{sec:pure_pursuit_algo}
+
+\begin{filebox}[title={\filepath{path\_recorder\_node.py}, строки 206--243 --- \_control\_loop()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=206]
+# Pure pursuit: simultaneous linear + angular
+bearing = math.atan2(dy, dx)
+angle_error = self._angle_diff(bearing, self._theta)
+
+if in_final_approach:
+    angular   = FINAL_ANGULAR_KP * angle_error    # Kp = 3.0
+    angular   = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
+    cos_factor = max(0.0, math.cos(angle_error))
+    dist_ratio = dist / FINAL_APPROACH_RADIUS      # 0..1
+    linear     = FINAL_LINEAR_SPEED * cos_factor * dist_ratio
+    linear     = max(REPLAY_MIN_LINEAR * 0.6 * cos_factor, linear)
+    if abs(angle_error) > 0.8:
+        linear = 0.0
+else:
+    angular    = REPLAY_ANGULAR_KP * angle_error  # Kp = 2.5
+    angular    = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
+    cos_factor = max(0.0, math.cos(angle_error))
+    dist_factor = min(1.0, dist / 0.15)
+    linear     = REPLAY_LINEAR_SPEED * cos_factor * dist_factor
+    linear     = max(REPLAY_MIN_LINEAR * cos_factor, linear)
+    if abs(angle_error) > 1.2:
+        linear = 0.0
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Вычисление угла на цель}
+
+Пеленг (bearing) на текущую целевую точку $(t_x, t_y)$:
+
+\begin{equation}
+  \beta = \mathrm{atan2}(t_y - y,\; t_x - x)
+  \label{eq:bearing}
+\end{equation}
+
+\textbf{Угловая ошибка} (кратчайший путь в $[-\pi, \pi]$):
+
+\begin{equation}
+  e_\theta = \mathrm{angle\_diff}(\beta, \psi) \in [-\pi, \pi]
+  \label{eq:angle_error}
+\end{equation}
+
+\subsection{Пропорциональный угловой регулятор}
+
+\begin{equation}
+  \omega = K_P \cdot e_\theta, \quad
+  \omega \in [-\omega_{\max}, +\omega_{\max}]
+  \label{eq:angular_control}
+\end{equation}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Режим} & $K_P$ & $\omega_{\max}$\\
+\midrule
+Обычный Pure Pursuit & $2.5$ & $0.8\,\text{рад/с}$\\
+Финальный подход & $3.0$ & $0.8\,\text{рад/с}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Косинусное масштабирование линейной скорости}
+
+\textbf{Ключевая идея Pure Pursuit}: при большой угловой ошибке снижать
+линейную скорость через косинус:
+
+\begin{equation}
+  \cos\text{-factor} = \max\bigl(0,\, \cos(e_\theta)\bigr)
+  \label{eq:cos_factor}
+\end{equation}
+
+\begin{equation}
+  v = v_{\max} \cdot \cos\text{-factor} \cdot d_{\text{factor}}
+  \label{eq:linear_speed}
+\end{equation}
+
+Коэффициент дистанции:
+
+\begin{equation}
+  d_{\text{factor}} = \min\!\left(1,\, \frac{d}{0.15\,\text{м}}\right)
+  \label{eq:dist_factor}
+\end{equation}
+
+При $|e_\theta| > \pi/2$: $\cos(e_\theta) \leq 0 \Rightarrow v = 0$
+(только поворот на месте).
+
+\subsection{Финальный подход}
+
+В радиусе $0.12\,\text{м}$ от конечной точки:
+
+\begin{equation}
+  v = v_{\text{final}} \cdot \cos(e_\theta) \cdot \frac{d}{r_{\text{final}}}
+  \label{eq:final_approach}
+\end{equation}
+
+Скорость пропорциональна оставшемуся расстоянию --- плавное торможение.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{REPLAY\_LINEAR\_SPEED}   & $0.20\,\text{м/с}$ & Скорость воспроизведения\\
+\texttt{FINAL\_LINEAR\_SPEED}    & $0.08\,\text{м/с}$ & Скорость финального подхода\\
+\texttt{REPLAY\_LOOKAHEAD\_M}    & $0.10\,\text{м}$   & Дистанция look-ahead\\
+\texttt{REPLAY\_HOME\_TOLERANCE} & $0.015\,\text{м}$  & Допуск финальной точки\\
+\texttt{REPLAY\_GOAL\_TOLERANCE} & $0.04\,\text{м}$   & Допуск промежуточных точек\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Нормализация угла}
+
+\begin{filebox}[title={\filepath{path\_recorder\_node.py}, строки 312--320 --- \_angle\_diff()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=313]
+@staticmethod
+def _angle_diff(target, current):
+    """Shortest signed angle difference, in [-pi, pi]."""
+    d = target - current
+    while d > math.pi:
+        d -= 2.0 * math.pi
+    while d < -math.pi:
+        d += 2.0 * math.pi
+    return d
+\end{lstlisting}
+\end{filebox}
+
+\begin{equation}
+  \Delta\theta = \bigl[(\beta - \psi + \pi) \bmod 2\pi\bigr] - \pi
+  \label{eq:angle_normalize}
+\end{equation}
+
+Это гарантирует, что угловая ошибка всегда в диапазоне $[-\pi, \pi]$,
+а поворот всегда происходит по кратчайшему пути.
+
+\section{Геометрия алгоритма Pure Pursuit}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.4]
+  % Robot
+  \filldraw[blue!70] (0,0) circle (0.12);
+  \draw[-{Stealth}, blue!70, thick] (0,0) -- (1.0, 0)
+    node[right, font=\small]{$\psi$ (курс)};
+  \node[below, font=\small, blue!70] at (0,-0.15) {Робот};
+
+  % Target point
+  \filldraw[red!70] (1.5, 1.2) circle (0.08);
+  \node[right, font=\small, red!70] at (1.58, 1.2) {Цель $(t_x, t_y)$};
+
+  % Bearing line
+  \draw[-{Stealth}, red!50, dashed, thick] (0,0) -- (1.5, 1.2)
+    node[midway, above left, font=\small]{$d$};
+
+  % Angle annotation
+  \draw[->] (0.5, 0) arc[start angle=0, end angle=38.7, radius=0.5];
+  \node[font=\small] at (0.72, 0.2) {$e_\theta$};
+
+  % Bearing angle label
+  \draw[->] (0.3, 0) arc[start angle=0, end angle=38.7, radius=0.3];
+  \node[font=\tiny, gray] at (0.48, 0.08) {$\beta$};
+\end{tikzpicture}
+\end{center}
+
+$$\beta = \mathrm{atan2}(t_y - y, t_x - x), \quad e_\theta = \beta - \psi$$
+
+\section{Теоретическое обоснование: замкнутая система управления}
+
+\subsection{Структура контура управления}
+
+Алгоритм Pure Pursuit реализует \textbf{замкнутый P-регулятор}
+(гл.~\ref{ch:theory}, раздел~\ref{sec:p_controller}) для угловой
+скорости:
+
+\begin{equation}
+  \omega = K_P \cdot e_\theta, \quad e_\theta = \beta - \psi
+  \label{eq:pp_closed_loop}
+\end{equation}
+
+Передаточная функция замкнутой системы <<регулятор + робот>>
+(робот как интегратор $\dot{\psi} = \omega$):
+
+\begin{equation}
+  W_{\text{зс}}(p) = \frac{K_P / p}{1 + K_P / p} = \frac{K_P}{p + K_P}
+  \label{eq:pp_tf}
+\end{equation}
+
+Полюс замкнутой системы: $\lambda = -K_P = -2.5$,
+что даёт экспоненциальную сходимость $e_\theta(t) = e_\theta(0)\,e^{-2.5t}$
+с постоянной времени $\tau = 1/K_P = 0.4\,\text{с}$.
+
+\subsection{Нелинейное масштабирование и устойчивость}
+
+Косинусное масштабирование $v = v_{\max}\cos(e_\theta)$ создаёт
+\textbf{нелинейную связь} между угловой ошибкой и линейной скоростью.
+Это эквивалентно функции Ляпунова:
+
+\begin{equation}
+  V(e_\theta) = 1 - \cos(e_\theta) \geq 0
+  \label{eq:pp_lyapunov}
+\end{equation}
+
+При $|e_\theta| < \pi/2$: $\dot{V} = \sin(e_\theta)\cdot\dot{e}_\theta < 0$
+(при правильном знаке $K_P$), что гарантирует
+\textbf{асимптотическую устойчивость} по Ляпунову.
+
+\subsection{Связь с кинематической моделью}
+
+Полная нелинейная модель робота с Pure Pursuit
+(модель unicycle из гл.~\ref{ch:odometry}):
+
+\begin{equation}
+  \begin{cases}
+    \dot{x} = v\cos\theta \cdot \cos(e_\theta) \cdot d_{\text{factor}} \\
+    \dot{y} = v\sin\theta \cdot \cos(e_\theta) \cdot d_{\text{factor}} \\
+    \dot{\theta} = K_P \cdot e_\theta
+  \end{cases}
+  \label{eq:pp_full_model}
+\end{equation}
+
+Это нелинейная система вида $\dot{\vect{x}} = \vect{f}(\vect{x})$
+(гл.~\ref{ch:theory}, формула~\eqref{eq:nonlinear_system}),
+линеаризация которой в окрестности $e_\theta = 0$ даёт
+устойчивую линейную систему с полюсом $\lambda = -K_P$.

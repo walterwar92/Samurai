@@ -106,8 +106,8 @@ class VelocityEKF:
         vy_wheel = vx_cmd * sin(theta)
 
         # Prediction: state transitions toward wheel command
-        # Use a blend — don't hard-set, allow Kalman to correct
-        alpha = 0.5  # prediction blend (higher = more trust in wheel)
+        # Higher alpha = more trust in wheel commands (primary source)
+        alpha = 0.65  # prediction blend — wheels are more reliable
         self.vx = (1 - alpha) * self.vx + alpha * vx_wheel
         self.vy = (1 - alpha) * self.vy + alpha * vy_wheel
 

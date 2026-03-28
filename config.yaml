@@ -122,16 +122,24 @@ servos:
 
 # Path recorder (запись пути для возврата домой)
 path_recorder:
-  record_interval_m: 0.05      # записывать точку каждые 5 см
-  record_interval_rad: 0.10    # или каждые ~6° поворота
-  replay_goal_tolerance: 0.06  # м — точность промежуточных точек
-  replay_home_tolerance: 0.03  # м — точность финальной точки (дом)
-  replay_linear_speed: 0.22    # м/с — скорость возврата (было 0.12)
-  replay_min_linear: 0.06      # м/с — минимальная скорость (антистолл)
+  record_interval_m: 0.025     # записывать точку каждые 2.5 см (точнее)
+  record_interval_rad: 0.06    # или каждые ~3.4° поворота
+  replay_goal_tolerance: 0.035 # м — точность промежуточных точек
+  replay_home_tolerance: 0.012 # м — точность финальной точки (1.2 см)
+  replay_linear_speed: 0.18    # м/с — скорость возврата (медленнее для точности)
+  replay_min_linear: 0.04      # м/с — минимальная скорость (антистолл)
   replay_angular_speed: 0.8    # рад/с — макс скорость поворота
-  replay_angular_kp: 2.0       # P-коэффициент угловой коррекции
-  replay_lookahead_m: 0.12     # м — дистанция опережения (pure pursuit)
-  max_waypoints: 5000          # лимит точек
+  replay_angular_kp: 2.8       # P-коэффициент угловой коррекции (усилен)
+  replay_lookahead_m: 0.08     # м — дистанция опережения (точнее)
+  max_waypoints: 10000         # лимит точек
+  final_home_align: true       # выравнивание курса после возврата домой
+  obstacle_stop_dist: 0.18     # м — остановка при препятствии
+  obstacle_slow_dist: 0.35     # м — замедление при препятствии
+
+# Калибровка колёсной одометрии
+wheel_calibration:
+  scale_linear: 1.0            # множитель для линейной скорости (калибруй по 1м)
+  scale_angular: 1.0           # множитель для угловой скорости (калибруй по 360°)
 
 # SLAM карта (ультразвук + одометрия)
 slam_map:

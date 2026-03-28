@@ -1,0 +1,320 @@
+% ============================================================
+%  Глава 8 — Калибровка IMU и цифровая фильтрация
+%  Файл: pi_nodes/nodes/imu_node.py
+% ============================================================
+\chapter{Калибровка IMU и цифровая фильтрация}
+\label{ch:imu_calibration}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/nodes/imu\_node.py} \quad (294 строки, Python)
+\end{filebox}
+
+\section{Аппаратная часть: MPU6050}
+
+Датчик MPU6050 --- 6-осевая IMU (3-осевой акселерометр + 3-осевой гироскоп)
+на шине I2C по адресу \texttt{0x68}.
+
+\subsection{Масштабные коэффициенты}
+
+\begin{filebox}[title={\filepath{imu\_node.py}, строки 46--55}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=46]
+MPU6050_ADDR = 0x68
+ACCEL_SCALE = 16384.0    # LSB/g at +/-2g
+GYRO_SCALE  = 131.0      # LSB/(deg/s) at +/-250 deg/s
+DEG2RAD = math.pi / 180.0
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Перевод сырых показаний в физические единицы:}
+
+Акселерометр (из сырых 16-бит целых в м/с$^2$):
+
+\begin{equation}
+  a_{\text{м/с}^2} = \frac{\text{raw}_{16\text{bit}}}{16384} \times 9.81
+  \label{eq:accel_scale}
+\end{equation}
+
+Гироскоп (из сырых 16-бит целых в рад/с):
+
+\begin{equation}
+  \omega_{\text{рад/с}} = \frac{\text{raw}_{16\text{bit}}}{131} \times \frac{\pi}{180}
+  \label{eq:gyro_scale}
+\end{equation}
+
+\begin{filebox}[title={\filepath{imu\_node.py}, строки 133--149 --- \_read\_raw()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=138]
+raw = self._bus.read_i2c_block_data(MPU6050_ADDR, ACCEL_XOUT_H, 14)
+ax = struct.unpack('>h', bytes(raw[0:2]))[0] / ACCEL_SCALE * 9.81
+ay = struct.unpack('>h', bytes(raw[2:4]))[0] / ACCEL_SCALE * 9.81
+az = struct.unpack('>h', bytes(raw[4:6]))[0] / ACCEL_SCALE * 9.81
+gx = struct.unpack('>h', bytes(raw[8:10]))[0] / GYRO_SCALE * DEG2RAD
+gy = struct.unpack('>h', bytes(raw[10:12]))[0] / GYRO_SCALE * DEG2RAD
+gz = struct.unpack('>h', bytes(raw[12:14]))[0] / GYRO_SCALE * DEG2RAD
+\end{lstlisting}
+\end{filebox}
+
+Считываются 14 байт начиная с регистра \texttt{0x3B}: три оси акселерометра (6 байт),
+температура (2 байта, пропускается), три оси гироскопа (6 байт). Формат ---
+big-endian signed 16-bit.
+
+\section{Цифровой фильтр нижних частот (DLPF)}
+
+\begin{filebox}[title={\filepath{imu\_node.py}, строки 87--89}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=87]
+# DLPF mode 3: accel 44Hz, gyro 42Hz
+bus.write_byte_data(MPU6050_ADDR, DLPF_CFG, 0x03)
+bus.write_byte_data(MPU6050_ADDR, SMPLRT_DIV, 9)  # 1kHz/(1+9)=100Hz
+\end{lstlisting}
+\end{filebox}
+
+Аппаратный DLPF на уровне сенсора: режим 3 обеспечивает полосу пропускания
+44~Гц для акселерометра и 42~Гц для гироскопа, подавляя механические вибрации шасси.
+
+Частота выборки:
+
+\begin{equation}
+  f_{\text{sample}} = \frac{f_{\text{osc}}}{1 + \text{SMPLRT\_DIV}} = \frac{1000}{1+9} = 100\,\text{Гц}
+  \label{eq:sample_rate}
+\end{equation}
+
+\section{Экспоненциальное скользящее среднее (EMA)}
+
+\begin{filebox}[title={\filepath{imu\_node.py}, строки 60--64, 151--167 --- \_apply\_ema()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=60]
+ACCEL_EMA_ALPHA = 0.2     # alpha for accel (8 Hz cutoff)
+GYRO_EMA_ALPHA  = 0.5     # alpha for gyro  (less smoothing)
+\end{lstlisting}
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=160]
+self._ema_ax = a * ax + (1 - a) * self._ema_ax
+self._ema_ay = a * ay + (1 - a) * self._ema_ay
+self._ema_az = a * az + (1 - a) * self._ema_az
+self._ema_gx = g * gx + (1 - g) * self._ema_gx
+self._ema_gy = g * gy + (1 - g) * self._ema_gy
+self._ema_gz = g * gz + (1 - g) * self._ema_gz
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Рекуррентная формула EMA} (фильтр первого порядка):
+
+\begin{equation}
+  \boxed{\hat{x}_k = \alpha \cdot x_k + (1-\alpha) \cdot \hat{x}_{k-1}}
+  \label{eq:ema}
+\end{equation}
+
+Частота среза приблизительно:
+
+\begin{equation}
+  f_{\text{cutoff}} \approx \frac{\alpha \cdot f_s}{2\pi(1-\alpha)}
+  \label{eq:ema_cutoff}
+\end{equation}
+
+Для акселерометра ($\alpha = 0.2$, $f_s = 50$~Гц):
+
+\begin{equation}
+  f_{\text{cutoff}} \approx \frac{0.2 \times 50}{2\pi \times 0.8} \approx 2.0\,\text{Гц}
+  \label{eq:ema_cutoff_accel}
+\end{equation}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Канал} & $\alpha$ & \textbf{Частота среза} & \textbf{Назначение}\\
+\midrule
+Акселерометр & $0.2$ & ${\approx}2\,\text{Гц}$ & Сильное подавление вибраций\\
+Гироскоп     & $0.5$ & ${\approx}8\,\text{Гц}$ & Умеренное сглаживание\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Калибровка при старте}
+
+\begin{filebox}[title={\filepath{imu\_node.py}, строки 169--212 --- \_finish\_calibration()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=171]
+n = len(self._cal_samples)   # 100 samples (2 sec @ 50 Hz)
+sum_ax = sum_ay = sum_az = 0.0
+sum_gx = sum_gy = sum_gz = 0.0
+for (ax, ay, az, gx, gy, gz) in self._cal_samples:
+    sum_ax += ax; sum_ay += ay; sum_az += az
+    sum_gx += gx; sum_gy += gy; sum_gz += gz
+
+# Gyro offset: average at rest should be zero
+self._gyro_offset = (sum_gx / n, sum_gy / n, sum_gz / n)
+
+# Gravity vector in body frame at rest
+avg_ax, avg_ay, avg_az = sum_ax/n, sum_ay/n, sum_az/n
+self._gravity_body = (avg_ax, avg_ay, avg_az)
+
+# Initial orientation from gravity
+self._home_roll  = math.atan2(avg_ay, avg_az)
+self._home_pitch = math.atan2(-avg_ax,
+                    math.sqrt(avg_ay*avg_ay + avg_az*avg_az))
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Смещение нуля гироскопа}
+
+В покое идеальный гироскоп показывает $\omega = 0$. В реальности
+имеется постоянное смещение (bias):
+
+\begin{equation}
+  \vect{b}_{\text{gyro}} = \frac{1}{N}\sum_{k=1}^{N} \vect{\omega}_k^{\text{raw}}, \quad N = 100
+  \label{eq:gyro_bias}
+\end{equation}
+
+Все последующие измерения корректируются:
+$\vect{\omega}_{\text{corr}} = \vect{\omega}_{\text{raw}} - \vect{b}_{\text{gyro}}$.
+
+\subsection{Вектор гравитации в системе координат тела}
+
+Среднее показание акселерометра в покое --- это вектор гравитации
+в системе координат IMU:
+
+\begin{equation}
+  \vect{g}_{\text{body}} = \frac{1}{N}\sum_{k=1}^{N} \vect{a}_k^{\text{raw}}
+  = \bigl(\bar{a}_x,\, \bar{a}_y,\, \bar{a}_z\bigr)
+  \label{eq:gravity_body}
+\end{equation}
+
+\subsection{Начальная ориентация (home)}
+
+Из вектора гравитации вычисляется начальный наклон:
+
+\textbf{Крен:}
+\begin{equation}
+  \phi_{\text{home}} = \mathrm{atan2}(\bar{a}_y,\, \bar{a}_z)
+  \label{eq:home_roll}
+\end{equation}
+
+\textbf{Тангаж:}
+\begin{equation}
+  \theta_{\text{home}} = \mathrm{atan2}\!\left(-\bar{a}_x,\, \sqrt{\bar{a}_y^2 + \bar{a}_z^2}\right)
+  \label{eq:home_pitch}
+\end{equation}
+
+Модуль вектора гравитации (для диагностики):
+
+\begin{equation}
+  |\vect{g}| = \sqrt{\bar{a}_x^2 + \bar{a}_y^2 + \bar{a}_z^2} \approx 9.81\,\text{м/с}^2
+  \label{eq:g_magnitude}
+\end{equation}
+
+\section{Конвейер обработки IMU}
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=0.5cm,
+  block/.style={rectangle, draw=blue!50, fill=blue!8, rounded corners,
+                minimum width=4cm, minimum height=0.7cm,
+                font=\small\bfseries, align=center},
+  arrow/.style={-{Stealth}, thick, blue!60}
+]
+  \node[block] (raw) {Сырые данные (14 байт I2C)};
+  \node[block, below=of raw] (scale) {Масштабирование\\$a=\text{raw}/16384 \times 9.81$};
+  \node[block, below=of scale] (ema) {EMA фильтр\\$\hat{x} = \alpha x + (1-\alpha)\hat{x}$};
+  \node[block, below=of ema] (bias) {Коррекция смещения\\$\omega = \omega_{\text{raw}} - b$};
+  \node[block, below=of bias] (ekf) {EKF IMU (глава~\ref{ch:imu_ekf})};
+  \node[block, below=of ekf] (pub) {Публикация: $(\phi, \theta, \psi)$ + $\vect{a}$};
+
+  \draw[arrow] (raw) -- (scale);
+  \draw[arrow] (scale) -- (ema);
+  \draw[arrow] (ema) -- (bias);
+  \draw[arrow] (bias) -- (ekf);
+  \draw[arrow] (ekf) -- (pub);
+\end{tikzpicture}
+\end{center}
+
+\section{Сводная таблица параметров}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{ACCEL\_SCALE} & $16384$ & LSB/g при $\pm 2\,g$\\
+\texttt{GYRO\_SCALE}  & $131$   & LSB/(°/с) при $\pm 250\,\text{°/с}$\\
+\texttt{DLPF\_CFG}    & $3$     & Полоса: 44~Гц акс., 42~Гц гиро\\
+\texttt{SMPLRT\_DIV}  & $9$     & Частота: $100\,\text{Гц}$\\
+\texttt{ACCEL\_EMA\_ALPHA} & $0.2$ & Сглаживание акселерометра\\
+\texttt{GYRO\_EMA\_ALPHA}  & $0.5$ & Сглаживание гироскопа\\
+\texttt{CALIBRATION\_SAMPLES} & $100$ & $2\,\text{сек}$ калибровки\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{C++ реализация (оптимизированная)}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{ros\_ws/src/robot\_pkg\_cpp/src/imu\_node.cpp} \quad (172 строки, C++)
+\end{filebox}
+
+\begin{filebox}[title={\filepath{imu\_node.cpp}, строки 90--127 --- readRaw()}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=116]
+// Bytes 0-5: accelerometer (X,Y,Z)
+double ax = to_int16(raw[0],  raw[1])  / ACCEL_SCALE * GRAVITY;
+double ay = to_int16(raw[2],  raw[3])  / ACCEL_SCALE * GRAVITY;
+double az = to_int16(raw[4],  raw[5])  / ACCEL_SCALE * GRAVITY;
+// Bytes 8-13: gyroscope (X,Y,Z)
+double gx = to_int16(raw[8],  raw[9])  / GYRO_SCALE * DEG2RAD;
+double gy = to_int16(raw[10], raw[11]) / GYRO_SCALE * DEG2RAD;
+double gz = to_int16(raw[12], raw[13]) / GYRO_SCALE * DEG2RAD;
+\end{lstlisting}
+\end{filebox}
+
+C++ версия использует прямой Linux I2C ioctl вместо Python smbus2.
+Те же масштабные коэффициенты, тот же формат данных.
+Преимущество: обратный вызов таймера ${\approx}10\,\mu\text{с}$ vs ${\approx}1\,\text{мс}$ в Python
+(отсутствие GIL и интерпретатора).
+
+\section{Теоретическое обоснование: цифровая фильтрация}
+
+\subsection{EMA как дискретный ФНЧ}
+
+Экспоненциальное скользящее среднее (EMA) --- это \textbf{дискретный
+фильтр низких частот первого порядка} (IIR-фильтр):
+
+\begin{equation}
+  y_k = \alpha\, x_k + (1-\alpha)\, y_{k-1}
+  \label{eq:ema_filter}
+\end{equation}
+
+$Z$-преобразование:
+
+\begin{equation}
+  H(z) = \frac{\alpha}{1 - (1-\alpha)z^{-1}}
+  \label{eq:ema_ztransform}
+\end{equation}
+
+Полюс фильтра: $z_p = 1 - \alpha$. Условие устойчивости $|z_p| < 1$
+выполняется при $0 < \alpha < 2$.
+
+\subsection{Частотная характеристика EMA}
+
+Частота среза (на уровне $-3\,\text{дБ}$):
+
+\begin{equation}
+  f_c = \frac{f_s}{2\pi}\arccos\!\left(\frac{2-\alpha}{2(1-\alpha)}\right)
+  \label{eq:ema_cutoff}
+\end{equation}
+
+Для $\alpha = 0.15$, $f_s = 50\,\text{Гц}$: $f_c \approx 1.2\,\text{Гц}$.
+Это подавляет вибрации двигателей ($> 10\,\text{Гц}$), сохраняя
+полезный сигнал поворота ($< 1\,\text{Гц}$).
+
+\subsection{Связь с аналоговым RC-фильтром}
+
+EMA эквивалентен дискретизации аналогового RC-фильтра:
+
+\begin{equation}
+  W(p) = \frac{1}{\tau p + 1}, \quad \tau = \frac{(1-\alpha)\Delta t}{\alpha}
+  \label{eq:ema_analog}
+\end{equation}
+
+Для $\alpha = 0.15$: $\tau = 0.85 \cdot 0.02 / 0.15 \approx 0.113\,\text{с}$.
+
+\subsection{DLPF как аппаратный ФНЧ}
+
+Цифровой фильтр низких частот (DLPF) MPU-6050 реализует
+аналогичную функцию аппаратно, с полосой $44\,\text{Гц}$
+(режим 3). Два последовательных ФНЧ (DLPF + EMA) дают
+затухание $-12\,\text{дБ/окт}$ (второй порядок) в полосе
+подавления.

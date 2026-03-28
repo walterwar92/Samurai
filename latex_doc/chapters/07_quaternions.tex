@@ -1,0 +1,152 @@
+% ============================================================
+%  Глава 7 — Кватернионы и проекции сенсоров
+%  Файл: compute_node/dashboard_node.py
+% ============================================================
+\chapter{Кватернионы, проекции и преобразования ориентации}
+\label{ch:quaternions}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{compute\_node/dashboard\_node.py} \quad (Python, строки 298--521)
+\end{filebox}
+
+\section{Углы Эйлера из акселерометра (сырые)}
+
+\begin{filebox}[title={\filepath{dashboard\_node.py}, строки 307--308 --- \_mqtt\_imu()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=306]
+# Raw pitch/roll from accel (no yaw)
+pitch = math.degrees(math.atan2(ay, math.sqrt(ax*ax + az*az)))
+roll  = math.degrees(math.atan2(-ax, az))
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Тангаж} (наклон вперёд/назад):
+
+\begin{equation}
+  \theta_{\text{pitch}} = \mathrm{atan2}\!\left(a_y,\, \sqrt{a_x^2 + a_z^2}\right)
+  \label{eq:pitch_raw}
+\end{equation}
+
+\textbf{Крен} (наклон влево/вправо):
+
+\begin{equation}
+  \phi_{\text{roll}} = \mathrm{atan2}(-a_x,\, a_z)
+  \label{eq:roll_raw}
+\end{equation}
+
+\begin{notebox}
+Функция $\mathrm{atan2}(y, x)$ возвращает угол в $(-\pi, \pi]$ и
+корректно обрабатывает все четыре квадранта, в отличие от $\arctan(y/x)$.
+\end{notebox}
+
+\section{Кватернион $\to$ угол курса (yaw из ROS2 Odometry)}
+
+\begin{filebox}[title={\filepath{dashboard\_node.py}, строки 503--506 --- \_odom\_cb()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=503]
+q = msg.pose.pose.orientation
+siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+yaw = math.atan2(siny_cosp, cosy_cosp)
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Кватернионы и ориентация в 3D}
+
+Кватернион единичной длины $\vect{q} = (q_w, q_x, q_y, q_z)$, $|\vect{q}|=1$,
+представляет вращение в 3D:
+
+\begin{equation}
+  \vect{q} = \cos\frac{\alpha}{2} + \hat{\vect{n}}\sin\frac{\alpha}{2}
+  \label{eq:quaternion_def}
+\end{equation}
+
+где $\hat{\vect{n}}$ --- ось вращения, $\alpha$ --- угол.
+
+\subsection{Формула извлечения угла курса}
+
+Из матрицы вращения, построенной из кватерниона, угол вращения вокруг $Z$:
+
+\begin{equation}
+  R_{32} = 2(q_w q_z + q_x q_y), \quad
+  R_{33} = 1 - 2(q_y^2 + q_z^2)
+  \label{eq:rot_matrix_elems}
+\end{equation}
+
+\begin{equation}
+  \boxed{\psi = \mathrm{atan2}\!\bigl(2(q_w q_z + q_x q_y),\;
+    1 - 2(q_y^2 + q_z^2)\bigr)}
+  \label{eq:yaw_from_quat}
+\end{equation}
+
+Это стандартная ZYX-декомпозиция (aerospace convention):
+$\psi$ --- курс, $\theta$ --- тангаж, $\phi$ --- крен.
+
+\section{Полярные координаты лазерного сканера $\to$ декартовы}
+
+\begin{filebox}[title={\filepath{dashboard\_node.py}, строки 516--521 --- \_scan\_cb()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=516]
+def _scan_cb(self, msg: LaserScan):
+    points, angle = [], msg.angle_min
+    for r in msg.ranges:
+        if msg.range_min < r < msg.range_max:
+            points.append([
+                round(r * math.cos(angle), 3),
+                round(r * math.sin(angle), 3)
+            ])
+        angle += msg.angle_increment
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Полярные $\to$ декартовы координаты} (точка облака лазерного сканера):
+
+\begin{equation}
+  \begin{pmatrix} x \\ y \end{pmatrix}
+  = r \begin{pmatrix} \cos\alpha \\ \sin\alpha \end{pmatrix}
+  \label{eq:polar_to_cart}
+\end{equation}
+
+где $r$ --- измеренная дальность, $\alpha$ --- угол луча лазера.
+
+\section{Геометрическое представление кватерниона}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.2]
+  % Coordinate axes
+  \draw[-{Stealth}, thick] (0,0,0) -- (2,0,0) node[right]{$X$};
+  \draw[-{Stealth}, thick] (0,0,0) -- (0,2,0) node[above]{$Z$};
+  \draw[-{Stealth}, thick] (0,0,0) -- (0,0,2) node[right]{$Y$};
+
+  % Rotation axis
+  \draw[-{Stealth}, red!70, very thick] (0,0,0) -- (1.2, 1.5, 0.5)
+    node[right, red!70]{$\hat{\vect{n}}$};
+
+  % Arc for angle
+  \draw[blue!60, thick, ->] (0.6,0,0) arc[start angle=0, end angle=50, radius=0.6]
+    node[right, blue!60, font=\small]{$\alpha/2$};
+
+  % Quaternion label
+  \node[font=\small] at (0, -0.4, 0) {$\vect{q} = \cos\dfrac{\alpha}{2} + \hat{\vect{n}}\sin\dfrac{\alpha}{2}$};
+\end{tikzpicture}
+\end{center}
+
+\section{Полная матрица вращения из кватерниона}
+
+\begin{equation}
+  \mat{R} = \begin{pmatrix}
+    1-2(q_y^2+q_z^2) & 2(q_xq_y-q_wq_z) & 2(q_xq_z+q_wq_y) \\
+    2(q_xq_y+q_wq_z) & 1-2(q_x^2+q_z^2) & 2(q_yq_z-q_wq_x) \\
+    2(q_xq_z-q_wq_y) & 2(q_yq_z+q_wq_x) & 1-2(q_x^2+q_y^2)
+  \end{pmatrix}
+  \label{eq:rot_matrix_full}
+\end{equation}
+
+Для чистого вращения вокруг $Z$ ($q_x = q_y = 0$,
+$q_z = \sin(\psi/2)$, $q_w = \cos(\psi/2)$):
+
+\begin{equation}
+  \mat{R}_z(\psi) = \begin{pmatrix}
+    \cos\psi & -\sin\psi & 0 \\
+    \sin\psi &  \cos\psi & 0 \\
+    0 & 0 & 1
+  \end{pmatrix}
+  \label{eq:Rz_yaw}
+\end{equation}

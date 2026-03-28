@@ -1,0 +1,128 @@
+% ============================================================
+%  Глава 12 — Патрулирование: навигация по точкам и кватернионы
+%  Файл: ros_ws/src/robot_pkg/robot_pkg/patrol_node.py
+% ============================================================
+\chapter{Патрулирование: навигация по точкам и кватернионы}
+\label{ch:patrol}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{ros\_ws/src/robot\_pkg/robot\_pkg/patrol\_node.py} \quad (145 строк, Python)
+\end{filebox}
+
+\section{Постановка задачи}
+
+Модуль реализует циклический обход набора путевых точек (waypoints)
+с отправкой целей в Nav2 (ROS2 навигационный стек).
+
+\section{Проверка достижения точки}
+
+\begin{filebox}[title={\filepath{patrol\_node.py}, строки 90--108 --- \_tick()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=102]
+# Check if reached
+dist = math.hypot(tx - self._robot_x, ty - self._robot_y)
+if dist < GOAL_TOLERANCE:   # 0.20 m
+    self._current_idx = (self._current_idx + 1) % len(self._waypoints)
+    self._goal_sent = False
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Евклидово расстояние} до цели:
+
+\begin{equation}
+  d = \sqrt{(t_x - x_r)^2 + (t_y - y_r)^2} = \mathrm{hypot}(\Delta x, \Delta y)
+  \label{eq:patrol_dist}
+\end{equation}
+
+Точка считается достигнутой при $d < 0.20\,\text{м}$.
+
+\textbf{Циклическая индексация:}
+
+\begin{equation}
+  i_{\text{next}} = (i_{\text{curr}} + 1) \bmod N_{\text{waypoints}}
+  \label{eq:cyclic_idx}
+\end{equation}
+
+\section{Формирование цели Nav2 (кватернион из yaw)}
+
+\begin{filebox}[title={\filepath{patrol\_node.py}, строки 110--118 --- \_send\_goal()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=110]
+def _send_goal(self, x, y, yaw):
+    goal = PoseStamped()
+    goal.header.stamp = self.get_clock().now().to_msg()
+    goal.header.frame_id = 'map'
+    goal.pose.position.x = x
+    goal.pose.position.y = y
+    goal.pose.orientation.z = math.sin(yaw / 2.0)
+    goal.pose.orientation.w = math.cos(yaw / 2.0)
+    self._goal_pub.publish(goal)
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Кватернион из угла курса} (чистое вращение вокруг $Z$):
+
+\begin{equation}
+  \boxed{
+  q_z = \sin\!\left(\frac{\psi}{2}\right), \quad
+  q_w = \cos\!\left(\frac{\psi}{2}\right), \quad
+  q_x = q_y = 0
+  }
+  \label{eq:yaw_to_quat}
+\end{equation}
+
+Это следствие формулы Родрига: для оси вращения $\hat{\vect{n}} = (0, 0, 1)$
+(ось $Z$, вертикальная):
+
+\begin{equation}
+  \vect{q} = \cos\frac{\psi}{2} + \hat{\vect{n}}\sin\frac{\psi}{2}
+  = \left(0,\, 0,\, \sin\frac{\psi}{2},\, \cos\frac{\psi}{2}\right)
+  \label{eq:rodriguez_z}
+\end{equation}
+
+\begin{notebox}
+ROS2 использует порядок $(q_x, q_y, q_z, q_w)$ в сообщениях
+\texttt{geometry\_msgs/Quaternion}. Для 2D-робота с вращением только
+вокруг $Z$ достаточно задать $q_z$ и $q_w$, остальные равны нулю.
+\end{notebox}
+
+\section{Геометрия патрулирования}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.5]
+  % Waypoints
+  \filldraw[green!70!black] (0, 0)   circle (0.06) node[below left, font=\tiny]{WP$_0$};
+  \filldraw[green!70!black] (2, 0.5) circle (0.06) node[below right, font=\tiny]{WP$_1$};
+  \filldraw[green!70!black] (2, 2)   circle (0.06) node[above right, font=\tiny]{WP$_2$};
+  \filldraw[green!70!black] (0.5, 1.5) circle (0.06) node[above left, font=\tiny]{WP$_3$};
+
+  % Path
+  \draw[-{Stealth}, blue!60, thick] (0,0) -- (2,0.5);
+  \draw[-{Stealth}, blue!60, thick] (2,0.5) -- (2,2);
+  \draw[-{Stealth}, blue!60, thick] (2,2) -- (0.5,1.5);
+  \draw[-{Stealth}, blue!60, thick, dashed] (0.5,1.5) -- (0,0);
+
+  % Robot
+  \filldraw[blue!80] (1.2, 0.3) circle (0.08);
+  \node[below, font=\tiny, blue!80] at (1.2, 0.22) {Робот};
+
+  % Distance
+  \draw[red!50, dashed] (1.2, 0.3) -- (2, 0.5)
+    node[midway, above, font=\tiny]{$d < 0.20\,\text{м}$?};
+
+  % Tolerance circle
+  \draw[green!50, dashed] (2, 0.5) circle (0.2);
+\end{tikzpicture}
+\end{center}
+
+\section{Параметры}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{GOAL\_TOLERANCE} & $0.20\,\text{м}$ & Допуск достижения точки\\
+Частота обновления & $2\,\text{Гц}$ & Частота проверки цели\\
+Кватернион & $(0, 0, \sin\frac{\psi}{2}, \cos\frac{\psi}{2})$ & Ориентация цели\\
+\bottomrule
+\end{tabular}
+\end{center}
