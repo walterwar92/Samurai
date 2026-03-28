@@ -169,6 +169,7 @@ export interface RobotState {
   slam_map: SlamMapData | null
   detection_enabled: boolean
   obstacle_avoidance_enabled: boolean
+  collision_guard_enabled: boolean
   // Calibration
   calibration: { state?: string; type?: string; progress?: number } | null
   calibration_result: {

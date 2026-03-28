@@ -104,4 +104,8 @@ export const api = {
   // Obstacle avoidance toggle
   setObstacleAvoidance: (enabled: boolean) =>
     post('/api/obstacle_avoidance/toggle', { enabled }),
+
+  // Collision guard toggle
+  setCollisionGuard: (enabled: boolean) =>
+    post('/api/collision_guard/toggle', { enabled }),
 }

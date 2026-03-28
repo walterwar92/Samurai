@@ -60,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --device)       DEVICE="$2"; shift 2 ;;
         --no-annotated) NO_ANNOTATED=true; shift ;;
         --quality)      QUALITY="$2"; shift 2 ;;
+        --python)       PYTHON_OVERRIDE="$2"; shift 2 ;;
         --install)      INSTALL_DEPS=true; shift ;;
         -h|--help)
             echo "Использование: $0 [опции]"
@@ -72,6 +73,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --device DEVICE   Устройство: cuda или cpu (по умолчанию: cuda)"
             echo "  --no-annotated    Не публиковать аннотированные кадры"
             echo "  --quality INT     Качество JPEG аннотации (по умолчанию: 70)"
+            echo "  --python PATH     Путь к Python (если python3 не тот)"
             echo "  --install         Установить Python-зависимости"
             echo "  -h, --help        Показать эту справку"
             exit 0
@@ -110,7 +112,12 @@ fi
 # ── Проверка Python ─────────────────────────────────────────────────────────
 log_step "Проверка окружения"
 
-PYTHON=$(command -v python3 || command -v python || true)
+if [ -n "${PYTHON_OVERRIDE:-}" ]; then
+    PYTHON="$PYTHON_OVERRIDE"
+else
+    # Предпочитаем python (Windows/conda) → python3 (Linux)
+    PYTHON=$(command -v python || command -v python3 || true)
+fi
 if [ -z "$PYTHON" ]; then
     die "Python не найден! Установите Python 3.10+"
 fi
