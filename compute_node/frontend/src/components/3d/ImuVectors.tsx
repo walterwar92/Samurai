@@ -24,12 +24,17 @@ export function ImuVectors({
   const accelRef = useRef<THREE.ArrowHelper>(null)
   const gyroGroupRef = useRef<THREE.Group>(null)
 
+  // Use ref to always have the latest props in useFrame (prevents stale closure)
+  const propsRef = useRef({ posX, posY, accel, gyro })
+  propsRef.current = { posX, posY, accel, gyro }
+
   useFrame(() => {
-    const origin = new THREE.Vector3(posX, 0.12, -posY)
+    const p = propsRef.current
+    const origin = new THREE.Vector3(p.posX, 0.12, -p.posY)
 
     // Accel vector arrow
     if (accelRef.current && showAccel) {
-      const [ax, ay, az] = accel
+      const [ax, ay, az] = p.accel
       const dir = new THREE.Vector3(ax, az, -ay).normalize()
       const len = Math.sqrt(ax * ax + ay * ay + az * az) * ACCEL_SCALE
       accelRef.current.position.copy(origin)
@@ -42,7 +47,7 @@ export function ImuVectors({
     if (gyroGroupRef.current && showGyro) {
       gyroGroupRef.current.position.copy(origin)
       const children = gyroGroupRef.current.children as THREE.Mesh[]
-      const [gx, gy, gz] = gyro
+      const [gx, gy, gz] = p.gyro
 
       // X-axis ring (pitch rate) — red
       const scaleX = Math.min(Math.abs(gx) * GYRO_SCALE + 0.01, 0.15)

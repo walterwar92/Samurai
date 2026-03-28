@@ -603,8 +603,8 @@ class DashboardNode(Node):
             self._event_log.append(entry)
 
     def send_velocity(self, linear_x: float, angular_z: float):
-        """Send cmd_vel directly to Pi."""
-        self._mqtt_pub('cmd_vel',
+        """Send cmd_vel/manual directly to Pi (manual priority — overrides autonomous)."""
+        self._mqtt_pub('cmd_vel/manual',
                        {'linear_x': round(linear_x, 3), 'angular_z': round(angular_z, 3)},
                        qos=0)
         with self._lock:

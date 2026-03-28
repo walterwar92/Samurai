@@ -2,13 +2,20 @@
 """
 motor_node — 4-motor tracked chassis control + accel-fused odometry.
 
+Priority command mux (higher overrides lower, resumes after timeout):
+  1. MANUAL   — cmd_vel/manual (user joystick/voice direct, highest priority)
+  2. COLLISION — internal collision avoidance override
+  3. AUTONOMOUS — cmd_vel (FSM, path_recorder, explorer — lowest priority)
+
 Subscribes:
-    samurai/{robot_id}/cmd_vel       — {linear_x, angular_z}
-    samurai/{robot_id}/speed_profile — "slow" / "normal" / "fast"
-    samurai/{robot_id}/imu           — IMU data with EKF + accel for position
+    samurai/{robot_id}/cmd_vel        — {linear_x, angular_z}  (autonomous)
+    samurai/{robot_id}/cmd_vel/manual — {linear_x, angular_z}  (manual override)
+    samurai/{robot_id}/speed_profile  — "slow" / "normal" / "fast"
+    samurai/{robot_id}/imu            — IMU data with EKF + accel for position
 Publishes:
     samurai/{robot_id}/odom                 — {x, y, theta, vx, vz, ...} @ 20 Hz
     samurai/{robot_id}/speed_profile/active — profile name @ 1 Hz
+    samurai/{robot_id}/cmd_vel/active_source — "manual"/"collision"/"autonomous"/"none"
 
 Position estimation:
     Complementary filter fusing:
@@ -67,6 +74,13 @@ DEADZONE_ANGULAR = cfg('odometry.deadzone_angular', 0.05)  # rad/s
 # Увеличено с 0.5 до значения из конфига (1.0 по умолчанию) — WiFi MQTT может задерживать
 CMD_VEL_TIMEOUT = cfg('odometry.cmd_vel_timeout', 1.0)
 
+# Priority mux — manual override timeout (seconds).
+# After this time without manual commands, autonomous control resumes.
+MANUAL_OVERRIDE_TIMEOUT = cfg('motor.manual_override_timeout', 0.5)
+
+# Collision avoidance — instead of just stopping, attempt to steer around
+COLLISION_AVOID_ANGULAR = 0.6   # rad/s — turn speed when avoiding obstacle
+
 
 class MotorNode(MqttNode):
     def __init__(self, **kwargs):
@@ -96,6 +110,17 @@ class MotorNode(MqttNode):
         self._collision_guard = False
         self._range_m = float('inf')
 
+        # Priority mux: manual override
+        self._manual_linear = 0.0
+        self._manual_angular = 0.0
+        self._last_manual_time = 0.0
+        self._active_source = 'none'      # 'manual', 'collision', 'autonomous', 'none'
+        self._prev_active_source = ''
+
+        # Collision avoidance — steering direction for circumnavigation
+        self._collision_avoid_dir = 1.0   # +1 = left, -1 = right
+        self._collision_avoid_active = False
+
         # IMU state
         self._imu_yaw_rad = None
         self._imu_calibrated = False
@@ -110,6 +135,7 @@ class MotorNode(MqttNode):
             self.log_warn('AccelPositionEstimator not available — wheel-only odom')
 
         self.subscribe('cmd_vel', self._cmd_vel_cb, qos=1)
+        self.subscribe('cmd_vel/manual', self._cmd_vel_manual_cb, qos=1)
         self.subscribe('speed_profile', self._profile_cb, qos=1)
         self.subscribe('imu', self._imu_cb, qos=0)
         self.subscribe('reset_position', self._reset_position_cb, qos=1)
@@ -119,12 +145,22 @@ class MotorNode(MqttNode):
         self.create_timer(1.0, self._publish_profile)   # 1 Hz
 
     def _cmd_vel_cb(self, topic, data):
+        """Autonomous cmd_vel (from FSM, path_recorder, explorer)."""
         if isinstance(data, dict):
             self._linear = float(data.get('linear_x', 0.0))
             self._angular = float(data.get('angular_z', 0.0))
             self._last_cmd_time = self.now_sec()
         else:
             self.log_warn('Bad cmd_vel payload: %s', data)
+
+    def _cmd_vel_manual_cb(self, topic, data):
+        """Manual override cmd_vel (from joystick, dashboard, voice direct commands)."""
+        if isinstance(data, dict):
+            self._manual_linear = float(data.get('linear_x', 0.0))
+            self._manual_angular = float(data.get('angular_z', 0.0))
+            self._last_manual_time = self.now_sec()
+        else:
+            self.log_warn('Bad cmd_vel/manual payload: %s', data)
 
     def _range_cb(self, topic, data):
         if isinstance(data, dict):
@@ -221,27 +257,56 @@ class MotorNode(MqttNode):
         dt = now - self._last_time
         self._last_time = now
 
-        # Auto-stop on cmd_vel timeout
+        # ── Priority mux: select command source ──────────────────
+        manual_active = (self._last_manual_time > 0 and
+                         (now - self._last_manual_time) <= MANUAL_OVERRIDE_TIMEOUT)
+
+        # Auto-stop on autonomous cmd_vel timeout
         if self._last_cmd_time > 0 and (now - self._last_cmd_time) > CMD_VEL_TIMEOUT:
             self._linear = 0.0
             self._angular = 0.0
 
+        # Select source: manual (highest) > autonomous (lowest)
+        if manual_active:
+            lin_cmd = self._manual_linear
+            ang_cmd = self._manual_angular
+            self._active_source = 'manual'
+        else:
+            lin_cmd = self._linear
+            ang_cmd = self._angular
+            self._active_source = 'autonomous' if (abs(lin_cmd) > 0 or abs(ang_cmd) > 0) else 'none'
+
         # Apply dead zone
-        lin_cmd = self._linear
-        ang_cmd = self._angular
         if abs(lin_cmd) < DEADZONE_LINEAR:
             lin_cmd = 0.0
         if abs(ang_cmd) < DEADZONE_ANGULAR:
             ang_cmd = 0.0
 
-        # Collision guard — limit forward motion when obstacle ahead
+        # ── Collision guard (highest priority — overrides everything) ──
         if self._collision_guard and lin_cmd > 0:
             r = self._range_m
             if r < COLLISION_GUARD_STOP_M:
+                # Full stop + active steering to go around obstacle
                 lin_cmd = 0.0
+                if not manual_active:
+                    # Only auto-steer when not in manual mode
+                    ang_cmd = COLLISION_AVOID_ANGULAR * self._collision_avoid_dir
+                    self._active_source = 'collision'
+                    if not self._collision_avoid_active:
+                        self._collision_avoid_active = True
+                        self.log_info('Collision avoidance: steering %s',
+                                      'left' if self._collision_avoid_dir > 0 else 'right')
             elif r < COLLISION_GUARD_SLOW_M:
                 factor = (r - COLLISION_GUARD_STOP_M) / (COLLISION_GUARD_SLOW_M - COLLISION_GUARD_STOP_M)
                 lin_cmd *= max(0.0, factor)
+                if not manual_active:
+                    self._active_source = 'collision'
+            else:
+                if self._collision_avoid_active:
+                    self._collision_avoid_active = False
+                    # Alternate direction for next obstacle
+                    self._collision_avoid_dir *= -1.0
+                    self.log_info('Collision avoidance: clear')
 
         # Drive motors
         lin = max(-self._max_lin, min(self._max_lin, lin_cmd))
@@ -311,6 +376,10 @@ class MotorNode(MqttNode):
 
     def _publish_profile(self):
         self.publish('speed_profile/active', self._profile)
+        # Publish active source for UI feedback
+        if self._active_source != self._prev_active_source:
+            self.publish('cmd_vel/active_source', self._active_source, retain=True)
+            self._prev_active_source = self._active_source
 
     def on_shutdown(self):
         self._driver.shutdown()

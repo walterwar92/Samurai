@@ -47,6 +47,13 @@ OBSTACLE_STOP_DIST = 0.18     # m — stop when obstacle closer than this
 OBSTACLE_SLOW_DIST = 0.35     # m — slow down when obstacle within this
 OBSTACLE_CHECK_HZ = 10        # how often to check obstacles
 
+# ── Obstacle circumnavigation (Bug0 algorithm) ──────────────
+CIRCUMVENT_TURN_SPEED  = 0.5   # rad/s — turn speed when avoiding
+CIRCUMVENT_DRIVE_SPEED = 0.10  # m/s — forward speed during detour
+CIRCUMVENT_TURN_ANGLE  = 1.2   # rad (~70°) — how far to turn away from obstacle
+CIRCUMVENT_DRIVE_DIST  = 0.20  # m — how far to drive sideways past obstacle
+CIRCUMVENT_MAX_ATTEMPTS = 5    # give up after this many consecutive detours
+
 PATHS_DIR = os.path.expanduser('~/paths')
 
 
@@ -72,6 +79,15 @@ class PathRecorderNode(MqttNode):
         self._range_m = 2.0
         self._obstacle_avoidance = False
         self._home_heading = 0.0  # heading at recording start for final alignment
+
+        # Circumnavigation state machine
+        self._circumvent_state = 'none'  # none / turning / driving / reorienting
+        self._circumvent_start_theta = 0.0
+        self._circumvent_start_x = 0.0
+        self._circumvent_start_y = 0.0
+        self._circumvent_dir = 1.0       # +1 = left, -1 = right (alternates)
+        self._circumvent_attempts = 0
+        self._circumvent_goal_bearing = 0.0  # bearing to goal before detour
 
         # Subscribers
         self.subscribe('odom', self._odom_cb)
@@ -195,7 +211,6 @@ class PathRecorderNode(MqttNode):
 
     def _control_loop(self):
         if self._state == 'aligning':
-            # Final heading alignment at home
             self._do_heading_alignment()
             return
         if self._state != 'replaying':
@@ -204,7 +219,6 @@ class PathRecorderNode(MqttNode):
             return
         if self._replay_index < 0:
             if FINAL_HOME_ALIGN:
-                # Align heading to home orientation before finishing
                 self.log_info('Path replay complete — aligning heading')
                 self._state = 'aligning'
                 return
@@ -214,11 +228,35 @@ class PathRecorderNode(MqttNode):
             self._publish_status()
             return
 
-        # ── Obstacle avoidance ──
-        if self._obstacle_avoidance and self._range_m < OBSTACLE_STOP_DIST:
-            # Obstacle too close — stop and wait
-            self.publish('cmd_vel', {'linear_x': 0.0, 'angular_z': 0.0})
+        # ── Obstacle circumnavigation (Bug0-like) ──────────────────
+        if self._obstacle_avoidance and self._circumvent_state != 'none':
+            self._do_circumvent()
             return
+
+        if self._obstacle_avoidance and self._range_m < OBSTACLE_STOP_DIST:
+            if self._circumvent_attempts >= CIRCUMVENT_MAX_ATTEMPTS:
+                # Too many detours — stop and wait for path to clear
+                self.publish('cmd_vel', {'linear_x': 0.0, 'angular_z': 0.0})
+                # Reset attempts if obstacle clears
+                if self._range_m >= OBSTACLE_SLOW_DIST:
+                    self._circumvent_attempts = 0
+                return
+            # Start circumnavigation: remember goal bearing, begin turning
+            tx, ty, _ = self._path[self._replay_index]
+            self._circumvent_goal_bearing = math.atan2(ty - self._y, tx - self._x)
+            self._circumvent_start_theta = self._theta
+            self._circumvent_start_x = self._x
+            self._circumvent_start_y = self._y
+            self._circumvent_state = 'turning'
+            self._circumvent_attempts += 1
+            self.log_info('Obstacle at %.2fm — circumventing (#%d, dir=%s)',
+                          self._range_m, self._circumvent_attempts,
+                          'left' if self._circumvent_dir > 0 else 'right')
+            return
+
+        # Reset circumnavigation attempt counter when path is clear
+        if self._range_m >= OBSTACLE_SLOW_DIST:
+            self._circumvent_attempts = 0
 
         # ── Skip waypoints that are already behind us (look-ahead) ──
         while self._replay_index > 0:
@@ -266,20 +304,17 @@ class PathRecorderNode(MqttNode):
         in_final_approach = is_final and dist < FINAL_APPROACH_RADIUS
 
         if in_final_approach:
-            # ── Precision final approach ──
             angular = FINAL_ANGULAR_KP * angle_error
             angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
 
             cos_factor = max(0.0, math.cos(angle_error))
-            dist_ratio = dist / FINAL_APPROACH_RADIUS  # 0..1
+            dist_ratio = dist / FINAL_APPROACH_RADIUS
             linear = FINAL_LINEAR_SPEED * cos_factor * dist_ratio * obstacle_factor
             linear = max(REPLAY_MIN_LINEAR * 0.5 * cos_factor, linear)
 
-            # Rotate in place if angle error > 40° during final approach
             if abs(angle_error) > 0.7:
                 linear = 0.0
         else:
-            # ── Normal pure pursuit ──
             angular = REPLAY_ANGULAR_KP * angle_error
             angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
 
@@ -289,7 +324,6 @@ class PathRecorderNode(MqttNode):
             linear = REPLAY_LINEAR_SPEED * cos_factor * dist_factor * obstacle_factor
             linear = max(REPLAY_MIN_LINEAR * cos_factor, linear)
 
-            # If angle error is very large (>80°), stop and rotate in place
             if abs(angle_error) > 1.0:
                 linear = 0.0
 
@@ -297,6 +331,71 @@ class PathRecorderNode(MqttNode):
             'linear_x': round(linear, 3),
             'angular_z': round(angular, 3),
         })
+
+    def _do_circumvent(self):
+        """Bug0 obstacle circumnavigation state machine.
+
+        States:
+          turning     — rotate away from obstacle by CIRCUMVENT_TURN_ANGLE
+          driving     — drive forward past obstacle by CIRCUMVENT_DRIVE_DIST
+          reorienting — turn back toward goal waypoint
+        """
+        if self._circumvent_state == 'turning':
+            # Turn away from obstacle
+            turned = abs(self._angle_diff(self._theta, self._circumvent_start_theta))
+            if turned >= CIRCUMVENT_TURN_ANGLE:
+                # Done turning — start driving past obstacle
+                self._circumvent_state = 'driving'
+                self._circumvent_start_x = self._x
+                self._circumvent_start_y = self._y
+                self.log_info('Circumvent: turned %.0f° — driving past', math.degrees(turned))
+            else:
+                self.publish('cmd_vel', {
+                    'linear_x': 0.0,
+                    'angular_z': round(CIRCUMVENT_TURN_SPEED * self._circumvent_dir, 3),
+                })
+                return
+
+        if self._circumvent_state == 'driving':
+            # Check if new obstacle appeared ahead during detour
+            if self._range_m < OBSTACLE_STOP_DIST:
+                # Obstacle ahead during detour — turn more
+                self._circumvent_start_theta = self._theta
+                self._circumvent_state = 'turning'
+                return
+
+            dx = self._x - self._circumvent_start_x
+            dy = self._y - self._circumvent_start_y
+            driven = math.sqrt(dx * dx + dy * dy)
+            if driven >= CIRCUMVENT_DRIVE_DIST:
+                # Driven far enough — reorient toward goal
+                self._circumvent_state = 'reorienting'
+                self.log_info('Circumvent: driven %.2fm — reorienting to goal', driven)
+            else:
+                self.publish('cmd_vel', {
+                    'linear_x': CIRCUMVENT_DRIVE_SPEED,
+                    'angular_z': 0.0,
+                })
+                return
+
+        if self._circumvent_state == 'reorienting':
+            # Turn back toward the current goal waypoint
+            tx, ty, _ = self._path[max(0, self._replay_index)]
+            goal_bearing = math.atan2(ty - self._y, tx - self._x)
+            angle_error = self._angle_diff(goal_bearing, self._theta)
+
+            if abs(angle_error) < 0.15:  # ~8.6° tolerance
+                # Close enough — resume normal path following
+                self._circumvent_state = 'none'
+                self._circumvent_dir *= -1.0  # alternate direction for next obstacle
+                self.log_info('Circumvent: complete — resuming path')
+            else:
+                angular = 1.5 * angle_error
+                angular = max(-CIRCUMVENT_TURN_SPEED, min(CIRCUMVENT_TURN_SPEED, angular))
+                self.publish('cmd_vel', {
+                    'linear_x': 0.0,
+                    'angular_z': round(angular, 3),
+                })
 
     def _do_heading_alignment(self):
         """Rotate in place to align with home heading after reaching home position."""
