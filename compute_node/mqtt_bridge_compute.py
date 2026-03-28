@@ -90,6 +90,15 @@ class MqttBridgeCompute(Node):
         self._path_status_pub = self.create_publisher(String, '/path_recorder/status', 10)
         self._path_data_pub = self.create_publisher(String, '/path_recorder/path', 10)
 
+        # ── Remote YOLO publishers (MQTT GPU laptop → ROS2) ──
+        # These publish detection data from the remote GPU laptop
+        # into ROS2 so that dashboard and other nodes can use it.
+        self._remote_det_pub = self.create_publisher(String, '/ball_detection', 10)
+        self._remote_dets_pub = self.create_publisher(String, '/yolo/detections', 10)
+        self._remote_ann_pub = self.create_publisher(
+            CompressedImage, '/yolo/annotated/compressed', sensor_qos)
+        self._remote_yolo_online = False
+
         # ── TF Broadcasters ──────────────────────────────────
         self._tf_broadcaster = TransformBroadcaster(self)
         self._publish_static_transforms()
@@ -172,6 +181,11 @@ class MqttBridgeCompute(Node):
         client.subscribe(f'{self._prefix}/slam_map')
         client.subscribe(f'{self._prefix}/path_recorder/status')
         client.subscribe(f'{self._prefix}/path_recorder/path')
+        # Remote YOLO detections (from GPU laptop via MQTT)
+        client.subscribe(f'{self._prefix}/ball_detection')
+        client.subscribe(f'{self._prefix}/detections')
+        client.subscribe(f'{self._prefix}/yolo/annotated', qos=0)
+        client.subscribe(f'{self._prefix}/yolo/status')
 
     def _on_mqtt_message(self, client, userdata, msg):
         topic = msg.topic
@@ -198,6 +212,15 @@ class MqttBridgeCompute(Node):
                 self._handle_slam_map(msg.payload)
             elif suffix.startswith('path_recorder/'):
                 self._handle_path_recorder(suffix, msg.payload)
+            # Remote YOLO detections (from GPU laptop)
+            elif suffix == 'ball_detection':
+                self._handle_remote_ball_detection(msg.payload)
+            elif suffix == 'detections':
+                self._handle_remote_detections(msg.payload)
+            elif suffix == 'yolo/annotated':
+                self._handle_remote_annotated(msg.payload)
+            elif suffix == 'yolo/status':
+                self._handle_yolo_status(msg.payload)
         except Exception as exc:
             self.get_logger().error(f'Bridge error [{suffix}]: {exc}')
 
@@ -355,6 +378,38 @@ class MqttBridgeCompute(Node):
         elif suffix == 'path_recorder/path':
             self._path_data_pub.publish(msg)
 
+    # ── Remote YOLO Handlers (GPU laptop → ROS2) ────────────
+    def _handle_remote_ball_detection(self, payload):
+        """Forward GPU laptop ball detection → ROS2 /ball_detection."""
+        msg = String()
+        msg.data = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+        self._remote_det_pub.publish(msg)
+
+    def _handle_remote_detections(self, payload):
+        """Forward GPU laptop detection summary → ROS2 /yolo/detections."""
+        msg = String()
+        msg.data = payload.decode('utf-8') if isinstance(payload, bytes) else str(payload)
+        self._remote_dets_pub.publish(msg)
+
+    def _handle_remote_annotated(self, payload):
+        """Forward GPU laptop annotated JPEG → ROS2 /yolo/annotated/compressed."""
+        msg = CompressedImage()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'camera_link'
+        msg.format = 'jpeg'
+        msg.data = payload
+        self._remote_ann_pub.publish(msg)
+
+    def _handle_yolo_status(self, payload):
+        """Track GPU YOLO detector online/offline status."""
+        try:
+            d = json.loads(payload)
+            self._remote_yolo_online = d.get('online', False)
+            status = 'ONLINE' if self._remote_yolo_online else 'OFFLINE'
+            self.get_logger().info(f'Remote GPU YOLO: {status}')
+        except Exception:
+            pass
+
     # ── Heartbeat → MQTT ────────────────────────────────────
     def _heartbeat_cb(self):
         import time
@@ -364,10 +419,15 @@ class MqttBridgeCompute(Node):
 
     # ── ROS2 → MQTT Callbacks ────────────────────────────────
     def _ball_det_cb(self, msg: String):
+        # Skip if remote GPU YOLO is online (it publishes directly to MQTT)
+        if self._remote_yolo_online:
+            return
         self._mqtt.publish(
             f'{self._prefix}/ball_detection', msg.data)
 
     def _yolo_dets_cb(self, msg: String):
+        if self._remote_yolo_online:
+            return
         self._mqtt.publish(
             f'{self._prefix}/detections', msg.data)
 

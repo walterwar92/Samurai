@@ -23,6 +23,7 @@ import os
 import socket
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, OpaqueFunction, ExecuteProcess
+from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -111,6 +112,13 @@ def generate_launch_description():
             'Оставь пустым если оба устройства в одной LAN с multicast. '
             'Пример: peer_ip:=192.168.43.100'))
 
+    remote_yolo_arg = DeclareLaunchArgument(
+        'remote_yolo', default_value='false',
+        description=(
+            'Если true — YOLO запускается на отдельном GPU-ноутбуке '
+            '(yolo_detector_mqtt.py), локальный YOLO-нод не стартует. '
+            'Детекции приходят через MQTT → mqtt_bridge_compute → ROS2.'))
+
     # Настройка unicast DDS (выполняется до старта нод)
     unicast_setup = OpaqueFunction(function=_setup_fastdds_unicast)
 
@@ -163,11 +171,13 @@ def generate_launch_description():
     )
 
     # ── YOLO detection node ──────────────────────────────────
+    # Skipped when remote_yolo:=true (YOLO runs on separate GPU laptop)
     yolo_node = Node(
         package='robot_pkg',
         executable='yolo_detector_node',
         name='yolo_detector',
         output='screen',
+        condition=UnlessCondition(LaunchConfiguration('remote_yolo')),
         parameters=[{
             'model': '/root/Samurai/yolo11n.pt',
             'confidence': 0.45,
@@ -249,6 +259,7 @@ def generate_launch_description():
         # Аргументы
         use_sim_time_arg,
         peer_ip_arg,
+        remote_yolo_arg,
         mqtt_broker_arg,
         # Unicast DDS (если задан peer_ip)
         unicast_setup,
