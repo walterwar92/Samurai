@@ -40,6 +40,7 @@ PI_IP_ARG=""
 HOTSPOT_MODE=false
 REBUILD_IMAGE=false
 REBUILD_WS=false
+REMOTE_YOLO=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,14 +49,16 @@ while [[ $# -gt 0 ]]; do
         --rebuild)  REBUILD_IMAGE=true; REBUILD_WS=true; shift ;;
         --rebuild-image) REBUILD_IMAGE=true; shift ;;
         --rebuild-ws)    REBUILD_WS=true; shift ;;
+        --remote-yolo)   REMOTE_YOLO=true; shift ;;
         -h|--help)
-            echo "Использование: $0 [--pi IP] [--hotspot] [--rebuild]"
+            echo "Использование: $0 [--pi IP] [--hotspot] [--rebuild] [--remote-yolo]"
             echo ""
-            echo "  --pi IP       IP Raspberry Pi (вместо авто-обнаружения)"
-            echo "  --hotspot     Режим мобильного хотспота (unicast DDS)"
-            echo "  --rebuild     Пересобрать Docker образ и workspace"
+            echo "  --pi IP          IP Raspberry Pi (вместо авто-обнаружения)"
+            echo "  --hotspot        Режим мобильного хотспота (unicast DDS)"
+            echo "  --rebuild        Пересобрать Docker образ и workspace"
             echo "  --rebuild-image  Пересобрать только Docker образ"
             echo "  --rebuild-ws     Пересобрать только ROS2 workspace"
+            echo "  --remote-yolo    YOLO на отдельном GPU-ноутбуке (не запускать локально)"
             exit 0
             ;;
         *) die "Неизвестный аргумент: $1. Используй --help" ;;
@@ -294,6 +297,7 @@ launch() {
     # Формируем аргументы launch
     local launch_args="mqtt_broker:=$MQTT_BROKER"
     [[ -n "$PEER_IP" ]] && launch_args="$launch_args peer_ip:=$PEER_IP"
+    $REMOTE_YOLO && launch_args="$launch_args remote_yolo:=true"
 
     local my_ip
     my_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")

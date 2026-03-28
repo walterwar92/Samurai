@@ -191,6 +191,17 @@ object_registry:
   max_age_s:        120.0  # с — объект удаляется если не виден N секунд
   min_conf:         0.35   # минимальная уверенность для регистрации
 
+# GPU laptop (remote YOLO detection via MQTT)
+# GPU-ноутбук подключается к тому же MQTT-брокеру на Pi.
+# Не требует ROS2/Docker — только Python + ultralytics + paho-mqtt.
+gpu_detector:
+  enabled: false              # true = YOLO на отдельном GPU-ноутбуке
+  device: cuda                # cuda или cpu
+  model: yolo11n.pt           # модель YOLO (.pt → автоконверт в .onnx)
+  confidence: 0.40            # порог уверенности
+  publish_annotated: true     # публиковать аннотированные кадры
+  annotated_quality: 70       # JPEG качество аннотации
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)

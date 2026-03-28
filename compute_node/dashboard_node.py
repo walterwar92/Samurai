@@ -234,7 +234,10 @@ class DashboardNode(Node):
                       'watchdog', 'voice_command', 'speed_profile/active',
                       'slam_map', 'path_recorder/status', 'path_recorder/path',
                       'calibration/status', 'calibration/result',
-                      'explorer/status', 'mission/status']:
+                      'explorer/status', 'mission/status',
+                      # Remote GPU YOLO detections (via MQTT)
+                      'ball_detection', 'detections', 'yolo/annotated',
+                      'yolo/status']:
             client.subscribe(f'{p}/{topic}', qos=0)
         self.get_logger().info(f'MQTT connected to {self._mqtt_broker} — subscribed to Pi topics')
 
@@ -286,6 +289,15 @@ class DashboardNode(Node):
                 self._mqtt_json_field(msg.payload, '_explorer_status')
             elif suffix == 'mission/status':
                 self._mqtt_json_field(msg.payload, '_mission_status')
+            # Remote GPU YOLO detections (via MQTT)
+            elif suffix == 'ball_detection':
+                self._mqtt_ball_detection(msg.payload)
+            elif suffix == 'detections':
+                pass  # summary — not needed, ball_detection is primary
+            elif suffix == 'yolo/annotated':
+                self._mqtt_yolo_annotated(msg.payload)
+            elif suffix == 'yolo/status':
+                self._mqtt_yolo_status(msg.payload)
         except Exception as exc:
             self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
 
@@ -473,6 +485,33 @@ class DashboardNode(Node):
             d = json.loads(payload)
             with self._lock:
                 self._recorded_path = d
+        except Exception:
+            pass
+
+    # ── Remote GPU YOLO handlers (via MQTT) ─────────────────────
+
+    def _mqtt_ball_detection(self, payload):
+        """Ball detection from remote GPU laptop (via MQTT directly)."""
+        try:
+            data = json.loads(payload)
+            with self._lock:
+                self._ball_detection = data
+        except Exception:
+            pass
+
+    def _mqtt_yolo_annotated(self, payload):
+        """Annotated JPEG frame from remote GPU laptop (via MQTT)."""
+        with self._lock:
+            self._yolo_frame = bytes(payload)
+            self._latest_frame = self._yolo_frame
+
+    def _mqtt_yolo_status(self, payload):
+        """GPU YOLO detector online/offline status."""
+        try:
+            d = json.loads(payload)
+            online = d.get('online', False)
+            self.get_logger().info(
+                f'Remote GPU YOLO: {"ONLINE" if online else "OFFLINE"}')
         except Exception:
             pass
 
