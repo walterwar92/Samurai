@@ -47,6 +47,10 @@ NODE_REGISTRY = {
     'fallback_nav': 'pi_nodes.nodes.fallback_nav_node.FallbackNavNode',
     'path_recorder': 'pi_nodes.nodes.path_recorder_node.PathRecorderNode',
     'slam_map':      'pi_nodes.nodes.slam_map_node.SlamMapNode',
+    'calibration':   'pi_nodes.nodes.calibration_node.CalibrationNode',
+    'explorer':      'pi_nodes.nodes.explorer_node.ExplorerNode',
+    'mission':       'pi_nodes.nodes.mission_node.MissionNode',
+    'tts':           'pi_nodes.nodes.tts_node.TTSNode',
 }
 
 DEFAULT_NODES = [
@@ -54,6 +58,7 @@ DEFAULT_NODES = [
     'battery', 'temperature', 'head', 'arm', 'laser',
     'fsm', 'watchdog', 'fallback_nav',
     'path_recorder', 'slam_map',
+    'calibration', 'explorer', 'mission', 'tts',
 ]
 
 

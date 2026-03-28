@@ -24,22 +24,29 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 
 # ── Configuration ─────────────────────────────────────────────
-RECORD_INTERVAL_M = 0.03      # record waypoint every 3 cm moved (finer path)
-RECORD_INTERVAL_RAD = 0.08    # or every ~4.5° turned (finer turns)
-REPLAY_GOAL_TOLERANCE = 0.04  # m — close enough to intermediate waypoint
-REPLAY_HOME_TOLERANCE = 0.015 # m — tight tolerance for final home point (1.5 cm)
-REPLAY_LINEAR_SPEED = 0.20    # m/s — replay drive speed
-REPLAY_MIN_LINEAR = 0.05      # m/s — minimum linear speed to avoid stalls
+RECORD_INTERVAL_M = 0.025     # record waypoint every 2.5 cm moved (finer path)
+RECORD_INTERVAL_RAD = 0.06    # or every ~3.4° turned (finer turns)
+REPLAY_GOAL_TOLERANCE = 0.035 # m — close enough to intermediate waypoint
+REPLAY_HOME_TOLERANCE = 0.012 # m — tight tolerance for final home point (1.2 cm)
+REPLAY_LINEAR_SPEED = 0.18    # m/s — replay drive speed (slightly slower for accuracy)
+REPLAY_MIN_LINEAR = 0.04      # m/s — minimum linear speed to avoid stalls
 REPLAY_ANGULAR_SPEED = 0.8    # rad/s — max replay turn speed
-REPLAY_ANGULAR_KP = 2.5       # proportional gain for angular correction
-REPLAY_LOOKAHEAD_M = 0.10     # m — look-ahead distance for pure pursuit
-MAX_WAYPOINTS = 8000          # memory safety limit (finer recording = more pts)
-CONTROL_HZ = 15               # replay control loop frequency (smoother control)
+REPLAY_ANGULAR_KP = 2.8       # proportional gain for angular correction (tuned up)
+REPLAY_LOOKAHEAD_M = 0.08     # m — look-ahead distance (tighter tracking)
+MAX_WAYPOINTS = 10000         # memory safety limit (finer recording = more pts)
+CONTROL_HZ = 20               # replay control loop frequency (smoother control)
 
 # ── Final approach (last waypoint) ───────────────────────────
-FINAL_APPROACH_RADIUS = 0.12  # m — switch to slow precision mode within this
-FINAL_LINEAR_SPEED = 0.08     # m/s — crawl speed for final approach
-FINAL_ANGULAR_KP = 3.0        # stronger angular correction in final phase
+FINAL_APPROACH_RADIUS = 0.15  # m — switch to slow precision mode earlier
+FINAL_LINEAR_SPEED = 0.06     # m/s — crawl speed for final approach
+FINAL_ANGULAR_KP = 3.5        # stronger angular correction in final phase
+FINAL_HOME_ALIGN = True       # rotate to home heading after arriving
+
+# ── Obstacle avoidance during replay ─────────────────────────
+OBSTACLE_STOP_DIST = 0.18     # m — stop when obstacle closer than this
+OBSTACLE_SLOW_DIST = 0.35     # m — slow down when obstacle within this
+OBSTACLE_CHECK_HZ = 10        # how often to check obstacles
+
 PATHS_DIR = os.path.expanduser('~/paths')
 
 
@@ -61,9 +68,16 @@ class PathRecorderNode(MqttNode):
         self._theta = 0.0
         self._pose_valid = False
 
+        # Obstacle avoidance
+        self._range_m = 2.0
+        self._obstacle_avoidance = False
+        self._home_heading = 0.0  # heading at recording start for final alignment
+
         # Subscribers
         self.subscribe('odom', self._odom_cb)
         self.subscribe('path_recorder/command', self._command_cb, qos=1)
+        self.subscribe('range', self._range_cb)
+        self.subscribe('obstacle_avoidance/enable', self._obstacle_avoidance_cb)
 
         # Control loop for replay
         self.create_timer(1.0 / CONTROL_HZ, self._control_loop)
@@ -72,6 +86,22 @@ class PathRecorderNode(MqttNode):
 
         self.log_info('Path recorder ready (record_interval=%.2fm, max=%d waypoints)',
                       RECORD_INTERVAL_M, MAX_WAYPOINTS)
+
+    def _range_cb(self, topic, data):
+        if isinstance(data, dict):
+            r = data.get('range', 2.0)
+        else:
+            try:
+                r = float(data)
+            except (ValueError, TypeError):
+                return
+        if 0.02 <= r <= 2.0:
+            self._range_m = r
+
+    def _obstacle_avoidance_cb(self, topic, data):
+        cmd = str(data).strip().lower()
+        self._obstacle_avoidance = cmd in ('on', 'true', '1', 'enable')
+        self.log_info('Obstacle avoidance: %s', 'ON' if self._obstacle_avoidance else 'OFF')
 
     def _odom_cb(self, topic, data):
         if not isinstance(data, dict):
@@ -130,6 +160,7 @@ class PathRecorderNode(MqttNode):
             self._last_record_x = self._x
             self._last_record_y = self._y
             self._last_record_theta = self._theta
+            self._home_heading = self._theta  # remember heading at home for final alignment
         self.log_info('Path recording started')
 
     def _maybe_record_waypoint(self):
@@ -163,15 +194,30 @@ class PathRecorderNode(MqttNode):
         self.log_info('Path replay started (%d waypoints, reversed)', len(self._path))
 
     def _control_loop(self):
+        if self._state == 'aligning':
+            # Final heading alignment at home
+            self._do_heading_alignment()
+            return
         if self._state != 'replaying':
             return
         if not self._pose_valid:
             return
         if self._replay_index < 0:
+            if FINAL_HOME_ALIGN:
+                # Align heading to home orientation before finishing
+                self.log_info('Path replay complete — aligning heading')
+                self._state = 'aligning'
+                return
             self.log_info('Path replay complete — arrived home')
             self._stop_driving()
             self._state = 'idle'
             self._publish_status()
+            return
+
+        # ── Obstacle avoidance ──
+        if self._obstacle_avoidance and self._range_m < OBSTACLE_STOP_DIST:
+            # Obstacle too close — stop and wait
+            self.publish('cmd_vel', {'linear_x': 0.0, 'angular_z': 0.0})
             return
 
         # ── Skip waypoints that are already behind us (look-ahead) ──
@@ -196,54 +242,81 @@ class PathRecorderNode(MqttNode):
         if dist < tolerance:
             self._replay_index -= 1
             if is_final:
-                # Final home point reached — do precision alignment
-                self.log_info('Home reached (error=%.3fm)', dist)
-                self._stop_driving()
-                self._state = 'idle'
-                self._publish_status()
+                if FINAL_HOME_ALIGN:
+                    self.log_info('Home reached (error=%.3fm) — aligning heading', dist)
+                    self._state = 'aligning'
+                else:
+                    self.log_info('Home reached (error=%.3fm)', dist)
+                    self._stop_driving()
+                    self._state = 'idle'
+                    self._publish_status()
             return
 
         # ── Pure pursuit: simultaneous linear + angular ──
         bearing = math.atan2(dy, dx)
         angle_error = self._angle_diff(bearing, self._theta)
 
+        # Obstacle slowdown factor
+        obstacle_factor = 1.0
+        if self._obstacle_avoidance and self._range_m < OBSTACLE_SLOW_DIST:
+            obstacle_factor = max(0.3, (self._range_m - OBSTACLE_STOP_DIST) /
+                                       (OBSTACLE_SLOW_DIST - OBSTACLE_STOP_DIST))
+
         # Final approach mode: within FINAL_APPROACH_RADIUS of home point
         in_final_approach = is_final and dist < FINAL_APPROACH_RADIUS
 
         if in_final_approach:
             # ── Precision final approach ──
-            # Stronger angular correction, slower speed, proportional to distance
             angular = FINAL_ANGULAR_KP * angle_error
             angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
 
             cos_factor = max(0.0, math.cos(angle_error))
-            # Proportional slowdown: linear speed scales with remaining distance
             dist_ratio = dist / FINAL_APPROACH_RADIUS  # 0..1
-            linear = FINAL_LINEAR_SPEED * cos_factor * dist_ratio
-            linear = max(REPLAY_MIN_LINEAR * 0.6 * cos_factor, linear)
+            linear = FINAL_LINEAR_SPEED * cos_factor * dist_ratio * obstacle_factor
+            linear = max(REPLAY_MIN_LINEAR * 0.5 * cos_factor, linear)
 
-            # Rotate in place if angle error > 45° during final approach
-            if abs(angle_error) > 0.8:
+            # Rotate in place if angle error > 40° during final approach
+            if abs(angle_error) > 0.7:
                 linear = 0.0
         else:
             # ── Normal pure pursuit ──
-            # Angular: proportional control, clamped
             angular = REPLAY_ANGULAR_KP * angle_error
             angular = max(-REPLAY_ANGULAR_SPEED, min(REPLAY_ANGULAR_SPEED, angular))
 
-            # Linear: scale down when turning hard or near target
             cos_factor = max(0.0, math.cos(angle_error))
-            dist_factor = min(1.0, dist / 0.15)
+            dist_factor = min(1.0, dist / 0.12)
 
-            linear = REPLAY_LINEAR_SPEED * cos_factor * dist_factor
+            linear = REPLAY_LINEAR_SPEED * cos_factor * dist_factor * obstacle_factor
             linear = max(REPLAY_MIN_LINEAR * cos_factor, linear)
 
-            # If angle error is very large (>90°), stop and rotate in place
-            if abs(angle_error) > 1.2:
+            # If angle error is very large (>80°), stop and rotate in place
+            if abs(angle_error) > 1.0:
                 linear = 0.0
 
         self.publish('cmd_vel', {
             'linear_x': round(linear, 3),
+            'angular_z': round(angular, 3),
+        })
+
+    def _do_heading_alignment(self):
+        """Rotate in place to align with home heading after reaching home position."""
+        if not self._pose_valid:
+            return
+
+        heading_error = self._angle_diff(self._home_heading, self._theta)
+
+        if abs(heading_error) < 0.05:  # ~3° tolerance
+            self.log_info('Heading aligned (error=%.1f°)', math.degrees(heading_error))
+            self._stop_driving()
+            self._state = 'idle'
+            self._publish_status()
+            return
+
+        angular = FINAL_ANGULAR_KP * heading_error
+        angular = max(-0.5, min(0.5, angular))  # slower rotation for precision
+
+        self.publish('cmd_vel', {
+            'linear_x': 0.0,
             'angular_z': round(angular, 3),
         })
 

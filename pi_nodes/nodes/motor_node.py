@@ -40,6 +40,11 @@ except ImportError:
 
 WHEEL_BASE = 0.17
 
+# Wheel odometry scale correction — calibrate by driving a known distance
+# and comparing measured vs actual. >1.0 = robot moves further than reported.
+WHEEL_SCALE_LINEAR = 1.0    # tune: measure 1m, adjust if odom reads differently
+WHEEL_SCALE_ANGULAR = 1.0   # tune: measure 360° turn, adjust accordingly
+
 SPEED_PROFILES = {
     'slow':   (0.10, 0.8),
     'normal': (0.20, 1.5),
@@ -218,11 +223,14 @@ class MotorNode(MqttNode):
         cmd_is_moving = (abs(lin_cmd) >= DEADZONE_LINEAR or
                          abs(ang_cmd) >= DEADZONE_ANGULAR)
 
+        # Apply wheel calibration scale factors
+        lin_scaled = lin_cmd * WHEEL_SCALE_LINEAR
+
         if self._pos_estimator_ready:
             # Hint estimator about motor command state
             self._pos_estimator.set_cmd_moving(cmd_is_moving)
-            # Feed wheel odometry to estimator
-            self._pos_estimator.update_wheel_odom(lin_cmd, self._theta, dt)
+            # Feed calibrated wheel odometry to estimator
+            self._pos_estimator.update_wheel_odom(lin_scaled, self._theta, dt)
             # Blend accelerometer + wheel odometry
             self._pos_estimator.blend()
 
@@ -237,7 +245,7 @@ class MotorNode(MqttNode):
                 self._vx = 0.0
                 self._vz = 0.0
             else:
-                self._vx = lin_cmd
+                self._vx = lin_scaled
                 self._vz = ang_cmd
 
             # Get linear acceleration for publishing
@@ -246,9 +254,9 @@ class MotorNode(MqttNode):
             # Fallback: wheel-only odometry
             is_stationary = not cmd_is_moving
             if cmd_is_moving:
-                self._x += lin_cmd * math.cos(self._theta) * dt
-                self._y += lin_cmd * math.sin(self._theta) * dt
-            self._vx = 0.0 if is_stationary else lin_cmd
+                self._x += lin_scaled * math.cos(self._theta) * dt
+                self._y += lin_scaled * math.sin(self._theta) * dt
+            self._vx = 0.0 if is_stationary else lin_scaled
             self._vz = 0.0 if is_stationary else ang_cmd
             la_x, la_y = 0.0, 0.0
 

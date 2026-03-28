@@ -1,0 +1,270 @@
+% ============================================================
+%  Глава 2 — IMU EKF: фильтр Калмана для курсового угла
+%  Файл: pi_nodes/filters/ekf_imu.py
+% ============================================================
+\chapter{IMU EKF: одномерный фильтр Калмана для угла курса}
+\label{ch:imu_ekf}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/filters/ekf\_imu.py} \quad (171 строка, Python)
+\end{filebox}
+
+\section{Постановка задачи}
+
+Наземный робот движется по плоской поверхности. Нас интересуют три угла Эйлера:
+\begin{itemize}
+  \item \textbf{Курс (yaw)} $\psi$ --- угол поворота вокруг вертикальной оси;
+    главный навигационный параметр.
+  \item \textbf{Крен (roll)} $\phi$ и \textbf{тангаж (pitch)} $\theta$ ---
+    информационные, для контроля наклона на склоне.
+\end{itemize}
+
+Подход:
+\begin{itemize}
+  \item \textbf{Курс}: 1D-фильтр Калмана по интегрированию гироскопа $g_z$
+    с отслеживанием дрейфа нуля.
+  \item \textbf{Крен/тангаж}: прямой расчёт через $\mathrm{atan2}$ из акселерометра,
+    без фильтрации (для наземного робота достаточно).
+\end{itemize}
+
+\section{Вектор состояния}
+
+\begin{equation}
+  \vect{x}_{\text{yaw}} = \begin{pmatrix} \psi \\ b_z \end{pmatrix}
+  \label{eq:yaw_state}
+\end{equation}
+
+где $\psi$ --- угол курса (рад), $b_z$ --- дрейф нуля гироскопа по оси $Z$ (рад/с).
+
+Матрица ковариации $2\times2$ (без numpy, три скаляра):
+
+\begin{equation}
+  \mat{P} = \begin{pmatrix} P_\psi & P_{\times} \\ P_{\times} & P_b \end{pmatrix}
+  \label{eq:yaw_cov}
+\end{equation}
+
+\section{Шаг предсказания: интегрирование гироскопа}
+\label{sec:imu_predict}
+
+\begin{filebox}[title={\filepath{ekf\_imu.py}, строки 85--122 --- predict()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=97]
+# Bias-corrected gz
+wz = gz - self._gz_bias
+
+# ZUPT: if angular rate is tiny, skip integration
+if abs(wz) < self._zupt_threshold:   # 0.01 rad/s
+    self._P_yaw  += self.q_angle * dt * 0.1
+    self._P_bias += self.q_bias * dt
+    return
+
+# Yaw prediction: simple integration
+self._yaw += wz * dt
+
+# Normalize to [-pi, pi]
+self._yaw = (self._yaw + pi) % (2 * pi) - pi
+
+# Covariance prediction: F = [[1, -dt], [0, 1]]
+# P = F @ P @ F.T + Q  (manual 2x2)
+p11 = self._P_yaw
+p12 = self._P_cross
+p22 = self._P_bias
+
+self._P_yaw   = p11 + (-dt)*p12 + (-dt)*(p12 + (-dt)*p22) \
+                + self.q_angle * dt
+self._P_cross = p12 + (-dt) * p22
+self._P_bias  = p22 + self.q_bias * dt
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Математика предсказания:}
+
+Скорректированная угловая скорость:
+
+\begin{equation}
+  \omega_z = g_z - b_z
+  \label{eq:wz_corrected}
+\end{equation}
+
+ZUPT (Zero-velocity Update): при $|\omega_z| < 0.01\,\text{рад/с}$ интегрирование
+пропускается, ковариация растёт медленнее (коэффициент $0.1$).
+
+Интегрирование угла курса:
+
+\begin{equation}
+  \psi_{k} = \psi_{k-1} + \omega_z \cdot \Delta t
+  \label{eq:yaw_integrate}
+\end{equation}
+
+Нормализация в $[-\pi, \pi]$:
+
+\begin{equation}
+  \psi \leftarrow (\psi + \pi) \bmod 2\pi - \pi
+  \label{eq:yaw_normalize}
+\end{equation}
+
+Матрица перехода системы:
+
+\begin{equation}
+  \mat{F} = \begin{pmatrix} 1 & -\Delta t \\ 0 & 1 \end{pmatrix}
+  \label{eq:F_matrix}
+\end{equation}
+
+Уравнение предсказания ковариации:
+
+\begin{equation}
+  \boxed{\mat{P}^- = \mat{F}\,\mat{P}\,\mat{F}\T + \mat{Q}}
+  \label{eq:P_predict}
+\end{equation}
+
+где матрица процессного шума:
+
+\begin{equation}
+  \mat{Q} = \begin{pmatrix} q_{\text{angle}} \cdot \Delta t & 0 \\ 0 & q_{\text{bias}} \cdot \Delta t \end{pmatrix}
+  \label{eq:Q_matrix}
+\end{equation}
+
+В развёрнутом виде (ручное умножение $2\times2$):
+
+\begin{align}
+  P_\psi^- &= P_\psi - \Delta t \cdot P_{\times}
+              - \Delta t (P_{\times} - \Delta t \cdot P_b)
+              + q_{\text{angle}} \cdot \Delta t \label{eq:Pyaw_pred}\\
+  P_{\times}^- &= P_{\times} - \Delta t \cdot P_b \label{eq:Pcross_pred}\\
+  P_b^- &= P_b + q_{\text{bias}} \cdot \Delta t \label{eq:Pbias_pred}
+\end{align}
+
+\section{Шаг коррекции: крен и тангаж из акселерометра}
+
+\begin{filebox}[title={\filepath{ekf\_imu.py}, строки 124--147 --- update()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=132]
+a_mag = sqrt(ax*ax + ay*ay + az*az)
+if abs(a_mag - self.g) > self.accel_gate * self.g:
+    return   # robot is accelerating -- skip gravity update
+
+# Raw roll/pitch from gravity vector
+raw_roll  = atan2(ay, az)
+raw_pitch = atan2(-ax, sqrt(ay*ay + az*az))
+
+# Subtract home position -> angles relative to startup
+self._roll  = raw_roll  - self._home_roll
+self._pitch = raw_pitch - self._home_pitch
+
+# Normalize to [-pi, pi]
+self._roll  = (self._roll  + pi) % (2*pi) - pi
+self._pitch = (self._pitch + pi) % (2*pi) - pi
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Математика определения крена и тангажа:}
+
+Когда робот не ускоряется, вектор акселерометра совпадает с вектором гравитации
+$\vect{g} = (0, 0, -g)$ в мировой СК:
+
+\begin{equation}
+  |\vect{a}| = \sqrt{a_x^2 + a_y^2 + a_z^2} \approx g = 9.81\,\text{м/с}^2
+  \label{eq:accel_gate}
+\end{equation}
+
+Условие пропуска обновления: $\bigl||\vect{a}| - g\bigr| > 0.3g$.
+
+Крен (вращение вокруг оси $X$):
+
+\begin{equation}
+  \boxed{\phi_{\text{raw}} = \mathrm{atan2}(a_y,\, a_z)}
+  \label{eq:roll_atan2}
+\end{equation}
+
+Тангаж (вращение вокруг оси $Y$):
+
+\begin{equation}
+  \boxed{\theta_{\text{raw}} = \mathrm{atan2}\!\left(-a_x,\, \sqrt{a_y^2 + a_z^2}\right)}
+  \label{eq:pitch_atan2}
+\end{equation}
+
+Относительный угол (от положения при старте):
+
+\begin{equation}
+  \phi = \phi_{\text{raw}} - \phi_{\text{home}}, \quad
+  \theta = \theta_{\text{raw}} - \theta_{\text{home}}
+  \label{eq:rel_angles}
+\end{equation}
+
+\begin{notebox}
+Акселерометр \textbf{не} корректирует угол курса $\psi$: для этого нужен
+магнитометр. Поэтому угол курса накапливает ошибку интегрирования ---
+именно поэтому используется фильтр Калмана с отслеживанием дрейфа $b_z$.
+\end{notebox}
+
+\section{Теоретическое обоснование: линеаризация и устойчивость}
+
+\subsection{Нелинейная модель и якобиан}
+
+Нелинейная модель гироскопа с дрейфом нуля:
+
+\begin{equation}
+  \vect{f}(\vect{x}, u) = \begin{pmatrix} \psi + (g_z - b_z)\Delta t \\ b_z \end{pmatrix}
+  \label{eq:imu_nonlinear}
+\end{equation}
+
+Якобиан этой функции по вектору состояния $\vect{x} = (\psi, b_z)\T$
+(метод линеаризации, гл.~\ref{ch:theory}, раздел~\ref{sec:jacobian}):
+
+\begin{equation}
+  \mat{F} = \frac{\partial \vect{f}}{\partial \vect{x}} =
+  \begin{pmatrix}
+    \partial f_1/\partial\psi & \partial f_1/\partial b_z \\
+    \partial f_2/\partial\psi & \partial f_2/\partial b_z
+  \end{pmatrix}
+  = \begin{pmatrix} 1 & -\Delta t \\ 0 & 1 \end{pmatrix}
+  \label{eq:imu_jacobian}
+\end{equation}
+
+\subsection{Устойчивость фильтра}
+
+Собственные числа $\mat{F}$: $\lambda_{1,2} = 1$ (двукратный корень).
+Без коррекции система \textbf{нейтрально устойчива} --- ошибка не растёт,
+но и не убывает. Именно шаг коррекции (Update) через усиление Калмана
+обеспечивает асимптотическую устойчивость, уменьшая ковариацию $\mat{P}$.
+
+\subsection{Наблюдаемость}
+
+Матрица наблюдаемости для $\mat{H} = (1, 0)$
+(прямое измерение $\psi$ через внешний датчик):
+
+\begin{equation}
+  \mat{S}_o = \begin{pmatrix} \mat{H} \\ \mat{H}\mat{F} \end{pmatrix}
+  = \begin{pmatrix} 1 & 0 \\ 1 & -\Delta t \end{pmatrix}, \quad
+  \mathrm{rank}(\mat{S}_o) = 2
+  \label{eq:imu_observability}
+\end{equation}
+
+Ранг равен размерности состояния $\Rightarrow$ система
+\textbf{полностью наблюдаема}: дрейф $b_z$ может быть оценён
+из измерений угла $\psi$.
+
+\subsection{Связь с передаточной функцией}
+
+В операторной форме модель гироскопа:
+\begin{equation}
+  \psi(p) = \frac{1}{p}\bigl(g_z(p) - b_z(p)\bigr)
+  \label{eq:gyro_tf}
+\end{equation}
+
+Это интегрирующее звено с передаточной функцией $W(p) = 1/p$,
+что объясняет накопление ошибки (дрейф) при отсутствии коррекции.
+
+\section{Сводная таблица параметров}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Параметр} & \textbf{Символ} & \textbf{Значение} & \textbf{Смысл}\\
+\midrule
+\texttt{q\_angle} & $q_\psi$ & $0.001$ & Шум процесса по курсу\\
+\texttt{q\_bias}  & $q_b$ & $0.0001$ & Шум дрейфа нуля гиро\\
+\texttt{r\_accel} & $r_a$ & $0.5$ & Шум измерения акселерометра\\
+\texttt{accel\_gate} & --- & $0.3$ & Порог ворот акселерометра ($30\%$)\\
+\texttt{zupt\_threshold} & --- & $0.01\,\text{рад/с}$ & Порог ZUPT (${\approx}0.6\,\text{°/с}$)\\
+\bottomrule
+\end{tabular}
+\end{center}

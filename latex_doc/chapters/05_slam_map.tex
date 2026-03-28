@@ -1,0 +1,228 @@
+% ============================================================
+%  Глава 5 — SLAM: вероятностная карта занятости
+%  Файл: pi_nodes/nodes/slam_map_node.py
+% ============================================================
+\chapter{SLAM: вероятностная карта занятости на log-odds}
+\label{ch:slam_map}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{pi\_nodes/nodes/slam\_map\_node.py} \quad (Python)
+\end{filebox}
+
+\section{Вероятностная модель карты}
+
+Карта занятости представляет каждую ячейку сетки как бинарную случайную
+величину: свободно ($\mathtt{F}$) или занято ($\mathtt{O}$).
+
+\subsection{Log-odds представление}
+
+Вместо хранения вероятности $P(\mathtt{O})$ используется \textbf{логарифм
+отношения правдоподобий} (log-odds), устойчивый к крайним значениям $0$ и $1$:
+
+\begin{equation}
+  l = \log\frac{P(\mathtt{O})}{1 - P(\mathtt{O})} = \log\frac{P(\mathtt{O})}{P(\mathtt{F})}
+  \label{eq:log_odds_def}
+\end{equation}
+
+Обратное преобразование:
+
+\begin{equation}
+  P(\mathtt{O}) = \frac{e^l}{1 + e^l} = \sigma(l)
+  \label{eq:log_odds_inv}
+\end{equation}
+
+\textbf{Преимущества}: обновление --- простое сложение; нет умножения вероятностей.
+
+\begin{filebox}[title={\filepath{slam\_map\_node.py}, строки 42--48 --- константы log-odds}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=42]
+L_OCC  =  0.85   # log-odds increment for occupied cell
+L_FREE = -0.40   # log-odds increment for free cell
+L_MIN  = -2.0    # minimum log-odds (very confident free)
+L_MAX  =  3.5    # maximum log-odds (very confident occupied)
+L_THRESH_OCC  =  0.6   # above this -> occupied (output)
+L_THRESH_FREE = -0.5   # below this -> free (output)
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Физический смысл значений log-odds:}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{log-odds $l$} & \textbf{$P(\mathtt{O})$} & \textbf{Интерпретация}\\
+\midrule
+$-2.0$ & $11.9\%$ & Очень уверенно свободно\\
+$-0.5$ & $37.8\%$ & Скорее свободно\\
+$0.0$  & $50.0\%$ & Неизвестно\\
+$+0.6$ & $64.6\%$ & Скорее занято\\
+$+3.5$ & $97.1\%$ & Очень уверенно занято\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Трассировка лучей (Ray Tracing)}
+
+\begin{filebox}[title={\filepath{slam\_map\_node.py}, строки 256--285 --- \_trace\_ray()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=256]
+def _trace_ray(self, ox, oy, angle, range_m):
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    step = CELL_SIZE_M * 0.7   # 3.5 cm step
+    dist = 0.0
+    hit_range = min(range_m, SENSOR_MAX_RANGE)
+
+    # Mark cells along ray as FREE
+    while dist < hit_range - OBSTACLE_THICKNESS:
+        wx = ox + cos_a * dist
+        wy = oy + sin_a * dist
+        ci, cj = self._world_to_cell(wx, wy)
+        if 0 <= ci < MAP_CELLS and 0 <= cj < MAP_CELLS:
+            idx = cj * MAP_CELLS + ci
+            self._grid[idx] = max(L_MIN, self._grid[idx] + L_FREE)
+        dist += step
+
+    # Mark obstacle cells as OCCUPIED
+    if range_m < SENSOR_MAX_RANGE - 0.05:
+        for d in range(3):
+            dd = hit_range + d * CELL_SIZE_M * 0.5
+            wx = ox + cos_a * dd
+            wy = oy + sin_a * dd
+            ci, cj = self._world_to_cell(wx, wy)
+            if 0 <= ci < MAP_CELLS and 0 <= cj < MAP_CELLS:
+                idx = cj * MAP_CELLS + ci
+                self._grid[idx] = min(L_MAX, self._grid[idx] + L_OCC)
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Параметрическое уравнение луча:}
+
+\begin{equation}
+  \begin{pmatrix} w_x(t) \\ w_y(t) \end{pmatrix}
+  = \begin{pmatrix} o_x \\ o_y \end{pmatrix}
+  + t \begin{pmatrix} \cos\alpha \\ \sin\alpha \end{pmatrix}, \quad t \in [0, r]
+  \label{eq:ray_parametric}
+\end{equation}
+
+\textbf{Байесовское обновление} (вычитание для свободных, прибавление для занятых):
+
+\begin{equation}
+  \boxed{l_{\text{new}} = \mathrm{clamp}\!\left(l + \Delta l,\; L_{\min},\; L_{\max}\right)}
+  \label{eq:log_odds_update}
+\end{equation}
+
+где:
+\[
+  \Delta l = \begin{cases}
+    L_{\text{FREE}} = -0.40 & \text{луч прошёл через ячейку}\\
+    L_{\text{OCC}} = +0.85 & \text{луч достиг препятствия}
+  \end{cases}
+\]
+
+\section{Ультразвуковой конус}
+
+\begin{filebox}[title={\filepath{slam\_map\_node.py}, строки 247--254 --- сканирование конуса}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=247]
+# Ultrasonic cone: trace multiple rays within the FOV
+angle_start = robot_theta - SENSOR_FOV_RAD   # theta - 15 deg
+angle_end   = robot_theta + SENSOR_FOV_RAD   # theta + 15 deg
+
+angle = angle_start
+while angle <= angle_end:
+    self._trace_ray(robot_x, robot_y, angle, range_m)
+    angle += ANGULAR_RESOLUTION              # step = 0.05 rad ~ 3 deg
+\end{lstlisting}
+\end{filebox}
+
+Количество лучей на одно измерение:
+
+\begin{equation}
+  N_{\text{rays}} = \left\lfloor \frac{2 \cdot \text{SENSOR\_FOV\_RAD}}{\text{ANGULAR\_RESOLUTION}} \right\rfloor
+  = \left\lfloor \frac{2 \times 0.26}{0.05} \right\rfloor = 10\,\text{ лучей}
+  \label{eq:ray_count}
+\end{equation}
+
+\section{Преобразование координат}
+
+\begin{filebox}[title={\filepath{slam\_map\_node.py}, строки 288--298 --- world $\leftrightarrow$ grid}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=288]
+def _world_to_cell(self, wx, wy):
+    ci = int((wx - self._origin_x) / CELL_SIZE_M)  # column
+    cj = int((wy - self._origin_y) / CELL_SIZE_M)  # row
+    return ci, cj
+
+def _cell_to_world(self, ci, cj):
+    wx = self._origin_x + (ci + 0.5) * CELL_SIZE_M
+    wy = self._origin_y + (cj + 0.5) * CELL_SIZE_M
+    return wx, wy
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Мировые координаты $\to$ ячейка сетки:}
+
+\begin{equation}
+  c_i = \left\lfloor \frac{w_x - o_x}{\delta} \right\rfloor, \quad
+  c_j = \left\lfloor \frac{w_y - o_y}{\delta} \right\rfloor
+  \label{eq:world_to_grid}
+\end{equation}
+
+\textbf{Ячейка $\to$ центр в мировых координатах:}
+
+\begin{equation}
+  w_x = o_x + (c_i + 0.5)\,\delta, \quad
+  w_y = o_y + (c_j + 0.5)\,\delta
+  \label{eq:grid_to_world}
+\end{equation}
+
+где $o_x = o_y = -5\,\text{м}$ (начало координат карты), $\delta = 0.05\,\text{м/ячейку}$.
+
+\section{Кластеризация объектов с Евклидовой метрикой}
+
+\begin{filebox}[title={\filepath{slam\_map\_node.py}, строки 170--188 --- \_detections\_cb()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=172]
+# Search for nearest existing object (same class+colour)
+for obj_id, obj in self._objects.items():
+    dx = obj['x'] - wx
+    dy = obj['y'] - wy
+    if math.sqrt(dx*dx + dy*dy) < OBJ_CLUSTER_RADIUS_M:  # 0.30 m
+        matched_id = obj_id
+        break
+
+# Update position: sliding average
+if matched_id:
+    alpha = 0.3
+    obj['x'] = round(alpha * wx + (1 - alpha) * obj['x'], 3)
+    obj['y'] = round(alpha * wy + (1 - alpha) * obj['y'], 3)
+\end{lstlisting}
+\end{filebox}
+
+Проверка принадлежности к кластеру:
+
+\begin{equation}
+  d_{\text{Euclid}} = \sqrt{(x_{\text{new}} - x_{\text{obj}})^2 + (y_{\text{new}} - y_{\text{obj}})^2}
+  < 0.30\,\text{м}
+  \label{eq:cluster_dist}
+\end{equation}
+
+Скользящее среднее позиции (EMA с $\alpha = 0.3$):
+
+\begin{equation}
+  \vect{p}_{\text{obj}} \leftarrow 0.3\,\vect{p}_{\text{new}} + 0.7\,\vect{p}_{\text{obj}}
+  \label{eq:ema_position}
+\end{equation}
+
+\section{Параметры сетки}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{MAP\_SIZE\_M}      & $10\,\text{м}$ & Размер карты ($\pm 5\,\text{м}$)\\
+\texttt{CELL\_SIZE\_M}     & $0.05\,\text{м}$ & Размер ячейки (5 см)\\
+\texttt{MAP\_CELLS}        & $200 \times 200$ & Размер сетки\\
+\texttt{SENSOR\_FOV\_RAD}  & $0.26\,\text{рад}$ & Полу-угол конуса (${\approx}15^\circ$)\\
+\texttt{SENSOR\_MAX\_RANGE}& $2.0\,\text{м}$ & Макс. дальность HC-SR04\\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -159,6 +159,13 @@ class DashboardNode(Node):
         self._slam_map       = {}     # Pi-side ultrasonic SLAM map
         self._path_recorder  = {}     # path recorder status
         self._recorded_path  = []     # recorded path waypoints
+        self._detection_enabled = True  # YOLO detection toggle
+        self._obstacle_avoidance_enabled = False  # obstacle avoidance during replay
+        self._calibration_status = {}   # calibration node status
+        self._calibration_result = {}   # calibration result
+        self._explorer_status = {}      # explorer node status
+        self._mission_status = {}       # mission node status
+        self._tts_enabled = True        # TTS toggle
 
         # ── MQTT client (primary sensor source) ──────────────
         if self._mqtt_broker:
@@ -207,6 +214,7 @@ class DashboardNode(Node):
         # Also kept for Nav2 integration (Nav2 publishes /cmd_vel)
         self._pub_map_save = self.create_publisher(String, '/map_manager/save', 10)
         self._pub_map_load = self.create_publisher(String, '/map_manager/load', 10)
+        self._pub_yolo_enable = self.create_publisher(String, '/yolo/enable', 10)
 
         ip = _get_local_ip()
         self.get_logger().info(f'Dashboard node started — http://{ip}:{self._port}')
@@ -224,7 +232,9 @@ class DashboardNode(Node):
         for topic in ['camera', 'range', 'imu', 'battery', 'temperature',
                       'status', 'odom', 'claw/state', 'head/state', 'arm/state',
                       'watchdog', 'voice_command', 'speed_profile/active',
-                      'slam_map', 'path_recorder/status', 'path_recorder/path']:
+                      'slam_map', 'path_recorder/status', 'path_recorder/path',
+                      'calibration/status', 'calibration/result',
+                      'explorer/status', 'mission/status']:
             client.subscribe(f'{p}/{topic}', qos=0)
         self.get_logger().info(f'MQTT connected to {self._mqtt_broker} — subscribed to Pi topics')
 
@@ -268,6 +278,14 @@ class DashboardNode(Node):
                 self._mqtt_path_status(msg.payload)
             elif suffix == 'path_recorder/path':
                 self._mqtt_path_data(msg.payload)
+            elif suffix == 'calibration/status':
+                self._mqtt_json_field(msg.payload, '_calibration_status')
+            elif suffix == 'calibration/result':
+                self._mqtt_json_field(msg.payload, '_calibration_result')
+            elif suffix == 'explorer/status':
+                self._mqtt_json_field(msg.payload, '_explorer_status')
+            elif suffix == 'mission/status':
+                self._mqtt_json_field(msg.payload, '_mission_status')
         except Exception as exc:
             self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
 
@@ -442,6 +460,14 @@ class DashboardNode(Node):
         except Exception:
             pass
 
+    def _mqtt_json_field(self, payload, field_name):
+        try:
+            d = json.loads(payload)
+            with self._lock:
+                setattr(self, field_name, d)
+        except Exception:
+            pass
+
     def _mqtt_path_data(self, payload):
         try:
             d = json.loads(payload)
@@ -581,6 +607,23 @@ class DashboardNode(Node):
             self._robot_pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
             self._robot_stationary = True
 
+    def set_detection_enabled(self, enabled: bool):
+        """Toggle YOLO detection on/off."""
+        with self._lock:
+            self._detection_enabled = enabled
+        # Publish to ROS2 YOLO node
+        msg = String()
+        msg.data = 'on' if enabled else 'off'
+        self._pub_yolo_enable.publish(msg)
+        # Also publish to MQTT for standalone object_detector_node
+        self._mqtt_pub('detection/enable', 'on' if enabled else 'off', qos=1)
+
+    def set_obstacle_avoidance(self, enabled: bool):
+        """Toggle obstacle avoidance during path replay."""
+        with self._lock:
+            self._obstacle_avoidance_enabled = enabled
+        self._mqtt_pub('obstacle_avoidance/enable', 'on' if enabled else 'off', qos=1)
+
     def save_map(self, name: str):
         self._pub_str(self._pub_map_save, name)
 
@@ -697,6 +740,13 @@ class DashboardNode(Node):
                 'slam_map':       dict(self._slam_map) if self._slam_map else None,
                 'path_recorder':  dict(self._path_recorder) if self._path_recorder else None,
                 'recorded_path':  list(self._recorded_path) if self._recorded_path else None,
+                'detection_enabled': self._detection_enabled,
+                'obstacle_avoidance_enabled': self._obstacle_avoidance_enabled,
+                'calibration':        dict(self._calibration_status) if self._calibration_status else None,
+                'calibration_result': dict(self._calibration_result) if self._calibration_result else None,
+                'explorer':           dict(self._explorer_status) if self._explorer_status else None,
+                'mission':            dict(self._mission_status) if self._mission_status else None,
+                'tts_enabled':        self._tts_enabled,
             }
 
     def _snapshot(self):
@@ -828,6 +878,23 @@ def create_app(ros_node: DashboardNode):
         from starlette.responses import StreamingResponse
         return StreamingResponse(_mjpeg_generator(),
                                  media_type='multipart/x-mixed-replace; boundary=frame')
+
+    # ── WebSocket binary camera stream (low-latency) ───────────
+    from fastapi import WebSocket as FastAPIWebSocket, WebSocketDisconnect
+
+    @app.websocket('/ws/camera')
+    async def ws_camera(ws: FastAPIWebSocket):
+        await ws.accept()
+        try:
+            while True:
+                frame = ros_node.get_frame()
+                if frame:
+                    await ws.send_bytes(frame)
+                await asyncio.sleep(0.033)  # ~30fps cap
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
 
     @app.get('/map.png')
     async def map_image_legacy():
@@ -1199,6 +1266,97 @@ def create_app(ros_node: DashboardNode):
             return _err('"name" is required')
         ros_node.load_map(name)
         return _ok(loaded=name)
+
+    @app.post('/api/detection/toggle')
+    async def api_detection_toggle(req: Request):
+        body = await req.json()
+        enabled = body.get('enabled', True)
+        ros_node.set_detection_enabled(bool(enabled))
+        return _ok(detection_enabled=bool(enabled))
+
+    @app.get('/api/detection/status')
+    async def api_detection_status():
+        with ros_node._lock:
+            return _ok(detection_enabled=ros_node._detection_enabled)
+
+    @app.post('/api/obstacle_avoidance/toggle')
+    async def api_obstacle_avoidance_toggle(req: Request):
+        body = await req.json()
+        enabled = body.get('enabled', True)
+        ros_node.set_obstacle_avoidance(bool(enabled))
+        return _ok(obstacle_avoidance_enabled=bool(enabled))
+
+    # ── Calibration ────────────────────────────────────────────────
+    @app.post('/api/calibration/command')
+    async def api_calibration_cmd(req: Request):
+        body = await req.json()
+        command = body.get('command', '').strip().lower()
+        ros_node._mqtt_pub('calibration/command', command, qos=1)
+        return _ok(calibration=command)
+
+    # ── Explorer ───────────────────────────────────────────────────
+    @app.post('/api/explorer/command')
+    async def api_explorer_cmd(req: Request):
+        body = await req.json()
+        command = body.get('command', '').strip().lower()
+        ros_node._mqtt_pub('explorer/command', command, qos=1)
+        return _ok(explorer=command)
+
+    # ── Mission ────────────────────────────────────────────────────
+    @app.post('/api/mission/command')
+    async def api_mission_cmd(req: Request):
+        body = await req.json()
+        ros_node._mqtt_pub('mission/command', json.dumps(body), qos=1)
+        return _ok(mission=body.get('command', ''))
+
+    @app.get('/api/mission/list')
+    async def api_mission_list():
+        missions_dir = os.path.expanduser('~/missions')
+        if not os.path.isdir(missions_dir):
+            return _ok(missions=[])
+        missions = sorted(f.replace('.json', '') for f in os.listdir(missions_dir)
+                          if f.endswith('.json'))
+        return _ok(missions=missions)
+
+    # ── TTS ────────────────────────────────────────────────────────
+    @app.post('/api/tts/toggle')
+    async def api_tts_toggle(req: Request):
+        body = await req.json()
+        enabled = bool(body.get('enabled', True))
+        with ros_node._lock:
+            ros_node._tts_enabled = enabled
+        ros_node._mqtt_pub('tts/enable', 'on' if enabled else 'off', qos=1)
+        return _ok(tts_enabled=enabled)
+
+    @app.post('/api/tts/speak')
+    async def api_tts_speak(req: Request):
+        body = await req.json()
+        text = body.get('text', '').strip()
+        if text:
+            ros_node._mqtt_pub('tts/command', text, qos=1)
+        return _ok(spoken=text)
+
+    # ── Multi-robot (stub — full implementation needs multiple MQTT prefixes) ──
+    @app.get('/api/multi_robot/list')
+    async def api_multi_robot_list():
+        # For now, return only the current robot
+        with ros_node._lock:
+            status = ros_node._robot_status
+            bat = ros_node._battery
+        return _ok(robots=[{
+            'id': ros_node._robot_id,
+            'connected': ros_node._mqtt_connected,
+            'state': status.get('state', 'unknown'),
+            'battery': bat.get('percent', -1),
+            'lastSeen': int(time.time() * 1000),
+        }])
+
+    @app.post('/api/multi_robot/call')
+    async def api_multi_robot_call(req: Request):
+        body = await req.json()
+        target_id = body.get('robot_id', '')
+        ros_node._mqtt_pub('call_robot', target_id, qos=1)
+        return _ok(called=target_id)
 
     # ── Static files (SPA assets) ─────────────────────────────────
     if os.path.isdir(static_dir):

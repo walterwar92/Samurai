@@ -1,0 +1,300 @@
+% ============================================================
+%  Глава 10 — Физический симулятор: кинематика, сенсоры, камера
+%  Файл: compute_node/simulator.py
+% ============================================================
+\chapter{Физический симулятор: кинематика, сенсоры, камера}
+\label{ch:simulator}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{compute\_node/simulator.py} \quad (строки 282--588, Python)
+\end{filebox}
+
+% ── Кинематика ─────────────────────────────────────────────────
+\section{Кинематика робота (SimRobot)}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 373--397 --- tick()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=373]
+def tick(self, dt: float):
+    self._prev_v_linear = self.v_linear
+    prev_x, prev_y = self.x, self.y
+    # Integrate velocities (unicycle model)
+    self.x += self.v_linear * math.cos(self.theta) * dt
+    self.y += self.v_linear * math.sin(self.theta) * dt
+    self.theta += self.v_angular * dt
+    # Normalise theta
+    self.theta = math.atan2(math.sin(self.theta), math.cos(self.theta))
+    # Wall collision -- clamp inside arena
+    margin = ROBOT_RADIUS
+    self.x = max(margin, min(self.arena.width - margin, self.x))
+    self.y = max(margin, min(self.arena.height - margin, self.y))
+    # Forbidden zone collision -- push back
+    for z in self.arena.forbidden_zones:
+        zx1 = z['x1'] - margin
+        zy1 = z['y1'] - margin
+        zx2 = z['x2'] + margin
+        zy2 = z['y2'] + margin
+        if zx1 <= self.x <= zx2 and zy1 <= self.y <= zy2:
+            self.x, self.y = prev_x, prev_y
+            self.v_linear = 0.0
+            break
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Дифференциальные уравнения кинематики}
+
+Робот моделируется как \textbf{unicycle} --- одноколейная модель
+с линейной и угловой скоростями:
+
+\begin{align}
+  \dot{x}      &= v \cos\theta \label{eq:sim_dx}\\
+  \dot{y}      &= v \sin\theta \label{eq:sim_dy}\\
+  \dot{\theta}  &= \omega       \label{eq:sim_dtheta}
+\end{align}
+
+Дискретизация методом Эйлера ($\Delta t = 0.05\,\text{с}$):
+
+\begin{equation}
+  \boxed{
+  \begin{pmatrix} x_{k+1} \\ y_{k+1} \\ \theta_{k+1} \end{pmatrix}
+  = \begin{pmatrix} x_k \\ y_k \\ \theta_k \end{pmatrix}
+  + \Delta t \begin{pmatrix} v\cos\theta_k \\ v\sin\theta_k \\ \omega \end{pmatrix}
+  }
+  \label{eq:sim_euler}
+\end{equation}
+
+\subsection{Нормализация угла}
+
+Для предотвращения накопления $\theta > 2\pi$:
+
+\begin{equation}
+  \theta \leftarrow \mathrm{atan2}\!\bigl(\sin\theta,\, \cos\theta\bigr)
+  \label{eq:theta_norm}
+\end{equation}
+
+\subsection{Коллизия со стенами}
+
+Ограничение позиции внутри арены:
+
+\begin{equation}
+  x \leftarrow \mathrm{clamp}(x,\; r_{\text{robot}},\; W - r_{\text{robot}}), \quad
+  y \leftarrow \mathrm{clamp}(y,\; r_{\text{robot}},\; H - r_{\text{robot}})
+  \label{eq:wall_collision}
+\end{equation}
+
+% ── Сенсоры ────────────────────────────────────────────────────
+\section{Ультразвуковой сенсор (SimSensors)}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 417--464 --- \_update\_ultrasonic()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=417]
+def _update_ultrasonic(self, robot, arena):
+    """Ray-cast forward from robot."""
+    rx, ry = robot.x, robot.y
+    dx = math.cos(robot.theta)
+    dy = math.sin(robot.theta)
+    best = ULTRASONIC_MAX
+
+    # Check walls (ray-plane intersection)
+    if dx > 0:
+        t = (arena.width - rx) / dx     # right wall
+        if ULTRASONIC_MIN < t < best: best = t
+    if dx < 0:
+        t = -rx / dx                    # left wall
+        if ULTRASONIC_MIN < t < best: best = t
+    if dy > 0:
+        t = (arena.height - ry) / dy    # top wall
+        if ULTRASONIC_MIN < t < best: best = t
+    if dy < 0:
+        t = -ry / dy                    # bottom wall
+        if ULTRASONIC_MIN < t < best: best = t
+
+    # Check balls (ray-sphere intersection)
+    for ball in arena.balls:
+        if ball['grabbed']: continue
+        to_ball_x = ball['x'] - rx
+        to_ball_y = ball['y'] - ry
+        proj = to_ball_x * dx + to_ball_y * dy   # projection
+        perp = abs(to_ball_x * dy - to_ball_y * dx)  # perpendicular
+        if proj > ULTRASONIC_MIN and perp < ball['radius'] + 0.05:
+            if proj < best: best = proj
+
+    # Gaussian noise
+    noise = random.gauss(0, 0.005)
+    self.range_m = max(ULTRASONIC_MIN, min(ULTRASONIC_MAX, best + noise))
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Пересечение луч--плоскость (стены)}
+
+Луч из точки $(r_x, r_y)$ по направлению $(\cos\theta, \sin\theta)$:
+
+\begin{equation}
+  \vect{p}(t) = \begin{pmatrix} r_x \\ r_y \end{pmatrix}
+  + t \begin{pmatrix} \cos\theta \\ \sin\theta \end{pmatrix}, \quad t > 0
+  \label{eq:ray_def}
+\end{equation}
+
+Расстояние до стены $x = W$ (при $\cos\theta > 0$):
+
+\begin{equation}
+  t = \frac{W - r_x}{\cos\theta}
+  \label{eq:ray_wall}
+\end{equation}
+
+\subsection{Пересечение луч--сфера (шарики)}
+
+Для каждого шарика с центром $(b_x, b_y)$:
+
+\textbf{Проекция} вектора ``к шарику'' на направление луча:
+
+\begin{equation}
+  t_{\text{proj}} = (\vect{b} - \vect{r}) \cdot \hat{\vect{d}}
+  = (b_x - r_x)\cos\theta + (b_y - r_y)\sin\theta
+  \label{eq:ball_proj}
+\end{equation}
+
+\textbf{Перпендикулярное расстояние} от луча до центра шарика:
+
+\begin{equation}
+  d_{\perp} = |(b_x - r_x)\sin\theta - (b_y - r_y)\cos\theta|
+  \label{eq:ball_perp}
+\end{equation}
+
+Условие обнаружения: $d_\perp < r_{\text{ball}} + 0.05$ (конус ультразвука).
+
+\subsection{Шумовая модель}
+
+\begin{equation}
+  r_{\text{meas}} = \mathrm{clamp}(r_{\text{true}} + \mathcal{N}(0, 0.005^2),\;
+  r_{\min},\; r_{\max})
+  \label{eq:ultrasonic_noise}
+\end{equation}
+
+% ── IMU ────────────────────────────────────────────────────────
+\section{Симуляция IMU}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 466--472 --- \_update\_imu()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=466]
+def _update_imu(self, robot):
+    noise = random.gauss(0, 0.3)
+    self.imu_yaw = math.degrees(robot.theta) + noise
+    self.imu_pitch = random.gauss(0, 0.2)
+    self.imu_roll  = random.gauss(0, 0.2)
+    self.imu_gyro_z = robot.v_angular
+    self.accel_x = (robot.v_linear - robot._prev_v_linear) / SIM_DT
+\end{lstlisting}
+\end{filebox}
+
+Линейное ускорение из конечной разности скорости:
+
+\begin{equation}
+  a_x = \frac{v_k - v_{k-1}}{\Delta t}
+  \label{eq:sim_accel}
+\end{equation}
+
+% ── Камера ─────────────────────────────────────────────────────
+\section{Модель перспективной камеры (SimDetector)}
+
+\begin{filebox}[title={\filepath{simulator.py}, строки 510--543 --- \_render\_camera()}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=514]
+# Vector from robot to ball
+dx = bx - robot.x
+dy = by - robot.y
+dist = math.sqrt(dx*dx + dy*dy)
+
+# Angle to ball relative to robot heading
+angle = math.atan2(dy, dx) - robot.theta
+angle = math.atan2(math.sin(angle), math.cos(angle))
+
+if abs(angle) > CAM_FOV / 2:
+    continue   # outside field of view
+
+# Project to screen
+screen_x = int(CAM_W/2 + (angle / (CAM_FOV/2)) * (CAM_W/2))
+
+# Apparent size (pinhole camera model)
+apparent_px = int(FOCAL_LENGTH_PX * BALL_DIAMETER_M / dist)
+
+# Vertical position (depth cue)
+screen_y = horizon_y + int((1.0 - 0.03/max(0.1, dist)) *
+                            (CAM_H - horizon_y) * 0.7)
+
+# Confidence proportional to distance
+conf = max(0.5, min(0.99, 1.0 - dist / 3.0))
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Проверка видимости (Field of View)}
+
+Угол на объект относительно курса робота:
+
+\begin{equation}
+  \alpha = \mathrm{atan2}(b_y - r_y,\, b_x - r_x) - \theta_{\text{robot}}
+  \label{eq:fov_angle}
+\end{equation}
+
+Объект виден если: $|\alpha| \leq \text{FOV}/2 = 30^\circ$.
+
+\subsection{Горизонтальная проекция на экран}
+
+\begin{equation}
+  \boxed{s_x = \frac{W}{2} + \frac{\alpha}{\text{FOV}/2} \cdot \frac{W}{2}}
+  \label{eq:screen_x}
+\end{equation}
+
+Это линейная проекция: угол $\alpha = 0$ --- центр кадра, $\pm \text{FOV}/2$ --- края.
+
+\subsection{Модель pinhole-камеры (размер объекта)}
+
+Видимый размер объекта на сенсоре:
+
+\begin{equation}
+  \boxed{s_{\text{px}} = \frac{f \cdot D_{\text{real}}}{d}}
+  \label{eq:pinhole}
+\end{equation}
+
+где $f = 500\,\text{пкс}$ --- фокусное расстояние, $D_{\text{real}} = 0.04\,\text{м}$ ---
+диаметр шарика, $d$ --- расстояние до объекта.
+
+\begin{notebox}
+Это обратная зависимость: при удвоении расстояния видимый размер уменьшается вдвое.
+Тот же принцип используется в \texttt{follow\_me\_node.py}
+(глава~\ref{ch:follow_me}) для оценки дистанции до человека.
+\end{notebox}
+
+\subsection{Вертикальная позиция (глубинная подсказка)}
+
+Объекты на полу: чем ближе к роботу, тем ниже на экране:
+
+\begin{equation}
+  s_y = h_{\text{горизонт}} + \left(1 - \frac{0.03}{\max(0.1, d)}\right) \cdot 0.7(H - h_{\text{горизонт}})
+  \label{eq:screen_y}
+\end{equation}
+
+\subsection{Модель доверия (confidence)}
+
+\begin{equation}
+  \text{conf} = \mathrm{clamp}\!\left(1 - \frac{d}{3.0},\; 0.5,\; 0.99\right)
+  \label{eq:sim_conf}
+\end{equation}
+
+% ── Таблица ────────────────────────────────────────────────────
+\section{Параметры симулятора}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{ARENA\_W, H}        & $3.0 \times 3.0\,\text{м}$ & Размер арены\\
+\texttt{SIM\_DT}            & $0.05\,\text{с}$ & Шаг интегрирования (20~Гц)\\
+\texttt{MAX\_LINEAR}        & $0.3\,\text{м/с}$ & Макс. линейная скорость\\
+\texttt{MAX\_ANGULAR}       & $2.0\,\text{рад/с}$ & Макс. угловая скорость\\
+\texttt{ROBOT\_RADIUS}      & $0.12\,\text{м}$ & Радиус робота\\
+\texttt{BALL\_DIAMETER\_M}  & $0.04\,\text{м}$ & Диаметр шарика\\
+\texttt{FOCAL\_LENGTH\_PX}  & $500\,\text{пкс}$ & Фокусное расстояние камеры\\
+\texttt{CAM\_FOV}           & $60^\circ$ & Поле зрения камеры\\
+\texttt{CAM\_W, H}          & $640 \times 480\,\text{пкс}$ & Разрешение камеры\\
+\texttt{ULTRASONIC\_MAX}    & $2.0\,\text{м}$ & Макс. дальность УЗ\\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -1,0 +1,595 @@
+% ============================================================
+%  Глава 0 — Теоретические основы теории управления
+%  Справочная глава: модели, линеаризация, устойчивость
+% ============================================================
+\chapter{Теоретические основы систем управления}
+\label{ch:theory}
+
+Данная глава содержит математический аппарат теории автоматического
+управления (ТАУ), на котором базируются все алгоритмы проекта SAMURAI.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Модель в пространстве состояний}
+\label{sec:state_space}
+
+Любой объект управления может быть описан системой дифференциальных
+уравнений первого порядка --- \textbf{уравнениями состояния}:
+
+\begin{equation}
+  \boxed{
+  \dot{\vect{x}}(t) = \mat{A}\,\vect{x}(t) + \mat{B}\,\vect{u}(t), \qquad
+  \vect{y}(t) = \mat{C}\,\vect{x}(t) + \mat{D}\,\vect{u}(t)
+  }
+  \label{eq:state_space}
+\end{equation}
+
+где:
+\begin{itemize}
+  \item $\vect{x}(t) = (x_1, x_2, \ldots, x_n)\T \in \mathbb{R}^n$ --- \textbf{вектор состояния}
+  \item $\vect{u}(t) = (u_1, \ldots, u_r)\T \in \mathbb{R}^r$ --- вектор управляющих воздействий
+  \item $\vect{y}(t) = (y_1, \ldots, y_m)\T \in \mathbb{R}^m$ --- вектор выходных переменных
+  \item $\mat{A} \in \mathbb{R}^{n \times n}$ --- матрица системы (динамики)
+  \item $\mat{B} \in \mathbb{R}^{n \times r}$ --- матрица управления
+  \item $\mat{C} \in \mathbb{R}^{m \times n}$ --- матрица наблюдения
+  \item $\mat{D} \in \mathbb{R}^{m \times r}$ --- матрица прямого прохода
+\end{itemize}
+
+\begin{notebox}
+Структурная схема модели в пространстве состояний содержит
+интегратор ($\int$) для перехода от $\dot{\vect{x}}$ к $\vect{x}$,
+блоки умножения на матрицы $\mat{A}$, $\mat{B}$, $\mat{C}$, $\mat{D}$
+и сумматоры.
+\end{notebox}
+
+\subsection{Применение в проекте SAMURAI}
+
+Каждый фильтр Калмана в проекте является реализацией модели
+в пространстве состояний:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Модуль} & \textbf{Вектор состояния $\vect{x}$} & \textbf{Размерность $n$}\\
+\midrule
+Velocity EKF (гл.~\ref{ch:velocity_ekf}) & $(v_x, v_y)\T$ & 2\\
+IMU EKF (гл.~\ref{ch:imu_ekf}) & $(\psi, b_z)\T$ & 2\\
+AccelPosition (гл.~\ref{ch:accel_position}) & $(x, y, v_x, v_y)\T$ & 4\\
+Одометрия (гл.~\ref{ch:odometry}) & $(x, y, \theta)\T$ & 3\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Линеаризация нелинейных систем}
+\label{sec:linearization}
+
+Реальные объекты, включая наземного робота, описываются
+\textbf{нелинейными} уравнениями:
+
+\begin{equation}
+  \dot{\vect{x}}(t) = \vect{f}(\vect{x}, \vect{u}), \qquad
+  \vect{y}(t) = \vect{g}(\vect{x}, \vect{u})
+  \label{eq:nonlinear_system}
+\end{equation}
+
+\subsection{Пример: транспортная тележка}
+
+Модель движения мобильного робота (транспортной тележки) описывается
+системой шести дифференциальных уравнений:
+
+\begin{align}
+  \dot{\theta} &= -\frac{1}{T_1}\theta + \frac{1}{T_1}u_1 \label{eq:cart_theta}\\
+  \dot{f} &= -\frac{1}{T_2}f + \frac{1}{T_2}u_2 \label{eq:cart_force}\\
+  \dot{v} &= -\frac{\alpha}{m}v + \frac{1}{m}f \label{eq:cart_vel}\\
+  \dot{x} &= v\cos(\psi + \theta) \label{eq:cart_x}\\
+  \dot{\psi} &= \frac{1}{L}v\sin(\theta) \label{eq:cart_psi}\\
+  \dot{z} &= -v\sin(\psi + \theta) \label{eq:cart_z}
+\end{align}
+
+где $\theta$ --- угол поворота колёс, $\psi$ --- угол рыскания,
+$f$ --- движущая сила, $v$ --- скорость, $x,z$ --- координаты;
+$T_1, T_2, \alpha, m, L$ --- параметры объекта.
+
+Уравнения~\eqref{eq:cart_x}--\eqref{eq:cart_z} \textbf{нелинейны}
+(содержат $\sin$ и $\cos$), что делает систему нелинейной.
+
+\begin{notebox}
+Модель робота SAMURAI использует ту же структуру:
+уравнения одометрии (гл.~\ref{ch:odometry}) $\dot{x} = v\cos\theta$,
+$\dot{y} = v\sin\theta$ нелинейны из-за тригонометрических функций
+от угла курса $\theta$.
+\end{notebox}
+
+\subsection{Метод линеаризации по Тейлору (матрица Якоби)}
+\label{sec:jacobian}
+
+Линеаризация проводится в окрестности \textbf{опорного режима}
+$(\bar{\vect{x}}, \bar{\vect{u}})$, в котором $\vect{f}(\bar{\vect{x}}, \bar{\vect{u}}) = \vect{0}$.
+
+Разложение в ряд Тейлора с отбрасыванием членов высших порядков:
+
+\begin{equation}
+  \boxed{
+  \Delta\dot{\vect{x}} = \mat{A}\,\Delta\vect{x} + \mat{B}\,\Delta\vect{u}, \qquad
+  \Delta\vect{y} = \mat{C}\,\Delta\vect{x} + \mat{D}\,\Delta\vect{u}
+  }
+  \label{eq:linearized}
+\end{equation}
+
+где матрицы --- \textbf{якобианы}, вычисленные в опорной точке:
+
+\begin{equation}
+  \mat{A} = \left.\frac{\partial \vect{f}}{\partial \vect{x}}\right|_{\bar{\vect{x}},\bar{\vect{u}}}, \quad
+  \mat{B} = \left.\frac{\partial \vect{f}}{\partial \vect{u}}\right|_{\bar{\vect{x}},\bar{\vect{u}}}, \quad
+  \mat{C} = \left.\frac{\partial \vect{g}}{\partial \vect{x}}\right|_{\bar{\vect{x}},\bar{\vect{u}}}, \quad
+  \mat{D} = \left.\frac{\partial \vect{g}}{\partial \vect{u}}\right|_{\bar{\vect{x}},\bar{\vect{u}}}
+  \label{eq:jacobians}
+\end{equation}
+
+\subsection{Пример: якобиан для транспортной тележки}
+
+Для опорного режима: $v(t) = v^0$, $\theta(t) = 0$, $\psi(t) = 0$:
+
+\begin{equation}
+  \mat{A} = \begin{pmatrix}
+    -1/T_1 & 0 & 0 & 0 & 0 & 0\\
+    0 & -1/T_2 & 0 & 0 & 0 & 0\\
+    0 & 1/m & -\alpha/m & 0 & 0 & 0\\
+    0 & 0 & 1 & 0 & 0 & 0\\
+    v^0/L & 0 & 0 & 0 & 0 & 0\\
+    -v^0 & 0 & 0 & 0 & -v^0 & 0
+  \end{pmatrix}
+  \label{eq:cart_A}
+\end{equation}
+
+\subsection{Связь с EKF в проекте SAMURAI}
+
+\textbf{Расширенный фильтр Калмана (EKF)} --- это именно
+\textbf{линеаризация на каждом шаге}. Матрица перехода $\mat{F}$
+в фильтре Калмана (гл.~\ref{ch:imu_ekf}, формула~\eqref{eq:F_matrix})
+--- это якобиан нелинейной модели:
+
+\begin{equation}
+  \mat{F}_k = \left.\frac{\partial \vect{f}}{\partial \vect{x}}\right|_{\vect{x}_{k-1}}
+  = \begin{pmatrix} 1 & -\Delta t \\ 0 & 1 \end{pmatrix}
+  \label{eq:ekf_jacobian}
+\end{equation}
+
+Здесь нелинейная модель $\psi_k = \psi_{k-1} + (g_z - b_z)\Delta t$
+линеаризуется относительно текущего состояния $(\psi_{k-1}, b_{z,k-1})$,
+а якобиан $\mat{F}$ содержит производные $\partial\dot{\psi}/\partial\psi = 1$,
+$\partial\dot{\psi}/\partial b_z = -\Delta t$.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Передаточная функция}
+\label{sec:transfer_func}
+
+Для линейной стационарной системы~\eqref{eq:state_space}
+\textbf{передаточная функция} определяется через преобразование Лапласа:
+
+\begin{equation}
+  \boxed{W(p) = \mat{C}(p\mat{E}_n - \mat{A})^{-1}\mat{B} + \mat{D}}
+  \label{eq:transfer_func}
+\end{equation}
+
+где $p = \frac{d}{dt}$ --- оператор дифференцирования, $\mat{E}_n$ --- единичная матрица.
+
+\subsection{Характеристический полином и резольвента}
+
+Резольвента матрицы $\mat{A}$:
+
+\begin{equation}
+  (p\mat{E}_n - \mat{A})^{-1} = \frac{1}{\chi_n(p)}\widetilde{\mat{B}}(p)
+  \label{eq:resolvent}
+\end{equation}
+
+где $\chi_n(p) = \det(p\mat{E}_n - \mat{A}) = p^n + a_1 p^{n-1} + \ldots + a_n$
+--- характеристический полином, а $\widetilde{\mat{B}}(p)$ --- присоединённая матрица.
+
+\subsection{Алгоритм Фаддеева--Леверье}
+\label{sec:faddeev}
+
+Коэффициенты характеристического полинома и матрицы
+$\widetilde{\mat{B}}_k$ вычисляются рекуррентно:
+
+\begin{equation}
+  \boxed{
+  \begin{aligned}
+    \widetilde{\mat{B}}_1 &= \mat{E}_n, \quad & a_1 &= -\mathrm{tr}(\mat{A}\widetilde{\mat{B}}_1)\\
+    \widetilde{\mat{B}}_k &= \mat{A}\widetilde{\mat{B}}_{k-1} + a_{k-1}\mat{E}_n, \quad
+    & a_k &= -\frac{1}{k}\mathrm{tr}(\mat{A}\widetilde{\mat{B}}_k)\\
+    & & \multicolumn{2}{l}{k = 2, \ldots, n}
+  \end{aligned}
+  }
+  \label{eq:faddeev}
+\end{equation}
+
+Проверка: $\mat{A}\widetilde{\mat{B}}_n + a_n\mat{E}_n = \mat{0}$
+(теорема Гамильтона--Кели).
+
+\subsection{Уравнение <<вход--выход>>}
+
+Передаточная функция связывает выход $y$ с входом $u$ через
+дифференциальное уравнение:
+
+\begin{equation}
+  p^n y + a_1 p^{n-1} y + \ldots + a_n y = b_0 p^n u + b_1 p^{n-1} u + \ldots + b_n u
+  \label{eq:io_equation}
+\end{equation}
+
+\begin{notebox}
+В проекте SAMURAI фильтры Калмана работают в \textbf{дискретном}
+пространстве состояний:
+$\vect{x}_{k+1} = \mat{F}\,\vect{x}_k + \mat{B}\,\vect{u}_k$,
+что является дискретным аналогом непрерывной модели~\eqref{eq:state_space}.
+Переход к дискретной модели:
+$\mat{A}_d = e^{\mat{A}T}$, $\mat{B}_d = \int_0^T e^{\mat{A}\tau}d\tau\,\mat{B}$.
+\end{notebox}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Устойчивость систем управления}
+\label{sec:stability}
+
+\subsection{Определение устойчивости}
+
+Система~\eqref{eq:state_space} \textbf{асимптотически устойчива},
+если решение $\vect{x}(t) \to \vect{0}$ при $t \to \infty$
+для любых начальных условий $\vect{x}(0)$.
+
+\subsection{Критерий собственных значений}
+
+Система устойчива тогда и только тогда, когда все собственные числа
+матрицы $\mat{A}$ имеют отрицательные вещественные части:
+
+\begin{equation}
+  \boxed{\mathrm{Re}(\lambda_i) < 0, \quad \forall\, i = 1, \ldots, n}
+  \label{eq:stability_eigenvalues}
+\end{equation}
+
+где $\lambda_i$ --- корни характеристического уравнения $\det(\lambda\mat{E} - \mat{A}) = 0$.
+
+\subsection{Критерий Гурвица}
+
+Для характеристического полинома $\chi(p) = p^n + a_1 p^{n-1} + \ldots + a_n$
+формируется матрица Гурвица:
+
+\begin{equation}
+  \mat{H} = \begin{pmatrix}
+    a_1 & a_3 & a_5 & \cdots\\
+    1   & a_2 & a_4 & \cdots\\
+    0   & a_1 & a_3 & \cdots\\
+    0   & 1   & a_2 & \cdots\\
+    \vdots & & & \ddots
+  \end{pmatrix}
+  \label{eq:hurwitz}
+\end{equation}
+
+\textbf{Условие устойчивости}: все угловые миноры матрицы $\mat{H}$
+положительны:
+
+\begin{equation}
+  \Delta_1 = a_1 > 0, \quad
+  \Delta_2 = a_1 a_2 - a_3 > 0, \quad
+  \ldots, \quad \Delta_n > 0
+  \label{eq:hurwitz_cond}
+\end{equation}
+
+\subsection{Решение уравнения состояния}
+
+Аналитическое решение линейной системы (формула Коши):
+
+\begin{equation}
+  \vect{x}(t) = e^{\mat{A}(t - t_0)}\vect{x}(t_0) + \int_{t_0}^{t} e^{\mat{A}(t - \tau)}\mat{B}\,\vect{u}(\tau)\,d\tau
+  \label{eq:cauchy}
+\end{equation}
+
+где $e^{\mat{A}t}$ --- матричная экспонента. Первое слагаемое ---
+свободное движение (от начальных условий), второе ---
+вынужденное движение (от входного воздействия).
+
+\subsection{Жорданова форма и матричная экспонента}
+
+Через замену $\vect{x} = \mat{S}\vect{z}$ система приводится к жордановой форме:
+
+\begin{equation}
+  \dot{\vect{z}} = \mat{J}\vect{z} + \mat{S}^{-1}\mat{B}\vect{u}, \quad
+  \mat{J} = \mat{S}^{-1}\mat{A}\mat{S}
+  \label{eq:jordan}
+\end{equation}
+
+Для диагональной жордановой формы экспонента:
+
+\begin{equation}
+  e^{\mat{J}t} = \mathrm{diag}\!\left(e^{\lambda_1 t}, e^{\lambda_2 t}, \ldots, e^{\lambda_n t}\right)
+  \label{eq:matrix_exp}
+\end{equation}
+
+Отсюда видно: при $\mathrm{Re}(\lambda_i) < 0$ каждая мода затухает
+экспоненциально, что обеспечивает устойчивость.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Дискретные системы и фильтр Калмана}
+\label{sec:discrete_kalman}
+
+\subsection{Дискретная модель в пространстве состояний}
+
+\begin{equation}
+  \vect{x}_{k+1} = \mat{A}_d\,\vect{x}_k + \mat{B}_d\,\vect{u}_k, \qquad
+  \vect{y}_k = \mat{C}_d\,\vect{x}_k + \mat{D}_d\,\vect{u}_k
+  \label{eq:discrete_ss}
+\end{equation}
+
+где $\mat{A}_d = e^{\mat{A}T}$, $T$ --- период дискретизации.
+
+\subsection{Общие уравнения фильтра Калмана}
+
+Фильтр Калмана решает задачу оптимальной оценки состояния
+стохастической системы:
+
+\begin{equation}
+  \vect{x}_{k} = \mat{F}\,\vect{x}_{k-1} + \mat{B}\,\vect{u}_{k-1} + \vect{w}_{k-1}, \qquad
+  \vect{z}_k = \mat{H}\,\vect{x}_k + \vect{v}_k
+  \label{eq:kalman_model}
+\end{equation}
+
+где $\vect{w} \sim \mathcal{N}(\vect{0}, \mat{Q})$ --- процессный шум,
+$\vect{v} \sim \mathcal{N}(\vect{0}, \mat{R})$ --- шум измерений.
+
+\textbf{Шаг предсказания (Predict):}
+
+\begin{align}
+  \hat{\vect{x}}_k^- &= \mat{F}\,\hat{\vect{x}}_{k-1} + \mat{B}\,\vect{u}_{k-1}
+  \label{eq:kf_predict_x}\\
+  \mat{P}_k^- &= \mat{F}\,\mat{P}_{k-1}\,\mat{F}\T + \mat{Q}
+  \label{eq:kf_predict_P}
+\end{align}
+
+\textbf{Шаг коррекции (Update):}
+
+\begin{align}
+  \vect{y}_k &= \vect{z}_k - \mat{H}\,\hat{\vect{x}}_k^- && \text{(инновация)}
+  \label{eq:kf_innovation}\\
+  \mat{S}_k &= \mat{H}\,\mat{P}_k^-\,\mat{H}\T + \mat{R} && \text{(ковариация инновации)}
+  \label{eq:kf_S}\\
+  \mat{K}_k &= \mat{P}_k^-\,\mat{H}\T\,\mat{S}_k^{-1} && \text{(усиление Калмана)}
+  \label{eq:kf_gain}\\
+  \hat{\vect{x}}_k &= \hat{\vect{x}}_k^- + \mat{K}_k\,\vect{y}_k && \text{(обновление состояния)}
+  \label{eq:kf_update_x}\\
+  \mat{P}_k &= (\mat{I} - \mat{K}_k\mat{H})\,\mat{P}_k^- && \text{(обновление ковариации)}
+  \label{eq:kf_update_P}
+\end{align}
+
+\begin{formulabox}
+Фильтр Калмана \textbf{минимизирует} дисперсию ошибки оценки
+$E[\|\vect{x} - \hat{\vect{x}}\|^2]$. Усиление $\mat{K}$ автоматически
+взвешивает доверие между предсказанием (модель) и измерением (датчик):
+\begin{itemize}
+  \item $\mat{R} \ll \mat{P}^-$: $\mat{K} \to \mat{H}^{-1}$ --- доверяем датчику
+  \item $\mat{R} \gg \mat{P}^-$: $\mat{K} \to \mat{0}$ --- доверяем модели
+\end{itemize}
+\end{formulabox}
+
+\subsection{Расширенный фильтр Калмана (EKF)}
+
+Для нелинейной системы $\vect{x}_k = \vect{f}(\vect{x}_{k-1}, \vect{u}_{k-1})$,
+$\vect{z}_k = \vect{h}(\vect{x}_k)$ используется \textbf{линеаризация
+на каждом шаге}:
+
+\begin{equation}
+  \mat{F}_k = \left.\frac{\partial \vect{f}}{\partial \vect{x}}\right|_{\hat{\vect{x}}_{k-1}}, \qquad
+  \mat{H}_k = \left.\frac{\partial \vect{h}}{\partial \vect{x}}\right|_{\hat{\vect{x}}_k^-}
+  \label{eq:ekf_linearize}
+\end{equation}
+
+Затем якобианы $\mat{F}_k$, $\mat{H}_k$ подставляются в стандартные
+уравнения фильтра Калмана~\eqref{eq:kf_predict_P}--\eqref{eq:kf_update_P}.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Модель электродвигателя постоянного тока}
+\label{sec:dc_motor}
+
+Двигатели робота SAMURAI управляются ШИМ-сигналами через драйвер TB6612.
+Электромеханические процессы в двигателе постоянного тока описываются
+дифференциальным уравнением второго порядка:
+
+\begin{equation}
+  \boxed{T_a^2\ddot{\omega} + T_y\dot{\omega} + \omega = k\,u}
+  \label{eq:dc_motor}
+\end{equation}
+
+где:
+\begin{itemize}
+  \item $\omega$ --- угловая скорость вала двигателя
+  \item $u$ --- управляющее воздействие (напряжение / ШИМ)
+  \item $T_a$ --- электромеханическая постоянная времени
+  \item $T_y$ --- электрическая постоянная времени
+  \item $k$ --- коэффициент передачи
+\end{itemize}
+
+\subsection{Пространство состояний для двигателя}
+
+Вводя $x_1 = \omega$, $x_2 = \dot{\omega}$:
+
+\begin{equation}
+  \begin{pmatrix} \dot{x}_1 \\ \dot{x}_2 \end{pmatrix}
+  = \begin{pmatrix} 0 & 1 \\ -1/T_a^2 & -T_y/T_a^2 \end{pmatrix}
+  \begin{pmatrix} x_1 \\ x_2 \end{pmatrix}
+  + \begin{pmatrix} 0 \\ k/T_a^2 \end{pmatrix} u
+  \label{eq:motor_ss}
+\end{equation}
+
+Характеристический полином:
+
+\begin{equation}
+  \chi(\lambda) = \lambda^2 + \frac{T_y}{T_a^2}\lambda + \frac{1}{T_a^2}
+  \label{eq:motor_char}
+\end{equation}
+
+\textbf{Условие устойчивости} (по Гурвицу): $T_y > 0$, $T_a > 0$ ---
+выполняется для всех реальных двигателей.
+
+\subsection{Передаточная функция двигателя}
+
+\begin{equation}
+  W(p) = \frac{k}{T_a^2 p^2 + T_y p + 1}
+  \label{eq:motor_tf}
+\end{equation}
+
+При $T_a \ll T_y$ (типично для малых моторов) двигатель приближённо
+описывается звеном первого порядка:
+
+\begin{equation}
+  W(p) \approx \frac{k}{T_y p + 1}
+  \label{eq:motor_tf_approx}
+\end{equation}
+
+\begin{notebox}
+В проекте SAMURAI ШИМ-управление (гл.~\ref{ch:pwm_motor})
+работает с нормированным throttle $t \in [-1, 1]$, что соответствует
+$u/u_{\max}$. Драйвер TB6612 в режиме Slow Decay обеспечивает
+линейную зависимость $\omega \propto t$ в установившемся режиме.
+\end{notebox}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Пропорциональный регулятор (P-регулятор)}
+\label{sec:p_controller}
+
+\subsection{Закон управления}
+
+\begin{equation}
+  u(t) = K_P \cdot e(t), \qquad e(t) = r(t) - y(t)
+  \label{eq:p_controller}
+\end{equation}
+
+где $r(t)$ --- задание, $y(t)$ --- выход, $K_P$ --- коэффициент усиления.
+
+\subsection{Передаточная функция замкнутой системы}
+
+Для объекта с передаточной функцией $W_{\text{obj}}(p)$
+и P-регулятора с коэффициентом $K_P$:
+
+\begin{equation}
+  W_{\text{зс}}(p) = \frac{K_P \cdot W_{\text{obj}}(p)}{1 + K_P \cdot W_{\text{obj}}(p)}
+  \label{eq:closed_loop}
+\end{equation}
+
+\subsection{Статическая ошибка}
+
+P-регулятор не может полностью устранить установившуюся ошибку
+при ступенчатом воздействии:
+
+\begin{equation}
+  e_{\text{уст}} = \frac{1}{1 + K_P \cdot k_{\text{obj}}}
+  \label{eq:static_error}
+\end{equation}
+
+Увеличение $K_P$ снижает ошибку, но может привести к
+потере устойчивости.
+
+\subsection{Применение P-регуляторов в проекте}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Модуль} & \textbf{Управляемая переменная} & $K_P$ & \textbf{Ограничение}\\
+\midrule
+Pure Pursuit (гл.~\ref{ch:pure_pursuit}) & Угловая скорость $\omega$ & $2.5$ & $|\omega| \leq 0.8$\\
+Follow-Me (гл.~\ref{ch:follow_me}) & Угловая скорость $\omega$ & $0.8$ & ---\\
+Follow-Me (гл.~\ref{ch:follow_me}) & Линейная скорость $v$ & $0.3$ & $v \leq 0.20$\\
+Patrol (гл.~\ref{ch:patrol}) & Целевая позиция & --- & $d < 0.20\,\text{м}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Переходная характеристика}
+\label{sec:transient}
+
+Переходная характеристика $h(t)$ --- реакция системы на единичное
+ступенчатое воздействие $u(t) = 1(t)$ при нулевых начальных условиях:
+
+\begin{equation}
+  h(t) = \mat{C}\int_0^t e^{\mat{A}\tau}\,d\tau\,\mat{B} + \mat{D}
+  \label{eq:step_response}
+\end{equation}
+
+При отсутствии нулевых собственных значений у $\mat{A}$:
+
+\begin{equation}
+  h(t) = \mat{C}\left(e^{\mat{A}t} - \mat{E}\right)\mat{A}^{-1}\mat{B} + \mat{D}
+  \label{eq:step_response2}
+\end{equation}
+
+Для системы второго порядка с $\omega_n$ (собственная частота)
+и $\zeta$ (коэффициент демпфирования):
+
+\begin{equation}
+  h(t) = 1 - \frac{e^{-\zeta\omega_n t}}{\sqrt{1-\zeta^2}}
+  \sin\!\left(\omega_n\sqrt{1-\zeta^2}\,t + \arccos\zeta\right)
+  \label{eq:2nd_order_response}
+\end{equation}
+
+\begin{notebox}
+Косинусное масштабирование скорости в Pure Pursuit
+(гл.~\ref{ch:pure_pursuit}, формула~\eqref{eq:cos_factor})
+обеспечивает плавную переходную характеристику без перерегулирования
+при развороте робота.
+\end{notebox}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Управляемость и наблюдаемость}
+\label{sec:controllability}
+
+\subsection{Матрица управляемости}
+
+\begin{equation}
+  \mat{S}_v = \bigl[\mat{B},\; \mat{A}\mat{B},\; \mat{A}^2\mat{B},\; \ldots,\; \mat{A}^{n-1}\mat{B}\bigr]
+  \label{eq:controllability}
+\end{equation}
+
+Система полностью управляема $\Leftrightarrow$ $\mathrm{rank}(\mat{S}_v) = n$.
+
+\subsection{Матрица наблюдаемости}
+
+\begin{equation}
+  \mat{S}_o = \begin{pmatrix} \mat{C} \\ \mat{C}\mat{A} \\ \vdots \\ \mat{C}\mat{A}^{n-1} \end{pmatrix}
+  \label{eq:observability}
+\end{equation}
+
+Система полностью наблюдаема $\Leftrightarrow$ $\mathrm{rank}(\mat{S}_o) = n$.
+
+\begin{notebox}
+Фильтр Калмана может оценивать состояние только
+\textbf{наблюдаемой} системы. EKF для угла курса
+(гл.~\ref{ch:imu_ekf}) наблюдаем, так как гироскоп
+измеряет $\omega_z = \dot{\psi} - b_z$, что позволяет
+оценить и $\psi$, и $b_z$.
+\end{notebox}
+
+% ═══════════════════════════════════════════════════════════════
+\section{Сводная таблица: теория $\to$ реализация}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Теоретический концепт} & \textbf{Глава} & \textbf{Реализация}\\
+\midrule
+$\dot{\vect{x}} = \mat{A}\vect{x} + \mat{B}\vect{u}$ & \ref{ch:velocity_ekf}, \ref{ch:imu_ekf}
+  & Predict-шаг EKF\\
+Якобиан $\mat{F} = \partial\vect{f}/\partial\vect{x}$ & \ref{ch:imu_ekf}
+  & Матрица перехода $\mat{F}$\\
+$\mat{K} = \mat{P}\mat{H}\T\mat{S}^{-1}$ & \ref{ch:velocity_ekf}
+  & Усиление Калмана\\
+$u = K_P \cdot e$ & \ref{ch:pure_pursuit}, \ref{ch:follow_me}
+  & Угловой P-регулятор\\
+$T_a^2\ddot{\omega} + T_y\dot{\omega} = ku$ & \ref{ch:pwm_motor}
+  & ШИМ-управление мотором\\
+$\mathrm{Re}(\lambda_i) < 0$ & \ref{ch:imu_ekf}
+  & Устойчивость EKF\\
+$e^{\mat{A}t}$ & \ref{ch:accel_position}
+  & Интегрирование позиции\\
+$\vect{x}_{k+1} = \mat{A}_d\vect{x}_k$ & \ref{ch:odometry}
+  & Дискретная одометрия\\
+\bottomrule
+\end{tabular}
+\end{center}

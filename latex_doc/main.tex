@@ -1,0 +1,248 @@
+% ============================================================
+%  SAMURAI — Математика, Физика и Дифференциальные системы
+%  Главный файл документа (собирает все главы)
+%  Компиляция: pdflatex main.tex  (два прохода для оглавления)
+% ============================================================
+\documentclass[12pt, a4paper, openany]{book}
+
+% ── Кодировка и язык ─────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian, english]{babel}
+
+% ── Геометрия страницы ───────────────────────────────────────────
+\usepackage[
+  top=25mm, bottom=25mm,
+  left=30mm, right=20mm
+]{geometry}
+
+% ── Математика ───────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{bm}           % жирные математические символы
+
+% ── Графика и цвет ───────────────────────────────────────────────
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc}
+
+% ── Код ──────────────────────────────────────────────────────────
+\usepackage{listings}
+\usepackage{courier}
+
+% Цветовая схема для кода
+\definecolor{codebg}{RGB}{245,247,250}
+\definecolor{codeframe}{RGB}{180,190,210}
+\definecolor{keyword}{RGB}{0,100,200}
+\definecolor{comment}{RGB}{100,130,100}
+\definecolor{string}{RGB}{163,21,21}
+\definecolor{number}{RGB}{9,134,88}
+
+% Стиль Python
+\lstdefinestyle{pythonstyle}{
+  language=Python,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=4pt,
+  basicstyle=\footnotesize\ttfamily,
+  keywordstyle=\color{keyword}\bfseries,
+  commentstyle=\color{comment}\itshape,
+  stringstyle=\color{string},
+  numberstyle=\scriptsize\ttfamily\color{gray},
+  numbers=left,
+  numbersep=10pt,
+  xleftmargin=2.5em,
+  stepnumber=1,
+  showstringspaces=false,
+  breaklines=true,
+  breakatwhitespace=false,
+  tabsize=4,
+  captionpos=b,
+  morekeywords={True, False, None, self},
+}
+
+% Стиль C++
+\lstdefinestyle{cppstyle}{
+  language=C++,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=4pt,
+  basicstyle=\footnotesize\ttfamily,
+  keywordstyle=\color{keyword}\bfseries,
+  commentstyle=\color{comment}\itshape,
+  stringstyle=\color{string},
+  numberstyle=\scriptsize\ttfamily\color{gray},
+  numbers=left,
+  numbersep=10pt,
+  xleftmargin=2.5em,
+  stepnumber=1,
+  showstringspaces=false,
+  breaklines=true,
+  tabsize=4,
+  captionpos=b,
+}
+
+\lstset{style=pythonstyle}
+
+% ── Таблицы и плавающие объекты ──────────────────────────────────
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{float}
+
+% ── Гиперссылки ──────────────────────────────────────────────────
+\usepackage[
+  colorlinks=true,
+  linkcolor=blue!70!black,
+  citecolor=green!60!black,
+  urlcolor=blue!80!black,
+  bookmarks=true,
+  bookmarksnumbered=true
+]{hyperref}
+
+% ── Колонтитулы ──────────────────────────────────────────────────
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\small\thepage}
+\fancyhead[LO]{\small\nouppercase{\rightmark}}
+\fancyhead[RE]{\small\nouppercase{\leftmark}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Параграфы ────────────────────────────────────────────────────
+\usepackage{parskip}
+\setlength{\parindent}{0pt}
+
+% ── Окружения ────────────────────────────────────────────────────
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{formulabox}[1][]{
+  enhanced,
+  breakable,
+  colback=blue!3!white,
+  colframe=blue!50!black,
+  fonttitle=\bfseries,
+  title=Формула,
+  #1
+}
+
+\newtcolorbox{notebox}[1][]{
+  enhanced,
+  colback=orange!8!white,
+  colframe=orange!70!black,
+  fonttitle=\bfseries,
+  title=Примечание,
+  #1
+}
+
+\newtcolorbox{filebox}[1][]{
+  enhanced,
+  colback=gray!6!white,
+  colframe=gray!50!black,
+  fonttitle=\bfseries\ttfamily,
+  #1
+}
+
+% ── Нумерация уравнений по главам ────────────────────────────────
+\numberwithin{equation}{chapter}
+
+% ── Макросы ──────────────────────────────────────────────────────
+\newcommand{\filepath}[1]{\texttt{\small\color{gray!80!black}#1}}
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\T}{^{\mathsf{T}}}
+
+% ============================================================
+\begin{document}
+
+% ── Титульная страница ───────────────────────────────────────────
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+{\Huge\bfseries SAMURAI Robot}\\[0.5cm]
+{\Large\bfseries Математика, Физика и Дифференциальные системы}\\[1cm]
+\rule{\textwidth}{1pt}\\[0.5cm]
+{\large Технический справочник по математическому ядру проекта}\\[0.5cm]
+\rule{\textwidth}{1pt}\\[2cm]
+
+\begin{tabular}{ll}
+\textbf{Фильтры состояния:} & Extended Kalman Filter (2D velocity, IMU yaw)\\
+\textbf{Оценка позиции:} & Акселерометр + одометрия, слияние через EKF\\
+\textbf{Управление:} & Pure Pursuit, пропорциональный регулятор\\
+\textbf{Картография:} & SLAM на log-odds, трассировка лучей\\
+\textbf{Симулятор:} & Кинематика, пересечение луч--сфера, перспектива\\
+\textbf{Алгоритмы:} & A*, Bresenham, проекции, кватернионы\\
+\end{tabular}
+
+\vfill
+{\large\today}
+\end{titlepage}
+
+% ── Оглавление ───────────────────────────────────────────────────
+\tableofcontents
+\newpage
+
+% ── Введение ─────────────────────────────────────────────────────
+\chapter*{Введение}
+\addcontentsline{toc}{chapter}{Введение}
+
+Данный документ является техническим справочником по всем математическим,
+физическим и дифференциальным системам, реализованным в проекте \textbf{SAMURAI} ---
+автономного наземного робота на гусеничном шасси.
+
+Документ построен \textbf{модульно}: каждая глава соответствует отдельному
+программному модулю и содержит:
+\begin{itemize}
+  \item Ссылку на исходный файл с указанием строк кода
+  \item Математическое описание алгоритма
+  \item Точный фрагмент кода с пояснениями
+  \item Физический смысл каждого уравнения
+\end{itemize}
+
+\textbf{Структура проекта (математические компоненты):}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Файл} & \textbf{Язык} & \textbf{Содержание}\\
+\midrule
+\texttt{pi\_nodes/filters/velocity\_ekf.py} & Python & 2D Velocity EKF\\
+\texttt{pi\_nodes/filters/ekf\_imu.py} & Python & IMU yaw 1D Kalman\\
+\texttt{pi\_nodes/filters/accel\_position.py} & Python & Слияние датчиков\\
+\texttt{pi\_nodes/nodes/path\_recorder\_node.py} & Python & Pure Pursuit\\
+\texttt{pi\_nodes/nodes/slam\_map\_node.py} & Python & SLAM log-odds\\
+\texttt{pi\_nodes/nodes/imu\_node.py} & Python & IMU калибровка + EMA\\
+\texttt{pi\_nodes/nodes/fallback\_nav\_node.py} & Python & Реактивная навигация\\
+\texttt{compute\_node/simulator.py} & Python & Физика + A* + Bresenham\\
+\texttt{compute\_node/dashboard\_node.py} & Python & Кватернионы\\
+\texttt{compute\_node/geofence\_map\_publisher.py} & Python & Point-in-Polygon\\
+\texttt{compute\_node/depth\_to\_scan\_node.py} & Python & УЗ $\to$ LaserScan\\
+\texttt{ros\_ws/.../follow\_me\_node.py} & Python & Pinhole-камера + P-рег.\\
+\texttt{ros\_ws/.../patrol\_node.py} & Python & Навигация + кватернионы\\
+\texttt{ros\_ws/.../motor\_node.cpp} & C++ & Одометрия + ШИМ-микшер\\
+\texttt{ros\_ws/.../imu\_node.cpp} & C++ & I2C IMU (оптимизация)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ── Главы ────────────────────────────────────────────────────────
+\include{chapters/00_theory}
+\include{chapters/01_velocity_ekf}
+\include{chapters/02_imu_ekf}
+\include{chapters/03_accel_position}
+\include{chapters/04_pure_pursuit}
+\include{chapters/05_slam_map}
+\include{chapters/06_odometry}
+\include{chapters/07_quaternions}
+\include{chapters/08_imu_calibration}
+\include{chapters/09_pathfinding}
+\include{chapters/10_simulator}
+\include{chapters/11_follow_me}
+\include{chapters/12_patrol}
+\include{chapters/13_geofence_sensors}
+\include{chapters/14_pwm_motor}
+
+\end{document}

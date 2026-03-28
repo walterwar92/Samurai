@@ -23,6 +23,12 @@ import { FollowMePanel } from '@/components/controls/FollowMePanel'
 import { PathRecorderPanel } from '@/components/controls/PathRecorderPanel'
 import { ServoControlPanel } from '@/components/actuators/ServoControlPanel'
 import { SensorCharts } from '@/components/charts/SensorCharts'
+import { DetectionTogglePanel } from '@/components/controls/DetectionTogglePanel'
+import { CalibrationPanel } from '@/components/controls/CalibrationPanel'
+import { ExplorerPanel } from '@/components/controls/ExplorerPanel'
+import { MissionPanel } from '@/components/controls/MissionPanel'
+import { GamepadController } from '@/components/controls/GamepadController'
+import { MultiRobotPanel } from '@/components/controls/MultiRobotPanel'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function DashboardPage() {
@@ -54,7 +60,13 @@ export function DashboardPage() {
           <GestureIndicator gesture={state?.gesture ?? ''} />
         </div>
 
-        {/* Detection Banners */}
+        {/* Detection toggle + banner */}
+        <div className="lg:col-span-2">
+          <DetectionTogglePanel
+            detectionEnabled={state?.detection_enabled ?? true}
+            obstacleAvoidanceEnabled={state?.obstacle_avoidance_enabled ?? false}
+          />
+        </div>
         <div className="lg:col-span-2">
           <DetectionBanner detection={state?.detection ?? null} />
         </div>
@@ -70,6 +82,18 @@ export function DashboardPage() {
           <FollowMePanel followMe={state?.follow_me ?? null} />
           <PathRecorderPanel pathRecorder={state?.path_recorder ?? null} />
           <MapManagerPanel />
+          <CalibrationPanel
+            calibration={state?.calibration ?? null}
+            calibrationResult={state?.calibration_result ?? null}
+          />
+          <ExplorerPanel explorer={state?.explorer ?? null} />
+          <MissionPanel mission={state?.mission ?? null} />
+          <MultiRobotPanel />
+        </div>
+
+        {/* Gamepad Controller */}
+        <div className="lg:col-span-2">
+          <GamepadController />
         </div>
 
         {/* Servo Control Panel */}

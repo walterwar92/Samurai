@@ -1,0 +1,177 @@
+% ============================================================
+%  Глава 11 — Следование за человеком: оценка дистанции и P-регулятор
+%  Файл: ros_ws/src/robot_pkg/robot_pkg/follow_me_node.py
+% ============================================================
+\chapter{Следование за человеком: оценка дистанции и P-регулятор}
+\label{ch:follow_me}
+
+\begin{filebox}[title={Файл исходного кода}]
+\filepath{ros\_ws/src/robot\_pkg/robot\_pkg/follow\_me\_node.py} \quad (138 строк, Python)
+\end{filebox}
+
+\section{Постановка задачи}
+
+Модуль обнаруживает человека по детекции YOLO (класс ``person'') и
+управляет роботом для поддержания заданной дистанции следования.
+
+\section{Оценка расстояния по bounding box}
+
+\begin{filebox}[title={\filepath{follow\_me\_node.py}, строки 83--88}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=83]
+# Estimate distance from bounding box height
+bbox_h = best.get('h', 1)
+if bbox_h > 10:
+    self._person_distance = (PERSON_HEIGHT_M * FOCAL_LENGTH_PX) / bbox_h
+else:
+    self._person_distance = TARGET_DISTANCE
+\end{lstlisting}
+\end{filebox}
+
+Используется \textbf{модель pinhole-камеры} (та же, что в главе~\ref{ch:simulator}):
+
+\begin{equation}
+  h_{\text{px}} = \frac{f \cdot H_{\text{real}}}{d}
+  \quad \Rightarrow \quad
+  \boxed{d = \frac{H_{\text{person}} \cdot f}{h_{\text{bbox}}}}
+  \label{eq:distance_estimation}
+\end{equation}
+
+где:
+\begin{itemize}
+  \item $H_{\text{person}} = 1.7\,\text{м}$ --- средний рост человека
+  \item $f = 500\,\text{пкс}$ --- фокусное расстояние камеры
+  \item $h_{\text{bbox}}$ --- высота bounding box в пикселях
+\end{itemize}
+
+\section{Рулевое управление (P-регулятор по углу)}
+
+\begin{filebox}[title={\filepath{follow\_me\_node.py}, строки 90--103}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=90]
+# Steering: centre person in frame
+person_cx = best.get('x', IMG_CX) + best.get('w', 0) / 2.0
+error_x = (person_cx - IMG_CX) / IMG_CX    # normalized -1 to +1
+
+# Speed: proportional to distance error
+dist_error = self._person_distance - TARGET_DISTANCE
+
+twist = Twist()
+twist.angular.z = -error_x * 0.8           # angular P-controller
+if dist_error > 0.15:
+    twist.linear.x = min(0.20, dist_error * 0.3)
+elif dist_error < -0.15:
+    twist.linear.x = max(-0.10, dist_error * 0.2)
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Нормализованная ошибка центрирования}
+
+\begin{equation}
+  e_x = \frac{c_{\text{person}} - c_{\text{image}}}{c_{\text{image}}} \in [-1, +1]
+  \label{eq:center_error}
+\end{equation}
+
+где $c_{\text{image}} = 320\,\text{пкс}$ --- центр изображения.
+
+\subsection{Угловая скорость (P-регулятор)}
+
+\begin{equation}
+  \omega = -K_\omega \cdot e_x, \quad K_\omega = 0.8
+  \label{eq:angular_p}
+\end{equation}
+
+Знак <<$-$>> обеспечивает: человек справа ($e_x > 0$) $\Rightarrow$ робот поворачивает вправо ($\omega < 0$).
+
+\subsection{Линейная скорость (P-регулятор с мёртвой зоной)}
+
+Ошибка дистанции:
+
+\begin{equation}
+  e_d = d_{\text{measured}} - d_{\text{target}}, \quad d_{\text{target}} = 1.0\,\text{м}
+  \label{eq:dist_error}
+\end{equation}
+
+\begin{equation}
+  v = \begin{cases}
+    \min(0.20,\; 0.3 \cdot e_d) & \text{если } e_d > 0.15\,\text{м (далеко)} \\
+    \max(-0.10,\; 0.2 \cdot e_d) & \text{если } e_d < -0.15\,\text{м (близко)} \\
+    0 & \text{иначе (мёртвая зона)}
+  \end{cases}
+  \label{eq:linear_p}
+\end{equation}
+
+Мёртвая зона $\pm 0.15\,\text{м}$ предотвращает колебания вокруг целевой дистанции.
+
+\section{Теоретическое обоснование: замкнутая система слежения}
+
+\subsection{Двухконтурная структура}
+
+Система Follow-Me реализует \textbf{двухконтурный} регулятор
+(гл.~\ref{ch:theory}, раздел~\ref{sec:p_controller}):
+
+\begin{enumerate}
+  \item \textbf{Угловой контур}: $\omega = -K_\omega e_x$ ---
+    центрирование человека в кадре
+  \item \textbf{Дистанционный контур}: $v = K_v e_d$ ---
+    поддержание заданной дистанции
+\end{enumerate}
+
+\subsection{Передаточные функции контуров}
+
+Для углового контура (робот --- интегратор $\dot{\theta} = \omega$):
+
+\begin{equation}
+  W_{\omega}(p) = \frac{K_\omega}{p + K_\omega} = \frac{0.8}{p + 0.8},
+  \quad \tau_\omega = \frac{1}{K_\omega} = 1.25\,\text{с}
+  \label{eq:follow_angular_tf}
+\end{equation}
+
+Для дистанционного контура (робот --- интегратор $\dot{d} = -v$):
+
+\begin{equation}
+  W_v(p) = \frac{K_v}{p + K_v} = \frac{0.3}{p + 0.3},
+  \quad \tau_v = \frac{1}{K_v} = 3.3\,\text{с}
+  \label{eq:follow_dist_tf}
+\end{equation}
+
+Угловой контур быстрее дистанционного ($\tau_\omega < \tau_v$) ---
+сначала робот поворачивается к человеку, затем подъезжает.
+
+\subsection{Мёртвая зона и устойчивость}
+
+Мёртвая зона $\pm 0.15\,\text{м}$ предотвращает \textbf{автоколебания}
+(предельный цикл), которые возникали бы из-за дискретности
+и задержки обработки YOLO-детекции. Это аналог \textbf{гистерезиса}
+в релейных системах управления.
+
+\section{Таймаут потери цели}
+
+\begin{filebox}[title={\filepath{follow\_me\_node.py}, строки 106--112}]
+\begin{lstlisting}[style=pythonstyle, numbers=left, firstnumber=106]
+def _tick(self):
+    if self._tracking and (time.time() - self._last_person_time) > LOST_TIMEOUT:
+        self._tracking = False
+        self._cmd_pub.publish(Twist())  # stop
+\end{lstlisting}
+\end{filebox}
+
+Если человек не обнаружен в течение $t_{\text{timeout}} = 2.0\,\text{с}$,
+робот останавливается. Это защита от неконтролируемого движения.
+
+\section{Сводная таблица параметров}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{TARGET\_DISTANCE}  & $1.0\,\text{м}$ & Целевая дистанция следования\\
+\texttt{PERSON\_HEIGHT\_M} & $1.7\,\text{м}$ & Средний рост человека\\
+\texttt{FOCAL\_LENGTH\_PX} & $500\,\text{пкс}$ & Фокусное расстояние камеры\\
+\texttt{IMG\_CX}           & $320\,\text{пкс}$ & Центр изображения по $x$\\
+$K_\omega$                  & $0.8$ & Коэффициент P-регулятора угла\\
+$K_v^+$                     & $0.3$ & Коэффициент скорости (далеко)\\
+$K_v^-$                     & $0.2$ & Коэффициент скорости (близко)\\
+\texttt{LOST\_TIMEOUT}     & $2.0\,\text{с}$ & Таймаут потери цели\\
+\bottomrule
+\end{tabular}
+\end{center}

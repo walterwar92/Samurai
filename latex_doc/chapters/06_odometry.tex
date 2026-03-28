@@ -1,0 +1,223 @@
+% ============================================================
+%  Глава 6 — Одометрия: кинематика дифференциального привода
+%  Файлы: ros_ws/.../motor_node.cpp  и  pi_nodes/nodes/motor_node.py
+% ============================================================
+\chapter{Одометрия: кинематика дифференциального привода}
+\label{ch:odometry}
+
+\begin{filebox}[title={Файлы исходного кода}]
+\filepath{ros\_ws/src/robot\_pkg\_cpp/src/motor\_node.cpp} \quad (C++, строки 244--302)\\
+\filepath{pi\_nodes/nodes/motor\_node.py} \quad (Python)
+\end{filebox}
+
+\section{Модель дифференциального привода}
+
+Гусеничный робот управляется двумя независимыми бортами (левый/правый).
+Линейная и угловая скорости центра масс:
+
+\begin{equation}
+  v_{\text{linear}} \in [-v_{\max}, v_{\max}], \quad
+  \omega_{\text{angular}} \in [-\omega_{\max}, \omega_{\max}]
+  \label{eq:velocity_limits}
+\end{equation}
+
+\section{Микшер дифференциального привода}
+
+\begin{filebox}[title={\filepath{motor\_node.cpp}, строки 251--266 --- controlLoop()}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=251]
+// Convert m/s -> throttle in [-1, 1]
+double lin_t = (max_lin_ > 0.0) ? (linear_  / max_lin_) : 0.0;
+double ang_t = (max_ang_ > 0.0) ? (angular_ / max_ang_) : 0.0;
+
+// Differential-drive mixer
+double left  = lin_t + ang_t;
+double right = lin_t - ang_t;
+
+// Normalise: keep ratio, clamp to [-1, 1]
+double max_val = std::max({std::abs(left), std::abs(right), 1.0});
+if (max_val > 1.0) { left /= max_val; right /= max_val; }
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Формулы микшера} (нормированные команды $\in [-1, 1]$):
+
+\begin{equation}
+  \text{left} = \ell_{\text{lin}} + \ell_{\text{ang}}, \quad
+  \text{right} = \ell_{\text{lin}} - \ell_{\text{ang}}
+  \label{eq:diff_mixer}
+\end{equation}
+
+Нормировка для сохранения соотношения:
+
+\begin{equation}
+  m = \max\!\bigl(1,\, |\text{left}|,\, |\text{right}|\bigr), \quad
+  \text{left} \leftarrow \frac{\text{left}}{m}, \quad
+  \text{right} \leftarrow \frac{\text{right}}{m}
+  \label{eq:normalize}
+\end{equation}
+
+\section{Интегрирование одометрии (кинематические уравнения)}
+
+\begin{filebox}[title={\filepath{motor\_node.cpp}, строки 268--273}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=268]
+// Open-loop odometry integration
+x_     += linear_  * std::cos(theta_) * dt;
+y_     += linear_  * std::sin(theta_) * dt;
+theta_ += angular_ * dt;
+\end{lstlisting}
+\end{filebox}
+
+\textbf{Уравнения кинематики одноколейного робота}
+(дискретная интеграция методом Эйлера вперёд):
+
+\begin{align}
+  x_{k+1} &= x_k + v \cos(\theta_k) \cdot \Delta t \label{eq:odom_x}\\
+  y_{k+1} &= y_k + v \sin(\theta_k) \cdot \Delta t \label{eq:odom_y}\\
+  \theta_{k+1} &= \theta_k + \omega \cdot \Delta t \label{eq:odom_theta}
+\end{align}
+
+Это модель \textbf{unicycle} (одноколейная модель): скорость $v$ направлена
+вдоль текущего курса $\theta$.
+
+\begin{notebox}
+\textbf{Открытоконтурная одометрия}: модель не учитывает проскальзывание
+гусениц. Именно для компенсации этой ошибки и используется Velocity EKF
+(глава~\ref{ch:velocity_ekf}), который добавляет коррекцию от акселерометра.
+\end{notebox}
+
+\section{Кватернионное кодирование угла курса}
+
+\begin{filebox}[title={\filepath{motor\_node.cpp}, строки 276--291 --- publishOdom()}]
+\begin{lstlisting}[style=cppstyle, numbers=left, firstnumber=276]
+void publishOdom(const rclcpp::Time & stamp)
+{
+  double sin_h = std::sin(theta_ / 2.0);
+  double cos_h = std::cos(theta_ / 2.0);
+
+  nav_msgs::msg::Odometry odom;
+  odom.pose.pose.orientation.z = sin_h;
+  odom.pose.pose.orientation.w = cos_h;
+  odom.twist.twist.linear.x    = linear_;
+  odom.twist.twist.angular.z   = angular_;
+  odom_pub_->publish(odom);
+}
+\end{lstlisting}
+\end{filebox}
+
+Поворот в 3D вокруг вертикальной оси $Z$ кодируется кватернионом:
+
+\begin{equation}
+  \vect{q} = \bigl(\underbrace{0}_{q_w\text{'s missing part}},\,
+  \underbrace{0}_{q_x},\,
+  \underbrace{0}_{q_y},\,
+  \underbrace{\sin(\theta/2)}_{q_z},\,
+  \underbrace{\cos(\theta/2)}_{q_w}\bigr)
+  \label{eq:quaternion_yaw}
+\end{equation}
+
+Для чистого вращения вокруг $Z$: $q_x = q_y = 0$, поэтому достаточно
+хранить только $q_z$ и $q_w$ (что делает ROS2 сообщение \texttt{Odometry}).
+
+\section{Сводная диаграмма}
+
+\begin{center}
+\begin{tikzpicture}[
+  block/.style={rectangle, draw=blue!40, fill=blue!7, rounded corners,
+                minimum width=3.5cm, minimum height=0.9cm,
+                font=\small, align=center},
+  arrow/.style={-{Stealth}, blue!60, thick}
+]
+  \node[block] (cmd) {Команда\\$(v_{\text{lin}},\, \omega_{\text{ang}})$};
+  \node[block, right=2.5cm of cmd] (mix) {Микшер\\$L = \ell_{lin}+\ell_{ang}$\\$R = \ell_{lin}-\ell_{ang}$};
+  \node[block, right=2.5cm of mix] (mot) {Моторы\\ШИМ $\in [-1, 1]$};
+  \node[block, below=1.5cm of cmd] (odom) {Одометрия\\$x,y,\theta$};
+
+  \draw[arrow] (cmd) -- (mix);
+  \draw[arrow] (mix) -- (mot);
+  \draw[arrow] (cmd) -- node[left, font=\tiny]{$v, \omega, \Delta t$} (odom);
+\end{tikzpicture}
+\end{center}
+
+\section{Теоретическое обоснование: кинематика и динамика}
+
+\subsection{Неголономная модель робота}
+
+Гусеничный робот подчиняется \textbf{неголономному ограничению} ---
+не может двигаться боком. В терминах ТАУ это выражается как:
+
+\begin{equation}
+  \dot{x}\sin\theta - \dot{y}\cos\theta = 0
+  \label{eq:nonholonomic}
+\end{equation}
+
+Это ограничение не интегрируется в голономную связь вида $f(x, y, \theta) = 0$,
+что делает систему \textbf{недоуправляемой} --- размерность конфигурационного
+пространства $(x, y, \theta) = 3$ больше числа управлений $(v, \omega) = 2$.
+
+\subsection{Модель unicycle в пространстве состояний}
+
+Кинематическая модель~\eqref{eq:odom_x}--\eqref{eq:odom_theta} ---
+это \textbf{нелинейная} система $\dot{\vect{x}} = \vect{f}(\vect{x}, \vect{u})$:
+
+\begin{equation}
+  \begin{pmatrix} \dot{x} \\ \dot{y} \\ \dot{\theta} \end{pmatrix}
+  = \begin{pmatrix} \cos\theta & 0 \\ \sin\theta & 0 \\ 0 & 1 \end{pmatrix}
+  \begin{pmatrix} v \\ \omega \end{pmatrix}
+  \label{eq:unicycle_ss}
+\end{equation}
+
+Якобиан по состоянию (для EKF):
+
+\begin{equation}
+  \mat{F} = \frac{\partial \vect{f}}{\partial \vect{x}} =
+  \begin{pmatrix}
+    1 & 0 & -v\sin\theta\,\Delta t \\
+    0 & 1 & v\cos\theta\,\Delta t \\
+    0 & 0 & 1
+  \end{pmatrix}
+  \label{eq:unicycle_jacobian}
+\end{equation}
+
+\subsection{Связь с моделью двигателя}
+
+Каждый борт робота приводится двигателем постоянного тока
+(гл.~\ref{ch:theory}, раздел~\ref{sec:dc_motor}). Полная
+динамическая модель включает электромеханику:
+
+\begin{equation}
+  T_a^2\ddot{\omega}_{\text{motor}} + T_y\dot{\omega}_{\text{motor}} + \omega_{\text{motor}} = k\,u_{\text{PWM}}
+  \label{eq:motor_dynamics}
+\end{equation}
+
+Однако в проекте используется \textbf{кинематическая модель}
+(без учёта инерции), что оправдано малым отношением
+$T_a/T_{\text{control}} \ll 1$ (электрическая постоянная времени
+много меньше периода управления $50\,\text{мс}$).
+
+\subsection{Погрешность метода Эйлера}
+
+Интегрирование методом Эйлера вперёд имеет погрешность $O(\Delta t^2)$
+на шаг и $O(\Delta t)$ глобально. Для периода $\Delta t = 0.05\,\text{с}$
+и $v_{\max} = 0.5\,\text{м/с}$ максимальная ошибка позиции за шаг:
+
+\begin{equation}
+  \epsilon \leq \frac{1}{2}|\ddot{x}|\Delta t^2 \approx \frac{v\omega\Delta t^2}{2}
+  \leq \frac{0.5 \cdot 2.0 \cdot 0.0025}{2} = 1.25\,\text{мм}
+  \label{eq:euler_error}
+\end{equation}
+
+Эта ошибка компенсируется Velocity EKF (гл.~\ref{ch:velocity_ekf}).
+
+\section{Параметры}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Описание}\\
+\midrule
+\texttt{max\_lin\_} & $0.5\,\text{м/с}$ & Максимальная линейная скорость\\
+\texttt{max\_ang\_} & $2.0\,\text{рад/с}$ & Максимальная угловая скорость\\
+Частота & $20\,\text{Гц}$ & Период управляющего цикла ($\Delta t = 0.05\,\text{с}$)\\
+\bottomrule
+\end{tabular}
+\end{center}
