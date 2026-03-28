@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { useState, useCallback, useRef } from 'react'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import { useRobotState } from '@/hooks/useRobotState'
 import { useSocket } from '@/providers/SocketProvider'
@@ -11,6 +11,38 @@ import { ImuVectors } from '@/components/3d/ImuVectors'
 import { InfoPanel } from '@/components/3d/InfoPanel'
 import { SlamMap3D } from '@/components/3d/SlamMap3D'
 import { CoverageHeatmap } from '@/components/3d/CoverageHeatmap'
+import * as THREE from 'three'
+
+/** Helper: smoothly updates OrbitControls target to follow robot position */
+function CameraTarget({ posX, posY }: { posX: number; posY: number }) {
+  const controlsRef = useRef<any>(null)
+  const targetRef = useRef({ posX, posY })
+  targetRef.current = { posX, posY }
+
+  useFrame(() => {
+    if (!controlsRef.current) return
+    const t = controlsRef.current.target as THREE.Vector3
+    const tx = targetRef.current.posX
+    const tz = -targetRef.current.posY
+    // Smooth follow (lerp factor 0.1)
+    t.x += (tx - t.x) * 0.1
+    t.z += (tz - t.z) * 0.1
+    t.y = 0.05
+    controlsRef.current.update()
+  })
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      maxPolarAngle={Math.PI / 2 - 0.05}
+      minDistance={0.1}
+      maxDistance={5}
+      enableDamping
+      dampingFactor={0.1}
+    />
+  )
+}
 
 export function Visualization3DPage() {
   const state = useRobotState()
@@ -152,16 +184,8 @@ export function Visualization3DPage() {
           gyro={gyro}
         />
 
-        {/* Camera controls */}
-        <OrbitControls
-          makeDefault
-          target={[posX, 0.05, -posY]}
-          maxPolarAngle={Math.PI / 2 - 0.05}
-          minDistance={0.1}
-          maxDistance={5}
-          enableDamping
-          dampingFactor={0.1}
-        />
+        {/* Camera controls — smoothly follows robot position */}
+        <CameraTarget posX={posX} posY={posY} />
       </Canvas>
 
       {/* Info overlay */}

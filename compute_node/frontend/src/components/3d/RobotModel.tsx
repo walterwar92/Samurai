@@ -24,6 +24,12 @@ const ROT_DEADZONE = 0.001   // ~0.06°
 
 export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }: RobotModelProps) {
   const groupRef = useRef<THREE.Group>(null)
+
+  // ── Use ref to always have the latest props in useFrame ──
+  // This prevents stale closure issues with React Three Fiber's reconciler
+  const propsRef = useRef({ yaw, pitch, roll, posX, posY, stationary })
+  propsRef.current = { yaw, pitch, roll, posX, posY, stationary }
+
   // Smoothed position/rotation to avoid jitter from sensor noise
   const smoothPos = useRef(new THREE.Vector3(posX, 0.05, -posY))
   const smoothRot = useRef(new THREE.Euler(
@@ -37,13 +43,16 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
   useFrame(() => {
     if (!groupRef.current) return
 
-    const targetX = posX
-    const targetZ = -posY
-    const targetPitch = pitch * DEG2RAD
-    const targetYaw = -yaw * DEG2RAD
-    const targetRoll = roll * DEG2RAD
+    // Read latest props from ref (not closure) to avoid stale values
+    const p = propsRef.current
+    const targetX = p.posX
+    const targetZ = -p.posY
+    const targetPitch = p.pitch * DEG2RAD
+    const targetYaw = -p.yaw * DEG2RAD
+    const targetRoll = p.roll * DEG2RAD
+    const isStationary = p.stationary
 
-    if (stationary) {
+    if (isStationary) {
       // When stationary: freeze targets on entry, snap position
       if (!wasStationary.current) {
         // Just became stationary — freeze current targets

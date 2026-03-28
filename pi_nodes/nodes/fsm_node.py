@@ -126,22 +126,24 @@ class FSMNode(MqttNode):
         if _P_STOP.search(text):
             self._transition(State.IDLE)
             self._pub_cmd_vel(0.0, 0.0)
+            self._pub_cmd_vel_manual(0.0, 0.0)
             return
 
-        # Движение — работают только в IDLE (не перебивают автономные режимы)
-        if self._state == State.IDLE:
-            if _P_FORWARD.search(text):
-                self._pub_cmd_vel(0.15, 0.0)
-                return
-            if _P_BACK.search(text):
-                self._pub_cmd_vel(-0.15, 0.0)
-                return
-            if _P_LEFT.search(text):
-                self._pub_cmd_vel(0.0, 0.5)
-                return
-            if _P_RIGHT.search(text):
-                self._pub_cmd_vel(0.0, -0.5)
-                return
+        # Ручное движение — публикуется в cmd_vel/manual (приоритет выше автономного).
+        # Работает в ЛЮБОМ состоянии: временно перебивает автономное управление,
+        # после прекращения ручных команд автономный режим возобновляется.
+        if _P_FORWARD.search(text):
+            self._pub_cmd_vel_manual(0.15, 0.0)
+            return
+        if _P_BACK.search(text):
+            self._pub_cmd_vel_manual(-0.15, 0.0)
+            return
+        if _P_LEFT.search(text):
+            self._pub_cmd_vel_manual(0.0, 0.5)
+            return
+        if _P_RIGHT.search(text):
+            self._pub_cmd_vel_manual(0.0, -0.5)
+            return
 
         if _P_HOME.search(text):
             self._transition(State.RETURNING)
@@ -177,18 +179,19 @@ class FSMNode(MqttNode):
 
         if gesture == 'stop':
             self._transition(State.IDLE)
-        elif gesture == 'forward' and self._state == State.IDLE:
-            self.publish('cmd_vel', {'linear_x': 0.15, 'angular_z': 0.0})
+            self._pub_cmd_vel_manual(0.0, 0.0)
+        elif gesture == 'forward':
+            self._pub_cmd_vel_manual(0.15, 0.0)
         elif gesture == 'grab' and self._state == State.IDLE:
             self._target_action = 'grab'
             self._target_colour = ''
             self._transition(State.SEARCHING)
         elif gesture == 'follow':
             self._transition(State.FOLLOWING)
-        elif gesture == 'point_left' and self._state == State.IDLE:
-            self.publish('cmd_vel', {'linear_x': 0.0, 'angular_z': 0.5})
-        elif gesture == 'point_right' and self._state == State.IDLE:
-            self.publish('cmd_vel', {'linear_x': 0.0, 'angular_z': -0.5})
+        elif gesture == 'point_left':
+            self._pub_cmd_vel_manual(0.0, 0.5)
+        elif gesture == 'point_right':
+            self._pub_cmd_vel_manual(0.0, -0.5)
 
     def _extract_colour(self, text: str) -> str:
         text_norm = text.replace('ё', 'е')
@@ -430,6 +433,13 @@ class FSMNode(MqttNode):
 
     def _pub_cmd_vel(self, linear_x: float, angular_z: float):
         self.publish('cmd_vel', {
+            'linear_x': round(linear_x, 3),
+            'angular_z': round(angular_z, 3),
+        })
+
+    def _pub_cmd_vel_manual(self, linear_x: float, angular_z: float):
+        """Manual override — higher priority than autonomous cmd_vel."""
+        self.publish('cmd_vel/manual', {
             'linear_x': round(linear_x, 3),
             'angular_z': round(angular_z, 3),
         })
