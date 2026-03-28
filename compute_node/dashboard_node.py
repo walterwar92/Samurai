@@ -161,6 +161,7 @@ class DashboardNode(Node):
         self._recorded_path  = []     # recorded path waypoints
         self._detection_enabled = True  # YOLO detection toggle
         self._obstacle_avoidance_enabled = False  # obstacle avoidance during replay
+        self._collision_guard_enabled = False      # collision guard for manual control
         self._calibration_status = {}   # calibration node status
         self._calibration_result = {}   # calibration result
         self._explorer_status = {}      # explorer node status
@@ -235,6 +236,7 @@ class DashboardNode(Node):
                       'slam_map', 'path_recorder/status', 'path_recorder/path',
                       'calibration/status', 'calibration/result',
                       'explorer/status', 'mission/status',
+                      'collision_guard/state',
                       # Remote GPU YOLO detections (via MQTT)
                       'ball_detection', 'detections', 'yolo/annotated',
                       'yolo/status']:
@@ -289,6 +291,10 @@ class DashboardNode(Node):
                 self._mqtt_json_field(msg.payload, '_explorer_status')
             elif suffix == 'mission/status':
                 self._mqtt_json_field(msg.payload, '_mission_status')
+            elif suffix == 'collision_guard/state':
+                val = msg.payload.decode('utf-8', errors='ignore').strip().lower()
+                with self._lock:
+                    self._collision_guard_enabled = (val == 'on')
             # Remote GPU YOLO detections (via MQTT)
             elif suffix == 'ball_detection':
                 self._mqtt_ball_detection(msg.payload)
@@ -663,6 +669,12 @@ class DashboardNode(Node):
             self._obstacle_avoidance_enabled = enabled
         self._mqtt_pub('obstacle_avoidance/enable', 'on' if enabled else 'off', qos=1)
 
+    def set_collision_guard(self, enabled: bool):
+        """Toggle collision guard for manual control."""
+        with self._lock:
+            self._collision_guard_enabled = enabled
+        self._mqtt_pub('collision_guard/enable', 'on' if enabled else 'off', qos=1)
+
     def save_map(self, name: str):
         self._pub_str(self._pub_map_save, name)
 
@@ -781,6 +793,7 @@ class DashboardNode(Node):
                 'recorded_path':  list(self._recorded_path) if self._recorded_path else None,
                 'detection_enabled': self._detection_enabled,
                 'obstacle_avoidance_enabled': self._obstacle_avoidance_enabled,
+                'collision_guard_enabled': self._collision_guard_enabled,
                 'calibration':        dict(self._calibration_status) if self._calibration_status else None,
                 'calibration_result': dict(self._calibration_result) if self._calibration_result else None,
                 'explorer':           dict(self._explorer_status) if self._explorer_status else None,
@@ -816,6 +829,7 @@ class DashboardNode(Node):
                 'watchdog':      dict(self._watchdog),
                 'speed_profile': self._speed_profile,
                 'map_info':      dict(self._map_info),
+                'collision_guard_enabled': self._collision_guard_enabled,
                 'event_log':     list(self._event_log)[-20:],
             }
 
@@ -1324,6 +1338,13 @@ def create_app(ros_node: DashboardNode):
         enabled = body.get('enabled', True)
         ros_node.set_obstacle_avoidance(bool(enabled))
         return _ok(obstacle_avoidance_enabled=bool(enabled))
+
+    @app.post('/api/collision_guard/toggle')
+    async def api_collision_guard_toggle(req: Request):
+        body = await req.json()
+        enabled = body.get('enabled', True)
+        ros_node.set_collision_guard(bool(enabled))
+        return _ok(collision_guard_enabled=bool(enabled))
 
     # ── Calibration ────────────────────────────────────────────────
     @app.post('/api/calibration/command')

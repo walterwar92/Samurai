@@ -40,6 +40,10 @@ except ImportError:
 
 WHEEL_BASE = 0.17
 
+# Collision guard — stops forward motion when obstacle too close
+COLLISION_GUARD_STOP_M  = 0.20   # full stop distance
+COLLISION_GUARD_SLOW_M  = 0.40   # start slowing down
+
 # Wheel odometry scale correction — calibrate by driving a known distance
 # and comparing measured vs actual. >1.0 = robot moves further than reported.
 WHEEL_SCALE_LINEAR = 1.0    # tune: measure 1m, adjust if odom reads differently
@@ -88,6 +92,10 @@ class MotorNode(MqttNode):
         self._angular = 0.0
         self._last_cmd_time = 0.0
 
+        # Collision guard
+        self._collision_guard = False
+        self._range_m = float('inf')
+
         # IMU state
         self._imu_yaw_rad = None
         self._imu_calibrated = False
@@ -105,6 +113,8 @@ class MotorNode(MqttNode):
         self.subscribe('speed_profile', self._profile_cb, qos=1)
         self.subscribe('imu', self._imu_cb, qos=0)
         self.subscribe('reset_position', self._reset_position_cb, qos=1)
+        self.subscribe('range', self._range_cb, qos=0)
+        self.subscribe('collision_guard/enable', self._collision_guard_cb, qos=1)
         self.create_timer(0.05, self._control_loop)    # 20 Hz
         self.create_timer(1.0, self._publish_profile)   # 1 Hz
 
@@ -115,6 +125,24 @@ class MotorNode(MqttNode):
             self._last_cmd_time = self.now_sec()
         else:
             self.log_warn('Bad cmd_vel payload: %s', data)
+
+    def _range_cb(self, topic, data):
+        if isinstance(data, dict):
+            self._range_m = float(data.get('range', float('inf')))
+        else:
+            try:
+                self._range_m = float(data)
+            except (TypeError, ValueError):
+                pass
+
+    def _collision_guard_cb(self, topic, data):
+        val = str(data).strip().lower()
+        enabled = val in ('on', 'true', '1')
+        if enabled != self._collision_guard:
+            self._collision_guard = enabled
+            self.log_info('Collision guard: %s', 'ON' if enabled else 'OFF')
+            self.publish('collision_guard/state',
+                         'on' if enabled else 'off', retain=True)
 
     def _imu_cb(self, topic, data):
         """Process IMU data: extract yaw, feed accelerometer to position estimator."""
@@ -205,6 +233,15 @@ class MotorNode(MqttNode):
             lin_cmd = 0.0
         if abs(ang_cmd) < DEADZONE_ANGULAR:
             ang_cmd = 0.0
+
+        # Collision guard — limit forward motion when obstacle ahead
+        if self._collision_guard and lin_cmd > 0:
+            r = self._range_m
+            if r < COLLISION_GUARD_STOP_M:
+                lin_cmd = 0.0
+            elif r < COLLISION_GUARD_SLOW_M:
+                factor = (r - COLLISION_GUARD_STOP_M) / (COLLISION_GUARD_SLOW_M - COLLISION_GUARD_STOP_M)
+                lin_cmd *= max(0.0, factor)
 
         # Drive motors
         lin = max(-self._max_lin, min(self._max_lin, lin_cmd))

@@ -689,6 +689,7 @@ body {
         <button class="btn" onclick="sendQuick('домой')">Домой</button>
         <button class="btn" onclick="sendQuick('сожги лазером')">Лазер</button>
         <button class="btn btn-reset" onclick="resetSim()">Сброс</button>
+        <button class="btn" id="btnCollisionGuard" onclick="toggleCollisionGuard()" style="border-color:#ef5350;color:#ef5350">Защита: ВЫКЛ</button>
       </div>
     </div>
   </div>
@@ -733,6 +734,10 @@ socket.on('state_update', (data) => {
   updateDetection(data.detection);
   updateMap(data);
   updateVoiceLog(data.voice_log);
+  if (data.collision_guard_enabled != null) {
+    collisionGuardOn = data.collision_guard_enabled;
+    updateCollisionGuardUI();
+  }
 });
 
 function updateFSM(status) {
@@ -1136,6 +1141,21 @@ function resetSim() {
   socket.emit('reset_sim', {});
 }
 
+let collisionGuardOn = false;
+function toggleCollisionGuard() {
+  fetch('/api/collision_guard/toggle', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({enabled: !collisionGuardOn})
+  });
+}
+function updateCollisionGuardUI() {
+  const btn = document.getElementById('btnCollisionGuard');
+  btn.textContent = 'Защита: ' + (collisionGuardOn ? 'ВКЛ' : 'ВЫКЛ');
+  btn.style.borderColor = collisionGuardOn ? '#4caf50' : '#ef5350';
+  btn.style.color = collisionGuardOn ? '#4caf50' : '#ef5350';
+}
+
 document.getElementById('cmdSend').addEventListener('click', () => {
   const input = document.getElementById('cmdInput');
   const text = input.value.trim();
@@ -1227,6 +1247,7 @@ function renderDebug() {
   html += debugSection('Актуаторы', [
     kvBool('Клешня', act.claw_open),
     kvBool('Лазер', act.laser_on),
+    kvBool('Защита от столкн.', d.collision_guard_enabled),
   ]);
 
   // -- Remembered ball --

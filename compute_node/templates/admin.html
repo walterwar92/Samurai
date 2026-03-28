@@ -614,6 +614,7 @@ body {
         <div class="actuator-row">
           <button class="btn-actuator" id="btnClaw" onclick="toggleClaw()">Клешня: ОТКР</button>
           <button class="btn-actuator danger" id="btnLaser" onclick="toggleLaser()">Лазер: ВЫКЛ</button>
+          <button class="btn-actuator" id="btnCollisionGuard" onclick="toggleCollisionGuard()">Защита: ВЫКЛ</button>
         </div>
         <div style="font-size:10px;color:var(--text-dim);margin:10px 0 4px;">ДЖОЙСТИК СКОРОСТИ</div>
         <div class="joystick-container">
@@ -720,6 +721,7 @@ const ALL_STATES = ['IDLE','SEARCHING','TARGETING','APPROACHING','GRABBING','BUR
 // ── Actuator state ──
 let clawOpen = false;
 let laserOn = false;
+let collisionGuardOn = false;
 
 // ── Generate FSM buttons ──
 const fsmBtnsEl = document.getElementById('fsmButtons');
@@ -817,6 +819,10 @@ socket.on('state_update', (data) => {
     laserOn = data.actuators.laser_on;
     updateActuatorUI();
   }
+  if (data.collision_guard_enabled != null) {
+    collisionGuardOn = data.collision_guard_enabled;
+    updateCollisionGuardUI();
+  }
 
   // Detections
   updateDetections(data.all_detections || [], data.detection);
@@ -839,6 +845,13 @@ function updateActuatorUI() {
   const laserBtn = document.getElementById('btnLaser');
   laserBtn.textContent = 'Лазер: ' + (laserOn ? 'ВКЛ' : 'ВЫКЛ');
   laserBtn.classList.toggle('on', laserOn);
+}
+
+function updateCollisionGuardUI() {
+  const btn = document.getElementById('btnCollisionGuard');
+  btn.textContent = 'Защита: ' + (collisionGuardOn ? 'ВКЛ' : 'ВЫКЛ');
+  btn.classList.toggle('on', collisionGuardOn);
+  btn.classList.toggle('danger', !collisionGuardOn);
 }
 
 function updateDetections(dets, closest) {
@@ -954,6 +967,13 @@ function toggleLaser() {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({on: !laserOn})
+  });
+}
+function toggleCollisionGuard() {
+  fetch('/api/collision_guard/toggle', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({enabled: !collisionGuardOn})
   });
 }
 

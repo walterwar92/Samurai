@@ -78,6 +78,10 @@ ROBOT_RADIUS = 0.12  # metres
 WHEEL_BASE = 0.17
 MAX_LINEAR = 0.3     # m/s
 MAX_ANGULAR = 2.0    # rad/s
+
+# Collision guard thresholds (same as motor_node)
+COLLISION_GUARD_STOP_M = 0.20
+COLLISION_GUARD_SLOW_M = 0.40
 BALL_RADIUS = 0.02   # metres
 BALL_DIAMETER_M = 0.04
 FOCAL_LENGTH_PX = 500.0
@@ -361,8 +365,18 @@ class SimRobot:
         self.arm_joints = [0.0, 120.0, 0.0, 0.0]    # ch0-ch3 home позиции
         self._prev_v_linear = 0.0
         self.max_speed = MAX_LINEAR  # updated by speed_profile
+        self.collision_guard = False
+        self._range_m_ref = None  # set by sim loop to SimSensors ref
 
     def set_velocity(self, linear: float, angular: float):
+        # Collision guard — limit forward motion when obstacle ahead
+        if self.collision_guard and linear > 0 and self._range_m_ref is not None:
+            r = self._range_m_ref.range_m
+            if r < COLLISION_GUARD_STOP_M:
+                linear = 0.0
+            elif r < COLLISION_GUARD_SLOW_M:
+                factor = (r - COLLISION_GUARD_STOP_M) / (COLLISION_GUARD_SLOW_M - COLLISION_GUARD_STOP_M)
+                linear *= max(0.0, factor)
         self.v_linear = max(-self.max_speed, min(self.max_speed, linear))
         self.v_angular = max(-MAX_ANGULAR, min(MAX_ANGULAR, angular))
 
@@ -1361,6 +1375,7 @@ def main():
     arena = SimArena()
     robot = SimRobot(arena)
     sensors = SimSensors()
+    robot._range_m_ref = sensors  # link for collision guard
     detector = SimDetector()
     fsm = SimFSM(robot, arena)
     map_renderer = MapRenderer(arena, scale=100)
@@ -1525,6 +1540,14 @@ def main():
         with lock:
             robot.stop()
         return json_ok({'linear': 0.0, 'angular': 0.0})
+
+    @app.route('/api/collision_guard/toggle', methods=['POST'])
+    def api_collision_guard_toggle():
+        body = request.get_json(silent=True) or {}
+        enabled = body.get('enabled', True)
+        with lock:
+            robot.collision_guard = bool(enabled)
+        return json_ok({'collision_guard_enabled': bool(enabled)})
 
     @app.route('/api/robot/reset', methods=['POST'])
     def api_robot_reset():
@@ -2020,6 +2043,7 @@ def main():
                     'qr_detection': None,
                     'gesture': '',
                     'speed_profile': speed_profile[0],
+                    'collision_guard_enabled': robot.collision_guard,
                 }
             socketio.emit('state_update', state)
             socketio.sleep(0.25)

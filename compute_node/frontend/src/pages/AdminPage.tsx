@@ -66,7 +66,7 @@ export function AdminPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-3">
-                  <ActuatorToggles actuators={state?.actuators} />
+                  <ActuatorToggles actuators={state?.actuators} collisionGuardEnabled={state?.collision_guard_enabled} />
                 </CardContent>
               </Card>
 
