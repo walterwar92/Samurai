@@ -23,8 +23,19 @@ from std_msgs.msg import String
 
 from ultralytics import YOLO
 
-# HSV colour ranges for ball classification (widened for varying lighting)
-COLOUR_RANGES = {
+try:
+    import yaml
+    _CFG_PATH = os.path.join(os.path.dirname(__file__), '..', 'config.yaml')
+    if os.path.exists(_CFG_PATH):
+        with open(_CFG_PATH) as _f:
+            _YAML = yaml.safe_load(_f) or {}
+    else:
+        _YAML = {}
+except Exception:
+    _YAML = {}
+
+# HSV colour ranges — loaded from config.yaml with hardcoded fallback
+_DEFAULT_HSV = {
     'red':    [((0, 70, 70), (10, 255, 255)),
                ((160, 70, 70), (180, 255, 255))],
     'orange': [((10, 80, 80), (25, 255, 255))],
@@ -34,6 +45,23 @@ COLOUR_RANGES = {
     'white':  [((0, 0, 180), (180, 40, 255))],
     'black':  [((0, 0, 0), (180, 255, 60))],
 }
+
+def _load_hsv_from_config():
+    """Parse hsv_colours from config.yaml into COLOUR_RANGES format."""
+    raw = _YAML.get('hsv_colours')
+    if not raw or not isinstance(raw, dict):
+        return _DEFAULT_HSV
+    result = {}
+    for colour, range_list in raw.items():
+        parsed = []
+        for r in range_list:
+            if isinstance(r, list) and len(r) == 6:
+                parsed.append((tuple(r[:3]), tuple(r[3:])))
+        if parsed:
+            result[colour] = parsed
+    return result if result else _DEFAULT_HSV
+
+COLOUR_RANGES = _load_hsv_from_config()
 
 # Known ball diameter for distance estimation (metres)
 BALL_DIAMETER_M = 0.04
@@ -54,6 +82,8 @@ class YoloDetectorNode(Node):
 
         # Detection enabled flag — controlled via MQTT from dashboard
         self._enabled = True
+        # Frame drop: skip incoming frames if inference is still running
+        self._processing = False
 
         model_path = self.get_parameter('model').value
         self._conf = self.get_parameter('confidence').value
@@ -146,6 +176,16 @@ class YoloDetectorNode(Node):
         return boxes
 
     def _image_cb(self, msg: CompressedImage):
+        # Drop frame if previous inference still running (avoid queue buildup)
+        if self._processing:
+            return
+        self._processing = True
+        try:
+            self._process_frame(msg)
+        finally:
+            self._processing = False
+
+    def _process_frame(self, msg: CompressedImage):
         np_arr = np.frombuffer(bytes(msg.data), np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:

@@ -34,6 +34,7 @@ Heartbeat (1 Hz):
 
 import json
 import math
+import os
 
 import rclpy
 from rclpy.node import Node
@@ -51,9 +52,12 @@ class MqttBridgeCompute(Node):
     def __init__(self):
         super().__init__('mqtt_bridge_compute')
 
-        self.declare_parameter('mqtt_broker', '192.168.1.100')
-        self.declare_parameter('mqtt_port', 1883)
-        self.declare_parameter('robot_id', 'robot1')
+        _env_broker = os.environ.get('MQTT_BROKER', '192.168.1.100')
+        _env_port = int(os.environ.get('MQTT_PORT', '1883'))
+        _env_robot = os.environ.get('ROBOT_ID', 'robot1')
+        self.declare_parameter('mqtt_broker', _env_broker)
+        self.declare_parameter('mqtt_port', _env_port)
+        self.declare_parameter('robot_id', _env_robot)
 
         broker = self.get_parameter('mqtt_broker').value
         port = self.get_parameter('mqtt_port').value

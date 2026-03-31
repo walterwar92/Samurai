@@ -25,11 +25,18 @@ MIN_RANGE = 0.02
 
 
 class UltrasonicNode(MqttNode):
+    PUBLISH_DELTA = 0.01   # m — publish only when change exceeds this
+    FORCE_INTERVAL = 1.0   # s — force publish at least this often
+
     def __init__(self, **kwargs):
         super().__init__('ultrasonic_node', **kwargs)
 
         self._sensor = None
         self._simulated = True
+        self._last_published = -1.0
+        self._last_publish_time = 0.0
+        # Pre-allocated message dict — updated in-place
+        self._msg = {'range': 0.0, 'ts': 0.0}
 
         if _HW:
             try:
@@ -44,7 +51,7 @@ class UltrasonicNode(MqttNode):
         else:
             self.log_warn('gpiozero unavailable — ultrasonic simulated')
 
-        self.create_timer(0.05, self._publish)  # 20 Hz
+        self.create_timer(0.05, self._publish)  # 20 Hz read rate
 
     def _publish(self):
         if self._simulated:
@@ -52,10 +59,18 @@ class UltrasonicNode(MqttNode):
         else:
             dist = self._sensor.distance
 
-        self.publish('range', {
-            'range': round(float(dist), 4),
-            'ts': self.timestamp(),
-        })
+        # Publish only on significant change or after force interval
+        now = self.timestamp()
+        if (abs(dist - self._last_published) < self.PUBLISH_DELTA and
+                now - self._last_publish_time < self.FORCE_INTERVAL):
+            return
+
+        self._last_published = dist
+        self._last_publish_time = now
+        m = self._msg
+        m['range'] = round(float(dist), 4)
+        m['ts'] = now
+        self.publish('range', m)
 
     def on_shutdown(self):
         if self._sensor:

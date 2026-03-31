@@ -8,6 +8,7 @@ Publishes:
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
@@ -25,6 +26,8 @@ except ImportError:
 
 
 class BatteryNode(MqttNode):
+    _I2C_RECOVER_DELAY = 5.0   # seconds between recovery attempts
+
     def __init__(self, **kwargs):
         super().__init__('battery_node', **kwargs)
 
@@ -32,21 +35,36 @@ class BatteryNode(MqttNode):
         self._channel = 0
         self._vdiv = VDIV_RATIO
         self._bus = None
+        self._i2c_errors = 0
+        self._i2c_recover_time = 0.0
 
         if _HW:
-            try:
-                self._bus = smbus2.SMBus(1)
-                self._bus.write_byte(self._addr, _CHANNEL_CMDS[self._channel])
-                self._bus.read_byte(self._addr)
-                self.log_info('ADS7830 found @ 0x%02X, channel %d',
-                              self._addr, self._channel)
-            except Exception as e:
-                self.log_warn('ADS7830 not available: %s — simulated', e)
-                self._bus = None
+            self._init_i2c_bus()
         else:
             self.log_warn('smbus2 not available — simulated battery')
 
         self.create_timer(1.0, self._read_battery)
+
+    def _init_i2c_bus(self) -> bool:
+        """(Re)initialize I2C bus and ADS7830. Returns True on success."""
+        try:
+            if self._bus:
+                try:
+                    self._bus.close()
+                except Exception:
+                    pass
+            bus = smbus2.SMBus(1)
+            bus.write_byte(self._addr, _CHANNEL_CMDS[self._channel])
+            bus.read_byte(self._addr)
+            self._bus = bus
+            self._i2c_errors = 0
+            self.log_info('ADS7830 found @ 0x%02X, channel %d',
+                          self._addr, self._channel)
+            return True
+        except Exception as e:
+            self._bus = None
+            self.log_warn('ADS7830 init failed: %s', e)
+            return False
 
     def _read_battery(self):
         raw = -1
@@ -57,9 +75,27 @@ class BatteryNode(MqttNode):
                 raw = self._bus.read_byte(self._addr)
                 adc_voltage = raw / 255.0 * 3.3
                 voltage = adc_voltage * self._vdiv
+                self._i2c_errors = 0
             except Exception as e:
-                self.log_warn('ADC read error: %s', e)
+                self._i2c_errors += 1
+                self.log_warn('ADC read error (%d): %s', self._i2c_errors, e)
+                if self._i2c_errors >= 3:
+                    self._bus = None
+                    self._i2c_recover_time = (time.monotonic() +
+                                              self._I2C_RECOVER_DELAY)
+                    self.log_warn('ADC: scheduling I2C recovery in %.0fs',
+                                  self._I2C_RECOVER_DELAY)
                 voltage = 0.0
+        elif _HW:
+            # Bus is down — attempt recovery
+            if time.monotonic() >= self._i2c_recover_time:
+                if self._init_i2c_bus():
+                    self.log_info('ADC I2C bus recovered')
+                    return  # will read on next tick
+                else:
+                    self._i2c_recover_time = (time.monotonic() +
+                                              self._I2C_RECOVER_DELAY)
+            voltage = 0.0
         else:
             voltage = 7.8
 

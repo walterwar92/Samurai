@@ -13,6 +13,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
@@ -38,19 +39,25 @@ class CameraNode(MqttNode):
         super().__init__('camera_node', **kwargs)
 
         self._quality = cfg('mqtt.camera_jpeg_quality', 70)
-        fps = cfg('mqtt.camera_fps', 12)
-        w, h = 640, 480
+        self._fps = cfg('mqtt.camera_fps', 20)
+        self._w, self._h = 640, 480
 
         self._cam = None
         self._capturing = False      # non-blocking flag instead of Lock
         self._capture_start = 0.0    # when current capture started
         self._error_count = 0
+        self._total_restarts = 0
+        self._max_restarts = 10      # max auto-restarts before giving up
+        self._pool = ThreadPoolExecutor(max_workers=1,
+                                        thread_name_prefix='cam_cap')
+        # Pre-allocate JPEG encode params (avoid list creation per frame)
+        self._encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._quality] if _HW else []
 
         if not _HW:
             self.log_error('picamera2/cv2 not available — camera disabled')
             return
 
-        self._start_camera(w, h, fps)
+        self._start_camera(self._w, self._h, self._fps)
 
     def _start_camera(self, w: int, h: int, fps: int):
         """Инициализировать и запустить Picamera2. Можно вызывать повторно при сбое."""
@@ -77,50 +84,64 @@ class CameraNode(MqttNode):
             self.log_error('Camera init failed: %s — disabled', exc)
             self._cam = None
 
+    def _try_restart_camera(self):
+        """Attempt to restart camera after errors."""
+        self._total_restarts += 1
+        if self._total_restarts > self._max_restarts:
+            self.log_error('Camera restart limit (%d) reached — giving up',
+                           self._max_restarts)
+            return
+        self.log_warn('Restarting camera (attempt %d/%d)...',
+                      self._total_restarts, self._max_restarts)
+        time.sleep(1.0)  # brief pause before restart
+        self._start_camera(self._w, self._h, self._fps)
+
     def _capture(self):
         if self._cam is None:
             return
 
         # Non-blocking: skip if previous capture still in flight
         if self._capturing:
-            # Check timeout — if capture hung too long, count error
             elapsed = time.monotonic() - self._capture_start
             if elapsed > _CAPTURE_TIMEOUT_S:
                 self._capturing = False
                 self._error_count += 1
                 self.log_warn('Camera capture timed out (%d/5)', self._error_count)
                 if self._error_count >= 5:
-                    self.log_error('Camera hung repeatedly — disabling')
+                    self.log_error('Camera hung repeatedly — attempting restart')
                     self._cam = None
+                    threading.Thread(target=self._try_restart_camera,
+                                     daemon=True).start()
             return
 
         self._capturing = True
         self._capture_start = time.monotonic()
 
-        def _do_capture():
-            try:
-                frame = self._cam.capture_array()
-                if frame is None:
-                    return
+        self._pool.submit(self._do_capture)
 
-                self._error_count = 0
-                ok, enc = cv2.imencode('.jpg', frame,
-                                       [cv2.IMWRITE_JPEG_QUALITY, self._quality])
-                if ok:
-                    self.publish('camera', enc.tobytes())
-            except Exception as exc:
-                self._error_count += 1
-                self.log_error('Camera capture error: %s (%d/5)',
-                               exc, self._error_count)
-                if self._error_count >= 5:
-                    self.log_error('Too many camera errors — disabling')
-                    self._cam = None
-            finally:
-                self._capturing = False
+    def _do_capture(self):
+        try:
+            frame = self._cam.capture_array()
+            if frame is None:
+                return
 
-        threading.Thread(target=_do_capture, daemon=True).start()
+            self._error_count = 0
+            ok, enc = cv2.imencode('.jpg', frame, self._encode_params)
+            if ok:
+                self.publish('camera', enc.tobytes())
+        except Exception as exc:
+            self._error_count += 1
+            self.log_error('Camera capture error: %s (%d/5)',
+                           exc, self._error_count)
+            if self._error_count >= 5:
+                self.log_error('Too many errors — attempting restart')
+                self._cam = None
+                self._pool.submit(self._try_restart_camera)
+        finally:
+            self._capturing = False
 
     def on_shutdown(self):
+        self._pool.shutdown(wait=False)
         if self._cam is not None:
             try:
                 self._cam.stop()
