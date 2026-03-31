@@ -1,42 +1,44 @@
 """
-2D Velocity Extended Kalman Filter for tracked ground robot.
+2D Velocity EKF with accelerometer bias estimation.
 
-Fuses two velocity sources for optimal position estimation:
-    1. Wheel odometry velocity (from motor commands) — stable, no drift,
-       but susceptible to wheel slip and inaccurate on rough terrain.
-    2. Accelerometer-derived velocity (single integration) — captures
-       actual motion including slip, but drifts over time.
+Properly fuses wheel-command odometry with accelerometer data for
+accurate position estimation on a tracked robot without encoders.
 
-State vector: [vx, vy] in world frame.
-Prediction: from wheel commands (reliable direction, noisy magnitude).
-Update: from accelerometer (reliable short-term, drifts long-term).
-ZUPT: zero-velocity measurement when stationary.
+Architecture: two parallel 2-state Kalman filters:
+  X-axis: [vx, bias_x]  in world frame
+  Y-axis: [vy, bias_y]  in world frame
 
-Position is obtained by integrating the fused velocity.
-This gives better accuracy than complementary filter because:
-- Kalman gain automatically weights sources by their noise levels
-- Covariance grows naturally when uncertain, shrinks with measurements
-- ZUPT update is a proper measurement, not just a hard reset
+Key improvements over naive approaches:
+  - Motor dynamics model (first-order lag) instead of instant response
+  - Bias state absorbs accelerometer integration drift
+  - Trapezoidal position integration (O(dt^3) error vs O(dt^2))
+  - Proper Kalman gain adapts automatically to noise levels
+  - No artificial velocity decay — bias estimation handles drift
+  - Position integrated at every call for maximum rate
+
+Prediction: motor command with first-order response model.
+Update: accelerometer-integrated velocity (bias-compensated).
+ZUPT: zero-velocity update when stationary.
 
 No numpy required — pure Python 2x2 matrix operations.
 """
 
-from math import cos, sin, sqrt
+from math import cos, sin, sqrt, exp
 
 
 class VelocityEKF:
-    """2D velocity Kalman filter with position integration.
+    """2D velocity Kalman filter with bias estimation and position integration.
 
     Usage:
         ekf = VelocityEKF()
 
-        # Prediction: from wheel commands (20 Hz)
+        # Prediction from wheel commands (20 Hz)
         ekf.predict_wheel(vx_cmd, theta, dt)
 
-        # Update: from accelerometer-derived velocity (50 Hz)
-        ekf.update_accel(ax_world, ay_world, dt)
+        # Update from accelerometer (50 Hz)
+        ekf.update_accel(la_wx, la_wy, dt)
 
-        # ZUPT: when stationary
+        # ZUPT when stationary
         ekf.update_zupt()
 
         # Read fused state
@@ -45,182 +47,308 @@ class VelocityEKF:
     """
 
     def __init__(self,
-                 q_wheel: float = 0.01,
-                 q_accel: float = 0.05,
-                 r_accel: float = 0.1,
+                 motor_tau: float = 0.25,
+                 q_velocity: float = 0.08,
+                 q_bias: float = 0.003,
+                 r_accel: float = 0.12,
                  r_zupt: float = 0.0001):
         """
         Args:
-            q_wheel: Process noise for wheel prediction (m/s)² — how much
-                     we distrust wheel commands (slip, calibration).
-            q_accel: Process noise for accel integration (m/s)² — how fast
-                     accel-derived velocity drifts.
-            r_accel: Measurement noise for accel velocity update (m/s)² —
-                     noise level of accelerometer after gravity removal.
-            r_zupt: Measurement noise for ZUPT (m/s)² — very small,
-                    we trust that stationary = zero velocity.
+            motor_tau: Motor time constant (seconds). How fast the robot
+                       actually reaches commanded speed. Smaller = faster
+                       response. 0.2-0.4s typical for tracked robots.
+            q_velocity: Velocity process noise (m/s)^2/s. How much we
+                        distrust the motor model (slip, friction changes).
+            q_bias: Bias random walk noise (m/s)^2/s. How fast the accel
+                    bias drifts. Small = bias changes slowly.
+            r_accel: Accel velocity measurement noise (m/s)^2. Higher =
+                     less trust in accelerometer.
+            r_zupt: ZUPT measurement noise (m/s)^2. Very small = high
+                    trust that stationary means zero velocity.
         """
-        self.q_wheel = q_wheel
-        self.q_accel = q_accel
+        self.motor_tau = max(motor_tau, 0.05)
+        self.q_velocity = q_velocity
+        self.q_bias = q_bias
         self.r_accel = r_accel
         self.r_zupt = r_zupt
 
-        # Velocity state [vx, vy] in world frame
+        # Velocity in world frame
         self.vx = 0.0
         self.vy = 0.0
 
-        # 2x2 covariance matrix (stored as 4 scalars)
-        # P = [[p00, p01], [p10, p11]]
-        self._p00 = 0.01
-        self._p01 = 0.0
-        self._p10 = 0.0
-        self._p11 = 0.01
+        # Accelerometer bias in world frame (absorbs integration drift)
+        self._bx = 0.0
+        self._by = 0.0
+
+        # 2x2 covariance per axis: [p_vv, p_vb, p_bv, p_bb]
+        self._px = [0.01, 0.0, 0.0, 0.002]
+        self._py = [0.01, 0.0, 0.0, 0.002]
 
         # Position (integrated from fused velocity)
         self.x = 0.0
         self.y = 0.0
 
-        # Accel-integrated velocity (used as measurement source)
+        # Accel-integrated velocity (raw measurement source)
         self._accel_vx = 0.0
         self._accel_vy = 0.0
 
-        # Non-holonomic: lateral decay
-        self._lateral_decay = 0.3  # aggressively kill sideways velocity
+        # Non-holonomic: lateral velocity decay
+        self._lateral_decay = 0.15  # aggressively kill sideways velocity
 
-    def predict_wheel(self, vx_cmd: float, theta: float, dt: float):
-        """Prediction step using wheel odometry command.
+        # Bias reset counter — periodically re-center to prevent float drift
+        self._update_count = 0
+        self._RECENTER_INTERVAL = 500  # every ~10s at 50 Hz
 
-        The wheel command gives us a forward velocity along the heading.
-        We trust this as the primary prediction source.
+    def predict_wheel(self, v_cmd: float, theta: float, dt: float):
+        """Prediction step using wheel odometry command with motor dynamics.
+
+        Models the motor as a first-order system: the robot doesn't
+        instantly reach commanded speed, but converges exponentially
+        with time constant motor_tau.
 
         Args:
-            vx_cmd: Commanded forward velocity (m/s).
+            v_cmd: Commanded forward velocity (m/s), already scaled.
             theta: Current heading from IMU (radians).
-            dt: Time step.
+            dt: Time step (seconds).
         """
-        if dt <= 0:
+        if dt <= 0 or dt > 1.0:
             return
 
-        # Wheel-predicted velocity in world frame
-        vx_wheel = vx_cmd * cos(theta)
-        vy_wheel = vx_cmd * sin(theta)
+        # -- Trapezoidal position integration (BEFORE velocity change) --
+        # Uses average of current and predicted velocity
+        ct, st = cos(theta), sin(theta)
+        vcx = v_cmd * ct
+        vcy = v_cmd * st
 
-        # Prediction: state transitions toward wheel command
-        # Higher alpha = more trust in wheel commands (primary source)
-        alpha = 0.65  # prediction blend — wheels are more reliable
-        self.vx = (1 - alpha) * self.vx + alpha * vx_wheel
-        self.vy = (1 - alpha) * self.vy + alpha * vy_wheel
+        # Motor response: alpha = fraction of gap closed in dt
+        alpha = min(dt / self.motor_tau, 1.0)
 
-        # Process noise: covariance grows
-        self._p00 += self.q_wheel * dt
-        self._p11 += self.q_wheel * dt
+        # Predicted velocity
+        vx_new = self.vx + (vcx - self.vx) * alpha
+        vy_new = self.vy + (vcy - self.vy) * alpha
 
-        # Integrate position using current fused velocity
-        self.x += self.vx * dt
-        self.y += self.vy * dt
+        # Trapezoidal integration: x += 0.5*(v_old + v_new)*dt
+        self.x += 0.5 * (self.vx + vx_new) * dt
+        self.y += 0.5 * (self.vy + vy_new) * dt
+
+        # Apply velocity prediction
+        self.vx = vx_new
+        self.vy = vy_new
+
+        # Bias unchanged in prediction (random walk)
+
+        # -- Covariance prediction: P = F*P*F' + Q --
+        f_vv = 1.0 - alpha  # d(v_new)/d(v_old) = 1 - alpha
+        # f_vb = 0, f_bv = 0, f_bb = 1
+
+        qv = self.q_velocity * dt
+        qb = self.q_bias * dt
+
+        f2 = f_vv * f_vv
+        p = self._px
+        p[0] = f2 * p[0] + qv
+        p[1] = f_vv * p[1]
+        p[2] = f_vv * p[2]
+        p[3] += qb
+
+        p = self._py
+        p[0] = f2 * p[0] + qv
+        p[1] = f_vv * p[1]
+        p[2] = f_vv * p[2]
+        p[3] += qb
+
+    def reanchor_accel(self):
+        """Re-anchor accel-integrated velocity to current state estimate.
+
+        Call when acceleration signal is below noise floor (no new info).
+        Prevents stale accel velocity from creating false innovations
+        at the next non-zero acceleration sample.
+
+        After re-anchoring: accel_vx = vx + bx, so innovation = 0.
+        When new acceleration arrives, innovation = integral(new_accel*dt),
+        giving only the SHORT-WINDOW velocity change — drift-free.
+        """
+        self._accel_vx = self.vx + self._bx
+        self._accel_vy = self.vy + self._by
 
     def update_accel(self, la_wx: float, la_wy: float, dt: float):
-        """Update step using accelerometer-derived velocity.
+        """Update step using accelerometer-derived velocity measurement.
 
-        Single-integrates linear acceleration to get a velocity measurement,
-        then fuses it with the predicted velocity via Kalman update.
+        Integrates gravity-free linear acceleration to get a velocity
+        estimate, then fuses with predicted velocity via Kalman update.
+        The bias state absorbs integration drift.
+
+        IMPORTANT: Only call when acceleration is non-zero (above noise
+        gate). When acceleration is noise-gated to zero, call
+        reanchor_accel() instead to prevent stale measurements.
+
+        Measurement model:
+            z = accel_velocity
+            h(x) = v + bias  (accel velocity = true velocity + accumulated bias)
+            H = [1, 1]
 
         Args:
-            la_wx, la_wy: Gravity-free linear acceleration in world frame (m/s²).
-            dt: Time step.
+            la_wx, la_wy: Gravity-free linear acceleration in world frame (m/s^2).
+            dt: Time step (seconds).
         """
-        if dt <= 0:
+        if dt <= 0 or dt > 0.5:
             return
 
-        # Integrate accel to get velocity measurement (single integration)
+        # Single-integrate acceleration to get velocity measurement
         self._accel_vx += la_wx * dt
         self._accel_vy += la_wy * dt
 
-        # Decay accel velocity to prevent unbounded drift
-        self._accel_vx *= 0.98
-        self._accel_vy *= 0.98
+        # Innovation: z - h(x) = accel_v - (v + bias)
+        innov_x = self._accel_vx - self.vx - self._bx
+        innov_y = self._accel_vy - self.vy - self._by
 
-        # Measurement: z = [accel_vx, accel_vy]
-        # Innovation: y = z - H*x (H = identity for velocity)
-        yx = self._accel_vx - self.vx
-        yy = self._accel_vy - self.vy
+        # Update each axis
+        self._kalman_update_axis_x(innov_x, self.r_accel, full_h=True)
+        self._kalman_update_axis_y(innov_y, self.r_accel, full_h=True)
 
-        # S = P + R (measurement covariance)
-        r = self.r_accel + self.q_accel * dt
-        s00 = self._p00 + r
-        s11 = self._p11 + r
-        # (off-diagonal S terms are just P off-diagonal since R is diagonal)
+        # Periodic re-centering: shift accel_v and bias together
+        # to prevent float precision loss from large accumulated values
+        self._update_count += 1
+        if self._update_count >= self._RECENTER_INTERVAL:
+            self._update_count = 0
+            self._accel_vx -= self._bx
+            self._accel_vy -= self._by
+            self._bx = 0.0
+            self._by = 0.0
 
-        # Kalman gain: K = P * S^-1 (for diagonal S, this is element-wise)
-        if s00 > 1e-10:
-            k00 = self._p00 / s00
+    def _kalman_update_axis_x(self, innov: float, r: float,
+                               full_h: bool = True):
+        """Kalman update for X-axis.
+
+        Args:
+            innov: Innovation (measurement - predicted measurement).
+            r: Measurement noise variance.
+            full_h: True for H=[1,1] (accel), False for H=[1,0] (ZUPT).
+        """
+        p = self._px
+
+        if full_h:
+            # H = [1, 1]: S = p_vv + p_vb + p_bv + p_bb + R
+            s = p[0] + p[1] + p[2] + p[3] + r
+            if s < 1e-12:
+                return
+            # K = P * H' / S = [p_vv+p_vb, p_bv+p_bb]' / S
+            kv = (p[0] + p[1]) / s
+            kb = (p[2] + p[3]) / s
         else:
-            k00 = 0.0
-        if s11 > 1e-10:
-            k11 = self._p11 / s11
-        else:
-            k11 = 0.0
+            # H = [1, 0]: S = p_vv + R
+            s = p[0] + r
+            if s < 1e-12:
+                return
+            kv = p[0] / s
+            kb = p[2] / s
 
         # State update
-        self.vx += k00 * yx
-        self.vy += k11 * yy
+        self.vx += kv * innov
+        self._bx += kb * innov
 
-        # Covariance update: P = (I - K*H) * P
-        self._p00 *= (1 - k00)
-        self._p11 *= (1 - k11)
-        # Cross terms decay
-        self._p01 *= (1 - 0.5 * (k00 + k11))
-        self._p10 *= (1 - 0.5 * (k00 + k11))
+        # Covariance update: P = (I - K*H) * P  — in-place
+        pvv, pvb, pbv, pbb = p[0], p[1], p[2], p[3]
+        if full_h:
+            ikv = 1.0 - kv; ikb = 1.0 - kb
+            p[0] = ikv * pvv - kv * pbv
+            p[1] = ikv * pvb - kv * pbb
+            p[2] = -kb * pvv + ikb * pbv
+            p[3] = -kb * pvb + ikb * pbb
+        else:
+            ikv = 1.0 - kv
+            p[0] = ikv * pvv
+            p[1] = ikv * pvb
+            p[2] = -kb * pvv + pbv
+            p[3] = -kb * pvb + pbb
 
-        # Apply non-holonomic constraint after update
-        # (tracked robot can't strafe — reduce lateral velocity)
-        # Done outside the Kalman to avoid violating mathematical assumptions,
-        # but it's physically correct for this robot type
-        # This is applied in the AccelPositionEstimator, so skip here
+        # Enforce symmetry and positive-definiteness
+        p[1] = 0.5 * (p[1] + p[2])
+        p[2] = p[1]
+        if p[0] < 1e-8:
+            p[0] = 1e-8
+        if p[3] < 1e-8:
+            p[3] = 1e-8
+
+    def _kalman_update_axis_y(self, innov: float, r: float,
+                               full_h: bool = True):
+        """Kalman update for Y-axis (same math as X)."""
+        p = self._py
+
+        if full_h:
+            s = p[0] + p[1] + p[2] + p[3] + r
+            if s < 1e-12:
+                return
+            kv = (p[0] + p[1]) / s
+            kb = (p[2] + p[3]) / s
+        else:
+            s = p[0] + r
+            if s < 1e-12:
+                return
+            kv = p[0] / s
+            kb = p[2] / s
+
+        self.vy += kv * innov
+        self._by += kb * innov
+
+        pvv, pvb, pbv, pbb = p[0], p[1], p[2], p[3]
+        if full_h:
+            ikv = 1.0 - kv; ikb = 1.0 - kb
+            p[0] = ikv * pvv - kv * pbv
+            p[1] = ikv * pvb - kv * pbb
+            p[2] = -kb * pvv + ikb * pbv
+            p[3] = -kb * pvb + ikb * pbb
+        else:
+            ikv = 1.0 - kv
+            p[0] = ikv * pvv
+            p[1] = ikv * pvb
+            p[2] = -kb * pvv + pbv
+            p[3] = -kb * pvb + pbb
+
+        p[1] = 0.5 * (p[1] + p[2])
+        p[2] = p[1]
+        if p[0] < 1e-8:
+            p[0] = 1e-8
+        if p[3] < 1e-8:
+            p[3] = 1e-8
 
     def update_zupt(self):
-        """Zero-Velocity Update — robot is stationary.
+        """Zero-Velocity Update — robot is confirmed stationary.
 
         Measurement: v = [0, 0] with very high confidence.
+        H = [1, 0] — ZUPT measures velocity only, not bias.
+        Also resets accel-integrated velocity and bias to zero.
         """
-        r = self.r_zupt
+        # Innovation: 0 - vx = -vx
+        self._kalman_update_axis_x(-self.vx, self.r_zupt, full_h=False)
+        self._kalman_update_axis_y(-self.vy, self.r_zupt, full_h=False)
 
-        # Kalman gain
-        s00 = self._p00 + r
-        s11 = self._p11 + r
-
-        k00 = self._p00 / s00 if s00 > 1e-10 else 0.0
-        k11 = self._p11 / s11 if s11 > 1e-10 else 0.0
-
-        # Update: z = [0, 0], so innovation = -[vx, vy]
-        self.vx -= k00 * self.vx
-        self.vy -= k11 * self.vy
-
-        # Covariance update
-        self._p00 *= (1 - k00)
-        self._p11 *= (1 - k11)
-        self._p01 *= (1 - 0.5 * (k00 + k11))
-        self._p10 *= (1 - 0.5 * (k00 + k11))
-
-        # Also zero the accel-integrated velocity
+        # Hard reset accel velocity and bias:
+        # We know v=0, accel_v should be 0, so bias = accel_v - v = 0
         self._accel_vx = 0.0
         self._accel_vy = 0.0
+        self._bx = 0.0
+        self._by = 0.0
+        self._update_count = 0
 
     def apply_nonholonomic(self, theta: float):
         """Apply non-holonomic constraint for tracked robot.
 
-        Projects velocity onto heading direction, damping lateral component.
+        Tracked robots cannot strafe. Projects velocity onto heading
+        direction and aggressively damps the lateral component.
+        Applied to both EKF velocity and accel-integrated velocity.
         """
         cy, sy = cos(theta), sin(theta)
-        fwd = self.vx * cy + self.vy * sy       # forward component
-        lat = -self.vx * sy + self.vy * cy       # lateral component
 
+        # Decompose into forward and lateral
+        fwd = self.vx * cy + self.vy * sy
+        lat = -self.vx * sy + self.vy * cy
         lat *= self._lateral_decay
 
         self.vx = fwd * cy - lat * sy
         self.vy = fwd * sy + lat * cy
 
-        # Same for accel velocity
+        # Same for accel velocity (keeps measurement consistent)
         fwd_a = self._accel_vx * cy + self._accel_vy * sy
         lat_a = -self._accel_vx * sy + self._accel_vy * cy
         lat_a *= self._lateral_decay
@@ -231,14 +359,15 @@ class VelocityEKF:
         """Reset all state to zero."""
         self.vx = 0.0
         self.vy = 0.0
+        self._bx = 0.0
+        self._by = 0.0
         self.x = 0.0
         self.y = 0.0
         self._accel_vx = 0.0
         self._accel_vy = 0.0
-        self._p00 = 0.01
-        self._p01 = 0.0
-        self._p10 = 0.0
-        self._p11 = 0.01
+        self._px = [0.01, 0.0, 0.0, 0.002]
+        self._py = [0.01, 0.0, 0.0, 0.002]
+        self._update_count = 0
 
     @property
     def velocity_magnitude(self) -> float:
@@ -246,5 +375,10 @@ class VelocityEKF:
 
     @property
     def covariance_trace(self) -> float:
-        """Sum of diagonal — overall uncertainty."""
-        return self._p00 + self._p11
+        """Sum of velocity covariance diagonals — overall uncertainty."""
+        return self._px[0] + self._py[0]
+
+    @property
+    def bias_magnitude(self) -> float:
+        """Current estimated accel bias magnitude."""
+        return sqrt(self._bx * self._bx + self._by * self._by)

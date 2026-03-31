@@ -2,38 +2,27 @@
 Accelerometer-based position estimator for 2D ground robot.
 
 Extracts linear acceleration from IMU by removing:
-    1. Gravity vector — DIRECT SUBTRACTION of calibrated gravity_body,
-       with delta-rotation correction for orientation changes from home
+    1. Gravity vector — direct subtraction of calibrated gravity_body,
+       with full rotation correction for orientation changes
     2. Earth rotation effects (Coriolis)
-    3. Vibration noise (adaptive threshold + median filter)
+    3. Vibration noise — cascaded IIR low-pass + median spike rejection
 
 Then fuses with wheel odometry via Velocity EKF:
-    - Prediction: from wheel commands (stable, no drift)
+    - Prediction: from wheel commands with motor dynamics model
     - Update: from accelerometer (captures slip, short-term accurate)
-    - ZUPT: zero velocity when stationary
+    - Bias estimation: absorbs accelerometer drift automatically
+    - ZUPT: zero velocity when stationary (hysteresis-based)
     - Non-holonomic constraint: tracked robot can't strafe
-    - Adaptive ZUPT with hysteresis: harder to exit stationary state
-
-Why Velocity EKF instead of complementary filter:
-    The Kalman filter automatically weights wheel vs accel sources based
-    on their noise levels and covariances. When accel is noisy (vibration),
-    it trusts wheels more. When there's wheel slip, accel data provides
-    correction. ZUPT is a proper measurement, not just a hard reset.
-
-Why direct subtraction for gravity:
-    The IMU is physically tilted on the chassis. At rest, it reads e.g.
-    ax=0.707, ay=-0.085, az=-9.309 — all gravity, zero real motion.
-    The old rotation-based method computed gravity assuming roll=pitch=0
-    (home), giving g_body=(0,0,9.81), leaving ax=0.707 as "motion".
-    Direct subtraction: 0.707 - 0.707 = 0.  Simple, correct, robust.
+    - Adaptive wheel scale: learns actual speed vs commanded
 
 Coordinate frames:
     Body:  x=forward, y=left, z=up (as mounted on chassis)
     World: x=forward, y=left (2D ground plane, z ignored)
 """
 
-from math import sin, cos, sqrt, pi
+from math import sin, cos, sqrt, pi, atan2
 from collections import deque
+import time
 
 try:
     from pi_nodes.filters.velocity_ekf import VelocityEKF
@@ -43,34 +32,29 @@ except ImportError:
 
 # ── Earth rotation constants ──────────────────────────────────────
 EARTH_OMEGA = 7.2921e-5   # rad/s — Earth's angular velocity
-DEFAULT_LATITUDE = 55.75   # Moscow — override in config if needed
+DEFAULT_LATITUDE = 55.75   # Moscow
 DEG2RAD = pi / 180.0
 
 # ── Filter constants ─────────────────────────────────────────────
-MEDIAN_WINDOW = 5          # samples for median filter
-ACCEL_NOISE_THRESHOLD = 0.15   # m/s² — below this = noise, not motion
-COMPLEMENTARY_ALPHA = 0.98    # fallback: 98% wheel odom, 2% accel
+MEDIAN_WINDOW = 5
+ACCEL_NOISE_THRESHOLD = 0.12   # m/s² — below = noise
+COMPLEMENTARY_ALPHA = 0.98
 
-# ── ZUPT (Zero-Velocity Update) with hysteresis ──────────────────
-# Two thresholds: ENTER (strict) and EXIT (loose).
-# Robot must clearly be moving to exit stationary state.
-ZUPT_GYRO_ENTER = 0.015       # rad/s — below = entering stationary
-ZUPT_ACCEL_ENTER = 0.10       # m/s² — below = entering stationary
-ZUPT_GYRO_EXIT = 0.04         # rad/s — above = exiting stationary (higher!)
-ZUPT_ACCEL_EXIT = 0.25        # m/s² — above = exiting stationary (higher!)
-ZUPT_ENTER_COUNT = 5          # consecutive samples to enter stationary (100ms @ 50Hz)
-ZUPT_EXIT_COUNT = 3           # consecutive samples to exit stationary (60ms @ 50Hz)
+# ── ZUPT with hysteresis ─────────────────────────────────────────
+ZUPT_GYRO_ENTER = 0.015
+ZUPT_ACCEL_ENTER = 0.10
+ZUPT_GYRO_EXIT = 0.04
+ZUPT_ACCEL_EXIT = 0.25
+ZUPT_ENTER_COUNT = 5
+ZUPT_EXIT_COUNT = 3
 
-# Velocity decay — exponential damping to fight integration drift
-# Used only in fallback mode (no VelocityEKF)
+# ── Velocity / lateral decay ─────────────────────────────────────
 VELOCITY_DECAY = 0.95
-
-# Non-holonomic constraint: tracked robot lateral velocity damping
-LATERAL_DECAY = 0.5   # kill 50% of lateral velocity per step
+LATERAL_DECAY = 0.5
 
 
 def _median_of_3(a, b, c):
-    """Fast median of 3 values (no sorting needed)."""
+    """Fast median of 3 values."""
     if a <= b:
         if b <= c:
             return b
@@ -80,45 +64,132 @@ def _median_of_3(a, b, c):
     return c if c >= b else b
 
 
+class _LowPass2:
+    """2nd-order IIR low-pass filter (cascaded 1st-order stages).
+
+    For alpha=0.4 at 50 Hz: each stage cutoff ~3.2 Hz,
+    cascaded effective cutoff ~2.2 Hz. Removes motor vibrations
+    while preserving intentional motion signals (~0-5 Hz).
+    """
+    __slots__ = ('_a', '_s1', '_s2')
+
+    def __init__(self, alpha: float = 0.4):
+        self._a = alpha
+        self._s1 = 0.0
+        self._s2 = 0.0
+
+    def update(self, x: float) -> float:
+        self._s1 += self._a * (x - self._s1)
+        self._s2 += self._a * (self._s1 - self._s2)
+        return self._s2
+
+    def reset(self, val: float = 0.0):
+        self._s1 = val
+        self._s2 = val
+
+
+class _AdaptiveWheelScale:
+    """Online estimator for wheel odometry scale factor.
+
+    Compares accelerometer-measured displacement segments with
+    wheel-predicted displacement to learn the actual scale.
+    Uses exponential moving average for smooth adaptation.
+
+    Only updates when:
+    - Robot moves in a relatively straight line (low angular velocity)
+    - Segment is long enough to be reliable (>5cm)
+    - Accelerometer signal is clean (low noise)
+    """
+    __slots__ = ('scale', '_wheel_dist', '_accel_dist',
+                 '_segment_start', '_min_segment', '_ema_alpha',
+                 '_min_scale', '_max_scale')
+
+    def __init__(self, initial_scale: float = 1.0,
+                 ema_alpha: float = 0.02,
+                 min_segment_m: float = 0.05):
+        self.scale = initial_scale
+        self._wheel_dist = 0.0
+        self._accel_dist = 0.0
+        self._segment_start = True
+        self._min_segment = min_segment_m
+        self._ema_alpha = ema_alpha
+        self._min_scale = 0.5   # never scale below 50%
+        self._max_scale = 2.0   # never scale above 200%
+
+    def accumulate_wheel(self, v_cmd: float, dt: float):
+        """Add wheel-predicted distance for this segment."""
+        self._wheel_dist += abs(v_cmd) * dt
+
+    def accumulate_accel(self, v_fwd: float, dt: float):
+        """Add accelerometer-fused forward velocity distance."""
+        self._accel_dist += abs(v_fwd) * dt
+
+    def finish_segment(self) -> float:
+        """Called when robot stops. Returns updated scale factor."""
+        if (self._wheel_dist > self._min_segment and
+                self._accel_dist > self._min_segment * 0.3):
+            # Compute ratio: how much wheel over/under-estimates
+            ratio = self._accel_dist / self._wheel_dist
+            # Clamp to reasonable range
+            ratio = max(self._min_scale, min(self._max_scale, ratio))
+            # EMA update
+            self.scale += self._ema_alpha * (ratio - self.scale)
+            self.scale = max(self._min_scale, min(self._max_scale, self.scale))
+
+        self._wheel_dist = 0.0
+        self._accel_dist = 0.0
+        return self.scale
+
+    def reset_segment(self):
+        """Reset segment accumulators without updating scale."""
+        self._wheel_dist = 0.0
+        self._accel_dist = 0.0
+
+
 class AccelPositionEstimator:
     """Fuses accelerometer with wheel odometry for accurate 2D position.
 
-    Uses VelocityEKF for optimal fusion (when available), with fallback
-    to complementary filter if EKF module not found.
+    Uses VelocityEKF with bias estimation for optimal fusion.
+    Falls back to complementary filter if EKF not available.
 
-    Key improvements over naive double-integration:
-    - Velocity EKF with proper covariance tracking
-    - Adaptive ZUPT with hysteresis prevents oscillation at motion boundary
-    - Non-holonomic constraint zeros lateral velocity (tracked robot can't strafe)
-    - Position freezing: when stationary, position output is locked
+    Key improvements:
+    - 2nd-order IIR low-pass filter removes vibration noise
+    - Median filter rejects impulse spikes
+    - Actual timestamp-based dt (no hardcoded values)
+    - Bias estimation in EKF absorbs accelerometer drift
+    - Motor dynamics model for realistic velocity prediction
+    - Adaptive wheel scale factor learns actual speed calibration
+    - Trapezoidal integration in EKF for position accuracy
 
     Usage:
         estimator = AccelPositionEstimator()
         estimator.set_calibration(gravity_body, home_roll, home_pitch)
 
-        # Each IMU tick (50 Hz):
-        estimator.update_imu(ax, ay, az, gx, gy, gz, roll, pitch, yaw, dt)
+        # Each IMU tick (50 Hz) — pass actual timestamp:
+        estimator.update_imu(ax, ay, az, gx, gy, gz,
+                             roll, pitch, yaw, dt, timestamp)
 
         # Each odom tick (20 Hz):
         estimator.update_wheel_odom(vx_wheel, theta, dt)
 
-        # Blend / finalize (20 Hz):
+        # Finalize:
         estimator.blend()
 
-        # Read fused position:
+        # Read:
         x, y = estimator.x, estimator.y
     """
 
     def __init__(self, latitude_deg: float = DEFAULT_LATITUDE,
-                 complementary_alpha: float = COMPLEMENTARY_ALPHA):
+                 complementary_alpha: float = COMPLEMENTARY_ALPHA,
+                 lpf_alpha: float = 0.4):
         self._lat_rad = latitude_deg * DEG2RAD
-        self._alpha_moving = complementary_alpha  # alpha when moving (fallback)
-        self._alpha = 1.0  # current alpha (starts stationary = 100% wheel)
+        self._alpha_moving = complementary_alpha
+        self._alpha = 1.0
 
         # Earth rotation at this latitude
         self._omega_z = EARTH_OMEGA * sin(self._lat_rad)
 
-        # Calibration: gravity vector in body frame at rest
+        # Calibration
         self._g_body = (0.0, 0.0, -9.81)
         self._g_mag = 9.81
         self._home_roll = 0.0
@@ -130,51 +201,72 @@ class AccelPositionEstimator:
         self.vx = 0.0
         self.vy = 0.0
 
-        # Velocity EKF (preferred) or fallback to complementary filter
+        # Velocity EKF (preferred)
         self._vekf = None
         if _VEKF_AVAILABLE:
             self._vekf = VelocityEKF()
 
-        # Wheel odometry position (for complementary blend fallback)
+        # Wheel odometry position (fallback)
         self._wheel_x = 0.0
         self._wheel_y = 0.0
 
-        # Accel-only position (before blending, fallback)
+        # Accel-only position (fallback)
         self._accel_x = 0.0
         self._accel_y = 0.0
 
-        # Frozen position — locked when stationary to prevent micro-drift
+        # Frozen position — locked when stationary
         self._frozen_x = 0.0
         self._frozen_y = 0.0
 
-        # Median filter buffers
+        # -- Filtering pipeline --
+        # Stage 1: Median filter for spike rejection
         self._buf_ax = deque(maxlen=MEDIAN_WINDOW)
         self._buf_ay = deque(maxlen=MEDIAN_WINDOW)
+
+        # Stage 2: 2nd-order IIR low-pass for vibration removal
+        self._lpf_x = _LowPass2(lpf_alpha)
+        self._lpf_y = _LowPass2(lpf_alpha)
 
         # Previous linear accel for trapezoidal integration (fallback)
         self._prev_la_x = 0.0
         self._prev_la_y = 0.0
 
-        # Stationary detection with hysteresis
+        # Latest filtered accel for publishing
+        self._last_la_wx = 0.0
+        self._last_la_wy = 0.0
+
+        # -- ZUPT with hysteresis --
         self._stationary = True
-        self._enter_count = ZUPT_ENTER_COUNT  # start as stationary
+        self._enter_count = ZUPT_ENTER_COUNT
         self._exit_count = 0
 
-        # Current yaw for non-holonomic constraint
+        # Current yaw + cached trig (avoid cos/sin at 50 Hz when yaw changes slowly)
         self._current_yaw = 0.0
+        self._cached_yaw = -999.0  # force first computation
+        self._cy = 1.0
+        self._sy = 0.0
 
-        # Command-based motion detection (from motor_node)
+        # Command-based motion detection
         self._cmd_moving = False
+        self._cmd_moving_count = 0  # consecutive IMU samples with cmd_moving
+
+        # Gyro magnitude for ZUPT (stored from latest IMU)
+        self._last_gyro_mag = 0.0
+
+        # Command-only ZUPT exit: if motor commands active for this many
+        # consecutive IMU samples without sensor evidence, force-exit ZUPT.
+        # At 50 Hz, 8 samples = 160ms — enough for motor to physically start.
+        self._CMD_EXIT_COUNT = 8
+
+        # -- Adaptive wheel scale --
+        self._wheel_scale = _AdaptiveWheelScale()
+
+        # -- IMU timestamp tracking --
+        self._last_imu_ts = None
 
     def set_calibration(self, gravity_body: tuple,
                         home_roll: float, home_pitch: float):
-        """Set calibration from imu_node's startup phase.
-
-        Args:
-            gravity_body: (ax, ay, az) average at rest — full gravity+tilt
-                          vector in body frame. Will be subtracted directly.
-            home_roll, home_pitch: Initial orientation (radians).
-        """
+        """Set calibration from imu_node's startup phase."""
         self._g_body = gravity_body
         self._g_mag = sqrt(gravity_body[0]**2 + gravity_body[1]**2 +
                            gravity_body[2]**2)
@@ -182,27 +274,38 @@ class AccelPositionEstimator:
         self._home_pitch = home_pitch
 
     def set_cmd_moving(self, is_moving: bool):
-        """Hint from motor_node: whether motor commands are non-zero.
-
-        This provides a reliable "ground truth" for motion detection:
-        if no commands are being sent, the robot CANNOT be moving
-        (barring external forces).
-        """
+        """Hint from motor_node: whether motor commands are non-zero."""
         self._cmd_moving = is_moving
+
+    @property
+    def wheel_scale(self) -> float:
+        """Current adaptive wheel scale factor."""
+        return self._wheel_scale.scale
 
     def update_imu(self, ax: float, ay: float, az: float,
                    gx: float, gy: float, gz: float,
                    roll: float, pitch: float, yaw: float,
-                   dt: float):
+                   dt: float, timestamp: float = 0.0):
         """Process one IMU sample.
 
         Args:
-            ax, ay, az: Filtered accelerometer (m/s²).
+            ax, ay, az: Filtered accelerometer (m/s^2).
             gx, gy, gz: Filtered gyroscope (rad/s, bias-corrected).
-            roll, pitch, yaw: Current orientation from filter (radians,
-                              relative to home).
-            dt: Time step (seconds).
+            roll, pitch, yaw: Current orientation from EKF (radians).
+            dt: Time step (seconds). Used as fallback if timestamp=0.
+            timestamp: Actual IMU timestamp (seconds). If provided,
+                       dt is computed from consecutive timestamps for
+                       more accurate integration.
         """
+        # -- Compute actual dt from timestamps when available --
+        if timestamp > 0:
+            if self._last_imu_ts is not None and self._last_imu_ts > 0:
+                actual_dt = timestamp - self._last_imu_ts
+                # Sanity check: allow 0.5ms to 200ms
+                if 0.0005 < actual_dt < 0.2:
+                    dt = actual_dt
+            self._last_imu_ts = timestamp
+
         if dt <= 0:
             return
 
@@ -211,21 +314,28 @@ class AccelPositionEstimator:
         # ── 1. Remove gravity — DIRECT SUBTRACTION ───────────────
         la_bx = ax - self._g_body[0]
         la_by = ay - self._g_body[1]
-        la_bz = az - self._g_body[2]
+        # la_bz = az - self._g_body[2]  # not used for 2D
 
-        # Delta orientation correction (only significant on slopes)
+        # Orientation correction: compensate gravity projection change
+        # when robot tilts from home orientation
         d_roll = roll
         d_pitch = pitch
 
-        if abs(d_roll) > 0.01 or abs(d_pitch) > 0.01:  # >0.6°
+        if abs(d_roll) > 0.005 or abs(d_pitch) > 0.005:  # >0.3°
             g = self._g_mag
+            # Full trigonometric correction (not small-angle)
             delta_gx = -g * sin(d_pitch)
-            delta_gy = g * sin(d_roll)
+            delta_gy = g * sin(d_roll) * cos(d_pitch)
             la_bx -= delta_gx
             la_by -= delta_gy
 
         # ── 2. Body → World frame (rotate by yaw) ────────────────
-        cy, sy = cos(yaw), sin(yaw)
+        # Cache cos/sin — yaw changes slowly, saves ~100 trig calls/sec
+        if abs(yaw - self._cached_yaw) > 0.001:
+            self._cached_yaw = yaw
+            self._cy = cos(yaw)
+            self._sy = sin(yaw)
+        cy, sy = self._cy, self._sy
         la_wx = la_bx * cy - la_by * sy
         la_wy = la_bx * sy + la_by * cy
 
@@ -233,7 +343,7 @@ class AccelPositionEstimator:
         la_wx -= 2.0 * self._omega_z * self.vy
         la_wy += 2.0 * self._omega_z * self.vx
 
-        # ── 4. Median filter — reject vibration spikes ────────────
+        # ── 4. Median filter — reject impulse spikes ─────────────
         self._buf_ax.append(la_wx)
         self._buf_ay.append(la_wy)
 
@@ -243,20 +353,40 @@ class AccelPositionEstimator:
             la_wy = _median_of_3(
                 self._buf_ay[-1], self._buf_ay[-2], self._buf_ay[-3])
 
-        # ── 5. Noise threshold — zero out tiny accelerations ──────
-        if abs(la_wx) < ACCEL_NOISE_THRESHOLD:
-            la_wx = 0.0
-        if abs(la_wy) < ACCEL_NOISE_THRESHOLD:
-            la_wy = 0.0
+        # ── 5. 2nd-order IIR low-pass — remove vibrations ────────
+        la_wx = self._lpf_x.update(la_wx)
+        la_wy = self._lpf_y.update(la_wy)
 
-        # ── 6. ZUPT with HYSTERESIS ──────────────────────────────
-        gyro_mag = sqrt(gx * gx + gy * gy + gz * gz)
+        # ── 6. Noise gate — zero out sub-threshold signals ────────
         accel_mag = sqrt(la_wx * la_wx + la_wy * la_wy)
+        if accel_mag < ACCEL_NOISE_THRESHOLD:
+            la_wx = 0.0
+            la_wy = 0.0
+            accel_mag = 0.0
+
+        # Store for publishing
+        self._last_la_wx = la_wx
+        self._last_la_wy = la_wy
+
+        # ── 7. ZUPT with HYSTERESIS ──────────────────────────────
+        gyro_mag = sqrt(gx * gx + gy * gy + gz * gz)
+        self._last_gyro_mag = gyro_mag
+
+        # Track consecutive cmd_moving samples for command-based ZUPT exit
+        if self._cmd_moving:
+            self._cmd_moving_count += 1
+        else:
+            self._cmd_moving_count = 0
 
         if self._stationary:
-            # Currently stationary — need STRONG evidence of motion to exit.
-            if (self._cmd_moving and
-                (gyro_mag > ZUPT_GYRO_EXIT or accel_mag > ZUPT_ACCEL_EXIT)):
+            # Currently stationary — need evidence to exit.
+            # Primary: sensor evidence (gyro or accel above thresholds)
+            # Fallback: motor commands active long enough (robot MUST be moving)
+            sensor_evidence = (gyro_mag > ZUPT_GYRO_EXIT or
+                               accel_mag > ZUPT_ACCEL_EXIT)
+            cmd_evidence = self._cmd_moving_count >= self._CMD_EXIT_COUNT
+
+            if self._cmd_moving and (sensor_evidence or cmd_evidence):
                 self._exit_count += 1
                 self._enter_count = 0
             else:
@@ -265,13 +395,17 @@ class AccelPositionEstimator:
             if self._exit_count >= ZUPT_EXIT_COUNT:
                 self._stationary = False
                 self._exit_count = 0
-                # Snapshot frozen position at motion start
                 self._frozen_x = self.x
                 self._frozen_y = self.y
+                # Reset adaptive scale segment
+                self._wheel_scale.reset_segment()
         else:
-            # Currently moving — easy to re-enter stationary.
-            if (not self._cmd_moving or
-                (gyro_mag < ZUPT_GYRO_ENTER and accel_mag < ZUPT_ACCEL_ENTER)):
+            # Currently moving — require commands stopped AND sensors quiet.
+            # If commands are active, robot IS moving (constant velocity has
+            # zero acceleration, but robot is NOT stationary).
+            if (not self._cmd_moving and
+                    gyro_mag < ZUPT_GYRO_ENTER and
+                    accel_mag < ZUPT_ACCEL_ENTER):
                 self._enter_count += 1
                 self._exit_count = 0
             else:
@@ -280,17 +414,17 @@ class AccelPositionEstimator:
             if self._enter_count >= ZUPT_ENTER_COUNT:
                 self._stationary = True
                 self._enter_count = ZUPT_ENTER_COUNT
-                # Freeze position — lock it so noise can't move it
                 self._frozen_x = self.x
                 self._frozen_y = self.y
+                # Finish adaptive scale segment
+                self._wheel_scale.finish_segment()
 
         if self._stationary:
-            # Hard zero — no velocity, no integration, position frozen
+            # Hard zero — no velocity, position frozen
             self.vx = 0.0
             self.vy = 0.0
             self._prev_la_x = 0.0
             self._prev_la_y = 0.0
-            # Keep position at frozen values
             self.x = self._frozen_x
             self.y = self._frozen_y
             self._accel_x = self._frozen_x
@@ -302,14 +436,26 @@ class AccelPositionEstimator:
                 self._vekf.update_zupt()
                 self._vekf.x = self._frozen_x
                 self._vekf.y = self._frozen_y
+            # Reset LP filter to zero when stopped
+            self._lpf_x.reset(0.0)
+            self._lpf_y.reset(0.0)
             return
 
-        # ── 7. Feed accelerometer to Velocity EKF or fallback ────
+        # ── 8. Feed to Velocity EKF or fallback ──────────────────
         if self._vekf is not None:
-            # Velocity EKF: accel as velocity measurement source
-            self._vekf.update_accel(la_wx, la_wy, dt)
+            if accel_mag > 0:
+                # Meaningful accel signal → Kalman update
+                self._vekf.update_accel(la_wx, la_wy, dt)
+            else:
+                # No accel signal → re-anchor to prevent stale innovations
+                # When new acceleration appears, only short-window integral
+                # is used as innovation — no long-term drift
+                self._vekf.reanchor_accel()
             # Apply non-holonomic constraint
             self._vekf.apply_nonholonomic(yaw)
+            # Accumulate accel distance for adaptive scale
+            v_fwd = self._vekf.vx * cy + self._vekf.vy * sy
+            self._wheel_scale.accumulate_accel(v_fwd, dt)
         else:
             # Fallback: trapezoidal integration + decay
             self.vx += 0.5 * (la_wx + self._prev_la_x) * dt
@@ -347,14 +493,20 @@ class AccelPositionEstimator:
         # Update command-based motion hint
         self.set_cmd_moving(abs(vx_wheel) > 0.005)
 
+        # Apply adaptive wheel scale
+        vx_scaled = vx_wheel * self._wheel_scale.scale
+
         if self._vekf is not None:
             # Velocity EKF: wheel command as prediction source
-            self._vekf.predict_wheel(vx_wheel, theta, dt)
+            self._vekf.predict_wheel(vx_scaled, theta, dt)
+            # Accumulate wheel distance for adaptive scale
+            self._wheel_scale.accumulate_wheel(vx_wheel, dt)
         else:
             # Fallback: simple integration
             if abs(vx_wheel) >= 0.001:
-                self._wheel_x += vx_wheel * cos(theta) * dt
-                self._wheel_y += vx_wheel * sin(theta) * dt
+                ct, st = cos(theta), sin(theta)
+                self._wheel_x += vx_scaled * ct * dt
+                self._wheel_y += vx_scaled * st * dt
 
     def blend(self):
         """Finalize position estimate for this cycle.
@@ -363,12 +515,10 @@ class AccelPositionEstimator:
         Without: complementary filter merge of wheel + accel position.
         """
         if self._stationary:
-            # Position already frozen in update_imu
             self._alpha = 1.0
             return
 
         if self._vekf is not None:
-            # Read fused position from EKF
             self.x = self._vekf.x
             self.y = self._vekf.y
             self.vx = self._vekf.vx
@@ -381,7 +531,6 @@ class AccelPositionEstimator:
             self.x = a * self._wheel_x + (1.0 - a) * self._accel_x
             self.y = a * self._wheel_y + (1.0 - a) * self._accel_y
 
-            # Pull accel estimate toward wheel estimate to prevent drift
             self._accel_x = 0.995 * self._accel_x + 0.005 * self._wheel_x
             self._accel_y = 0.995 * self._accel_y + 0.005 * self._wheel_y
 
@@ -399,13 +548,20 @@ class AccelPositionEstimator:
         self._frozen_y = 0.0
         self._prev_la_x = 0.0
         self._prev_la_y = 0.0
+        self._last_la_wx = 0.0
+        self._last_la_wy = 0.0
         self._stationary = True
         self._enter_count = ZUPT_ENTER_COUNT
         self._exit_count = 0
         self._cmd_moving = False
+        self._cmd_moving_count = 0
         self._alpha = 1.0
         self._buf_ax.clear()
         self._buf_ay.clear()
+        self._lpf_x.reset(0.0)
+        self._lpf_y.reset(0.0)
+        self._last_imu_ts = None
+        self._wheel_scale.reset_segment()
         if self._vekf is not None:
             self._vekf.reset()
 
@@ -416,4 +572,4 @@ class AccelPositionEstimator:
     @property
     def linear_accel_world(self) -> tuple:
         """Latest gravity-free linear acceleration in world frame."""
-        return (self._prev_la_x, self._prev_la_y)
+        return (self._last_la_wx, self._last_la_wy)

@@ -650,6 +650,18 @@ body {
         <span class="sensor-name">Мяч</span>
         <span class="sensor-value" id="ballInfo">—</span>
       </div>
+      <div class="sensor-row">
+        <span class="sensor-name">Батарея</span>
+        <span class="sensor-value" id="batteryInfo">—</span>
+      </div>
+      <div class="sensor-row">
+        <span class="sensor-name">Темп. CPU</span>
+        <span class="sensor-value" id="cpuTemp">—</span>
+      </div>
+      <div class="sensor-row">
+        <span class="sensor-name">Профиль</span>
+        <span class="sensor-value" id="speedProfile">—</span>
+      </div>
     </div>
   </div>
 
@@ -691,6 +703,33 @@ body {
         <button class="btn btn-reset" onclick="resetSim()">Сброс</button>
         <button class="btn" id="btnCollisionGuard" onclick="toggleCollisionGuard()" style="border-color:#ef5350;color:#ef5350">Защита: ВЫКЛ</button>
       </div>
+      <div style="font-size:10px;color:var(--text-dim);margin:8px 0 4px;">РЕЖИМЫ</div>
+      <div class="quick-buttons">
+        <button class="btn" onclick="modeCmd('/api/patrol/command','start')">▶ Патруль</button>
+        <button class="btn" onclick="modeCmd('/api/patrol/command','stop')">⏹ Патруль</button>
+        <button class="btn" onclick="modeCmd('/api/follow_me','start')">▶ Следуй</button>
+        <button class="btn" onclick="modeCmd('/api/follow_me','stop')">⏹ Следуй</button>
+        <button class="btn" onclick="modeCmd('/api/path_recorder/command','record')">⏺ Путь</button>
+        <button class="btn" onclick="modeCmd('/api/path_recorder/command','stop')">⏹ Путь</button>
+        <button class="btn" onclick="modeCmd('/api/path_recorder/command','play')">▶ Путь</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin:8px 0 4px;">СКОРОСТЬ</div>
+      <div class="quick-buttons">
+        <button class="btn" id="btnSpeedSlow" onclick="setSpeed('slow')">Медл.</button>
+        <button class="btn" id="btnSpeedNormal" onclick="setSpeed('normal')">Норма</button>
+        <button class="btn" id="btnSpeedFast" onclick="setSpeed('fast')">Быстр.</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin:8px 0 4px;">LED</div>
+      <div class="quick-buttons">
+        <button class="btn" onclick="setLed('off')">Выкл</button>
+        <button class="btn" onclick="setLed('white')" style="color:#fff">Белый</button>
+        <button class="btn" onclick="setLed('red')" style="color:#ef5350">Красн.</button>
+        <button class="btn" onclick="setLed('green')" style="color:#66bb6a">Зелён.</button>
+        <button class="btn" onclick="setLed('blue')" style="color:#42a5f5">Синий</button>
+        <button class="btn" onclick="setLed('rainbow')">🌈</button>
+        <button class="btn" onclick="setLed('pulse')">💗</button>
+        <button class="btn" onclick="setLed('police')">🚨</button>
+      </div>
     </div>
   </div>
 
@@ -704,6 +743,11 @@ const COLOUR_RU = {
   yellow: 'жёлтый', orange: 'оранжевый', white: 'белый',
   black: 'чёрный', unknown: 'неизвестный'
 };
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 const COLOUR_CSS = {
   red: '#ef5350', blue: '#42a5f5', green: '#66bb6a',
@@ -797,6 +841,24 @@ function updateSensors(data) {
   } else {
     document.getElementById('ballInfo').textContent = '—';
     document.getElementById('ballInfo').style.color = 'var(--text-dim)';
+  }
+
+  // Battery
+  if (data.battery_voltage != null && data.battery_voltage > 0) {
+    document.getElementById('batteryInfo').textContent =
+      data.battery_voltage.toFixed(1) + 'В (' + (data.battery_percent || '—') + '%)';
+  }
+
+  // CPU Temperature
+  if (data.cpu_temp != null && data.cpu_temp > 0) {
+    const el = document.getElementById('cpuTemp');
+    el.textContent = data.cpu_temp.toFixed(1) + '°C';
+    el.style.color = data.cpu_temp > 70 ? 'var(--red)' : data.cpu_temp > 55 ? 'var(--orange)' : 'var(--text)';
+  }
+
+  // Speed profile
+  if (data.speed_profile) {
+    document.getElementById('speedProfile').textContent = data.speed_profile;
   }
 }
 
@@ -970,6 +1032,7 @@ mapCanvas.addEventListener('mouseleave', () => {
 });
 
 // ── Map Rendering ──
+let _lastMapVersion = '';
 function updateMap(data) {
   if (!data.map_info || !data.map_info.width) return;
 
@@ -984,12 +1047,21 @@ function updateMap(data) {
   // Update zone counter
   document.getElementById('zoneCounter').textContent = 'Зон: ' + zones.length;
 
-  // Reload map image
-  mapImg.src = '/map.png?t=' + Date.now();
-  mapImg.onload = () => {
+  // Reload map image only when version changes (avoid 10 req/s)
+  const mapVer = (info.version || info.update_count || '') + '_' + info.width;
+  if (mapVer !== _lastMapVersion) {
+    _lastMapVersion = mapVer;
+    mapImg.src = '/map.png?t=' + Date.now();
+  }
+  // Always redraw overlay (robot, zones, path) even if map image unchanged
+  const _drawOverlay = () => {
     const rect = mapCanvas.getBoundingClientRect();
-    mapCanvas.width = rect.width;
-    mapCanvas.height = rect.height;
+    const rw = Math.round(rect.width), rh = Math.round(rect.height);
+    // Only resize canvas when container size actually changes (avoid flicker)
+    if (mapCanvas.width !== rw || mapCanvas.height !== rh) {
+      mapCanvas.width = rw;
+      mapCanvas.height = rh;
+    }
 
     const ctx = mapCtx;
     ctx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
@@ -1026,6 +1098,43 @@ function updateMap(data) {
         ctx.beginPath();
         ctx.arc(cx, cy, 2, 0, Math.PI * 2);
         ctx.fill();
+      }
+    }
+
+    // Draw SLAM trail (from Pi ultrasonic SLAM)
+    const slam = data.slam_map;
+    if (slam && slam.trail && slam.trail.length >= 2) {
+      ctx.strokeStyle = 'rgba(255, 180, 50, 0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const [tx0, ty0] = w2c(slam.trail[0][0], slam.trail[0][1]);
+      ctx.moveTo(tx0, ty0);
+      for (let i = 1; i < slam.trail.length; i++) {
+        const [tx, ty] = w2c(slam.trail[i][0], slam.trail[i][1]);
+        ctx.lineTo(tx, ty);
+      }
+      ctx.stroke();
+    }
+
+    // Draw detected objects (from Pi SLAM registry)
+    if (slam && slam.detected_objects && slam.detected_objects.length > 0) {
+      const OBJ_COLORS = {
+        red: '#ef5350', blue: '#42a5f5', green: '#66bb6a',
+        yellow: '#ffee58', orange: '#ffa726', purple: '#ab47bc',
+        unknown: '#bdbdbd'
+      };
+      for (const obj of slam.detected_objects) {
+        const [ox, oy] = w2c(obj.x, obj.y);
+        const color = OBJ_COLORS[obj.colour] || OBJ_COLORS.unknown;
+        // Filled circle
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(ox, oy, 5, 0, Math.PI * 2);
+        ctx.fill();
+        // Label
+        ctx.fillStyle = '#fff';
+        ctx.font = '10px monospace';
+        ctx.fillText(obj['class'] || '?', ox + 7, oy + 3);
       }
     }
 
@@ -1090,6 +1199,19 @@ function updateMap(data) {
       ctx.stroke();
     }
 
+    // Draw saved zones
+    if (zones.length > 0) {
+      ctx.strokeStyle = 'rgba(239, 83, 80, 0.7)';
+      ctx.fillStyle = 'rgba(239, 83, 80, 0.15)';
+      ctx.lineWidth = 1.5;
+      for (const z of zones) {
+        const [zx1, zy1] = w2c(z.x1, z.y2);
+        const [zx2, zy2] = w2c(z.x2, z.y1);
+        ctx.fillRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
+        ctx.strokeRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
+      }
+    }
+
     // Draw zone preview while dragging
     if (isDrawing && drawStart && drawCurrent) {
       ctx.strokeStyle = 'rgba(239, 83, 80, 0.8)';
@@ -1105,6 +1227,9 @@ function updateMap(data) {
       ctx.setLineDash([]);
     }
   };
+  mapImg.onload = _drawOverlay;
+  // Also draw immediately with cached image (overlay updates without reload)
+  if (mapImg.complete && mapImg.naturalWidth > 0) _drawOverlay();
 }
 
 // ── Voice Log ──
@@ -1139,6 +1264,19 @@ function sendQuick(text) {
 
 function resetSim() {
   socket.emit('reset_sim', {});
+}
+
+function modeCmd(url, cmd) {
+  fetch(url, { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({command:cmd}) });
+}
+function setSpeed(profile) {
+  fetch('/api/speed_profile', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({profile:profile}) });
+}
+function setLed(mode) {
+  fetch('/api/led/command', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mode:mode}) });
 }
 
 let collisionGuardOn = false;
@@ -1200,10 +1338,13 @@ function renderDebug() {
 
   let html = '';
 
-  // -- Simulation --
-  html += debugSection('Симуляция', [
-    kv('Время', d.sim_time != null ? d.sim_time.toFixed(2) + ' с' : '—'),
-    kv('Арена', d.arena_size ? d.arena_size.width + ' x ' + d.arena_size.height + ' м' : '—'),
+  // -- Uptime --
+  html += debugSection('Общее', [
+    kv('Время работы', d.sim_time != null ? d.sim_time.toFixed(0) + ' с' : '—'),
+    kv('Батарея', d.battery_voltage != null && d.battery_voltage > 0 ? d.battery_voltage.toFixed(1) + ' В (' + (d.battery_percent || '—') + '%)' : '—'),
+    kv('Темп. CPU', d.cpu_temp != null && d.cpu_temp > 0 ? d.cpu_temp.toFixed(1) + '°C' : '—'),
+    kv('Профиль', d.speed_profile || '—'),
+    kv('MQTT', d.watchdog && d.watchdog.mqtt ? 'OK' : '—'),
   ]);
 
   // -- FSM --
@@ -1212,7 +1353,7 @@ function renderDebug() {
     kv('Состояние', s.state || '—'),
     kv('Цель (цвет)', s.target_colour || '—'),
     kv('Действие', s.target_action || '—'),
-    kv('Потерянные кадры', d.lost_frames != null ? d.lost_frames : '—'),
+    kv('Стационарный', d.stationary ? 'Да' : 'Нет'),
   ]);
 
   // -- Pose --
@@ -1250,23 +1391,20 @@ function renderDebug() {
     kvBool('Защита от столкн.', d.collision_guard_enabled),
   ]);
 
-  // -- Remembered ball --
-  const rb = d.remembered_ball;
-  html += debugSection('Запомненный мяч (approach)', [
-    kv('X', rb ? rb.x.toFixed(3) + ' м' : '—'),
-    kv('Y', rb ? rb.y.toFixed(3) + ' м' : '—'),
-  ]);
-
-  // -- Last known target (persistent) --
-  const lkt = d.last_known_target;
-  html += debugSection('Последняя известная цель (поиск)', [
-    kv('X', lkt ? lkt.x.toFixed(3) + ' м' : '—'),
-    kv('Y', lkt ? lkt.y.toFixed(3) + ' м' : '—'),
+  // -- Head / Arm --
+  const hd = d.head || {};
+  const arm = d.arm || {};
+  html += debugSection('Голова / Рука', [
+    kv('Голова (угол)', hd.angle != null ? hd.angle.toFixed(0) + '°' : '—'),
+    kv('Рука J1', arm.j1 != null ? arm.j1.toFixed(0) + '°' : '—'),
+    kv('Рука J2', arm.j2 != null ? arm.j2.toFixed(0) + '°' : '—'),
+    kv('Рука J3', arm.j3 != null ? arm.j3.toFixed(0) + '°' : '—'),
+    kv('Рука J4 (клешня)', arm.j4 != null ? arm.j4.toFixed(0) + '°' : '—'),
   ]);
 
   // -- Path --
-  const path = d.planned_path || [];
-  html += debugSection('Маршрут A*', [
+  const path = d.planned_path || d.recorded_path || [];
+  html += debugSection('Маршрут', [
     kv('Точек', path.length),
   ]);
   if (path.length > 0) {
@@ -1284,8 +1422,8 @@ function renderDebug() {
     html += '<div class="debug-section"><table class="debug-table"><tr><th>Цвет</th><th>Класс</th><th>Conf</th><th>Dist</th><th>X</th><th>Y</th><th>W</th><th>H</th></tr>';
     dets.forEach(det => {
       html += '<tr>' +
-        '<td style="color:' + (COLOUR_CSS[det.colour] || 'inherit') + '">' + (det.colour || '—') + '</td>' +
-        '<td>' + (det.class || '—') + '</td>' +
+        '<td style="color:' + (COLOUR_CSS[det.colour] || 'inherit') + '">' + esc(det.colour || '—') + '</td>' +
+        '<td>' + esc(det.class || '—') + '</td>' +
         '<td>' + (det.conf != null ? det.conf.toFixed(3) : '—') + '</td>' +
         '<td>' + (det.distance != null ? det.distance.toFixed(3) + ' м' : '—') + '</td>' +
         '<td>' + (det.x != null ? det.x : '—') + '</td>' +

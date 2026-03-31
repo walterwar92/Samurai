@@ -205,9 +205,15 @@ class PathRecorderNode(MqttNode):
                 self._path.append((self._x, self._y, self._theta))
 
         self._state = 'replaying'
+        # Enable obstacle avoidance automatically during replay
+        self._obstacle_avoidance = True
+        # Reset circumnavigation state
+        self._circumvent_state = 'none'
+        self._circumvent_attempts = 0
         # Reverse the path for return-home
         self._replay_index = len(self._path) - 1
-        self.log_info('Path replay started (%d waypoints, reversed)', len(self._path))
+        self.log_info('Path replay started (%d waypoints, reversed, obstacle_avoidance=ON)',
+                      len(self._path))
 
     def _control_loop(self):
         if self._state == 'aligning':

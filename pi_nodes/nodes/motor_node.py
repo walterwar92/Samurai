@@ -71,8 +71,8 @@ DEADZONE_LINEAR  = cfg('odometry.deadzone_linear', 0.01)   # m/s
 DEADZONE_ANGULAR = cfg('odometry.deadzone_angular', 0.05)  # rad/s
 
 # Auto-stop if no cmd_vel received within this time (seconds)
-# Увеличено с 0.5 до значения из конфига (1.0 по умолчанию) — WiFi MQTT может задерживать
-CMD_VEL_TIMEOUT = cfg('odometry.cmd_vel_timeout', 1.0)
+# 0.5s — быстрая остановка при потере связи (безопаснее чем 1.0)
+CMD_VEL_TIMEOUT = cfg('odometry.cmd_vel_timeout', 0.5)
 
 # Priority mux — manual override timeout (seconds).
 # After this time without manual commands, autonomous control resumes.
@@ -124,6 +124,8 @@ class MotorNode(MqttNode):
         # IMU state
         self._imu_yaw_rad = None
         self._imu_calibrated = False
+        self._imu_gz = 0.0       # raw gyro Z for angular velocity
+        self._imu_last_ts = None  # for actual dt computation
 
         # Accelerometer position estimator
         self._pos_estimator = None
@@ -141,6 +143,11 @@ class MotorNode(MqttNode):
         self.subscribe('reset_position', self._reset_position_cb, qos=1)
         self.subscribe('range', self._range_cb, qos=0)
         self.subscribe('collision_guard/enable', self._collision_guard_cb, qos=1)
+        # Pre-allocate odom message template (avoid dict creation every 50ms)
+        self._odom_msg = {
+            'x': 0.0, 'y': 0.0, 'theta': 0.0, 'vx': 0.0, 'vz': 0.0,
+            'accel_x': 0.0, 'accel_y': 0.0, 'stationary': False, 'ts': 0.0,
+        }
         self.create_timer(0.05, self._control_loop)    # 20 Hz
         self.create_timer(1.0, self._publish_profile)   # 1 Hz
 
@@ -216,6 +223,10 @@ class MotorNode(MqttNode):
         if yaw_rad is not None:
             self._imu_yaw_rad = yaw_rad
 
+        # Store gyro Z for angular velocity reporting
+        gz = data.get('gz', 0.0)
+        self._imu_gz = gz
+
         # Feed accelerometer to position estimator
         if self._pos_estimator_ready:
             roll_rad = ekf.get('roll_rad', 0.0)
@@ -226,12 +237,20 @@ class MotorNode(MqttNode):
             az = data.get('az', 0.0)
             gx = data.get('gx', 0.0)
             gy = data.get('gy', 0.0)
-            gz = data.get('gz', 0.0)
-            # dt from IMU (50 Hz → ~0.02s)
-            dt = 0.02  # fixed IMU rate
+
+            # Actual dt from IMU timestamps (instead of hardcoded 0.02)
+            imu_ts = data.get('ts', 0.0)
+            dt = 0.02  # fallback
+            if imu_ts > 0 and self._imu_last_ts is not None:
+                actual_dt = imu_ts - self._imu_last_ts
+                if 0.001 < actual_dt < 0.2:  # sanity: 1ms to 200ms
+                    dt = actual_dt
+            if imu_ts > 0:
+                self._imu_last_ts = imu_ts
+
             self._pos_estimator.update_imu(
                 ax, ay, az, gx, gy, gz,
-                roll_rad, pitch_rad, yaw_r, dt)
+                roll_rad, pitch_rad, yaw_r, dt, imu_ts)
 
     def _reset_position_cb(self, topic, data):
         """Reset odometry to (0, 0, 0) — current pose becomes new home."""
@@ -321,6 +340,10 @@ class MotorNode(MqttNode):
         else:
             self._theta += ang_cmd * dt
 
+        # Cache trig (used multiple times below)
+        cy = math.cos(self._theta)
+        sy = math.sin(self._theta)
+
         # ── Position ──────────────────────────────────────────────
         cmd_is_moving = (abs(lin_cmd) >= DEADZONE_LINEAR or
                          abs(ang_cmd) >= DEADZONE_ANGULAR)
@@ -329,50 +352,53 @@ class MotorNode(MqttNode):
         lin_scaled = lin_cmd * WHEEL_SCALE_LINEAR
 
         if self._pos_estimator_ready:
-            # Hint estimator about motor command state
             self._pos_estimator.set_cmd_moving(cmd_is_moving)
-            # Feed calibrated wheel odometry to estimator
             self._pos_estimator.update_wheel_odom(lin_scaled, self._theta, dt)
-            # Blend accelerometer + wheel odometry
             self._pos_estimator.blend()
 
             is_stationary = self._pos_estimator.is_stationary
-
-            # Position from estimator (frozen when stationary)
             self._x = self._pos_estimator.x
             self._y = self._pos_estimator.y
 
-            # Velocity: zero when stationary (no phantom drift)
             if is_stationary:
                 self._vx = 0.0
                 self._vz = 0.0
             else:
-                self._vx = lin_scaled
-                self._vz = ang_cmd
+                fused_vx = self._pos_estimator.vx
+                fused_vy = self._pos_estimator.vy
+                self._vx = fused_vx * cy + fused_vy * sy
+                self._vz = self._imu_gz
 
-            # Get linear acceleration for publishing
             la_x, la_y = self._pos_estimator.linear_accel_world
         else:
-            # Fallback: wheel-only odometry
             is_stationary = not cmd_is_moving
             if cmd_is_moving:
-                self._x += lin_scaled * math.cos(self._theta) * dt
-                self._y += lin_scaled * math.sin(self._theta) * dt
+                new_vx = lin_scaled
+                avg_vx = 0.5 * (self._vx + new_vx) if abs(self._vx) > 0 else new_vx
+                self._x += avg_vx * cy * dt
+                self._y += avg_vx * sy * dt
             self._vx = 0.0 if is_stationary else lin_scaled
-            self._vz = 0.0 if is_stationary else ang_cmd
+            if self._imu_yaw_rad is not None:
+                self._vz = 0.0 if is_stationary else self._imu_gz
+            else:
+                self._vz = 0.0 if is_stationary else ang_cmd
             la_x, la_y = 0.0, 0.0
 
-        self.publish('odom', {
-            'x': round(self._x, 4),
-            'y': round(self._y, 4),
-            'theta': round(self._theta, 4),
-            'vx': round(self._vx, 3),
-            'vz': round(self._vz, 3),
-            'accel_x': round(la_x, 4),
-            'accel_y': round(la_y, 4),
-            'stationary': is_stationary,
-            'ts': self.timestamp(),
-        })
+        # Update pre-allocated odom dict (avoid allocation every 50ms)
+        m = self._odom_msg
+        m['x'] = round(self._x, 4)
+        m['y'] = round(self._y, 4)
+        m['theta'] = round(self._theta, 4)
+        m['vx'] = round(self._vx, 3)
+        m['vz'] = round(self._vz, 3)
+        m['accel_x'] = round(la_x, 4)
+        m['accel_y'] = round(la_y, 4)
+        m['stationary'] = is_stationary
+        m['ts'] = self.timestamp()
+        if self._pos_estimator_ready:
+            m['wheel_scale'] = round(self._pos_estimator.wheel_scale, 3)
+
+        self.publish('odom', m)
 
     def _publish_profile(self):
         self.publish('speed_profile/active', self._profile)

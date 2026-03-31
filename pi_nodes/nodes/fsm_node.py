@@ -67,6 +67,14 @@ class State:
     PATH_REPLAY = 'PATH_REPLAY'
 
 
+_ALL_STATES = frozenset({
+    State.IDLE, State.SEARCHING, State.TARGETING,
+    State.APPROACHING, State.GRABBING, State.BURNING,
+    State.CALLING, State.RETURNING, State.PATROLLING,
+    State.FOLLOWING, State.PATH_REPLAY,
+})
+
+
 class FSMNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('fsm_node', **kwargs)
@@ -83,12 +91,17 @@ class FSMNode(MqttNode):
         self._prev_theta = 0.0
         self._data_lock = threading.Lock()
 
+        # Pre-allocated cmd_vel dicts — updated in-place
+        self._cmd_msg = {'linear_x': 0.0, 'angular_z': 0.0}
+        self._cmd_manual_msg = {'linear_x': 0.0, 'angular_z': 0.0}
+
         # Subscribers
         self.subscribe('voice_command', self._voice_cb, qos=1)
         self.subscribe('ball_detection', self._ball_cb)
         self.subscribe('range', self._range_cb)
         self.subscribe('call_robot', self._call_recv_cb, qos=1)
         self.subscribe('gesture/command', self._gesture_cb, qos=1)
+        self.subscribe('fsm/transition', self._transition_cb, qos=1)
 
         # Timers
         self.create_timer(0.1, self._tick)            # 10 Hz FSM
@@ -192,6 +205,17 @@ class FSMNode(MqttNode):
             self._pub_cmd_vel_manual(0.0, 0.5)
         elif gesture == 'point_right':
             self._pub_cmd_vel_manual(0.0, -0.5)
+
+    def _transition_cb(self, topic, data):
+        """Force FSM transition from admin dashboard."""
+        target = str(data).strip().upper()
+        if target in _ALL_STATES:
+            self.log_info('Forced transition → %s', target)
+            if target == State.IDLE:
+                self._pub_cmd_vel(0.0, 0.0)
+            self._transition(target)
+        else:
+            self.log_warn('Unknown transition target: %s', target)
 
     def _extract_colour(self, text: str) -> str:
         text_norm = text.replace('ё', 'е')
@@ -432,17 +456,17 @@ class FSMNode(MqttNode):
         self.publish('laser/command', False, qos=1)
 
     def _pub_cmd_vel(self, linear_x: float, angular_z: float):
-        self.publish('cmd_vel', {
-            'linear_x': round(linear_x, 3),
-            'angular_z': round(angular_z, 3),
-        })
+        m = self._cmd_msg
+        m['linear_x'] = round(linear_x, 3)
+        m['angular_z'] = round(angular_z, 3)
+        self.publish('cmd_vel', m)
 
     def _pub_cmd_vel_manual(self, linear_x: float, angular_z: float):
         """Manual override — higher priority than autonomous cmd_vel."""
-        self.publish('cmd_vel/manual', {
-            'linear_x': round(linear_x, 3),
-            'angular_z': round(angular_z, 3),
-        })
+        m = self._cmd_manual_msg
+        m['linear_x'] = round(linear_x, 3)
+        m['angular_z'] = round(angular_z, 3)
+        self.publish('cmd_vel/manual', m)
 
     def _publish_status(self):
         self.publish('status', {

@@ -77,25 +77,13 @@ class IMUNode(MqttNode):
         self._ema_gz = None
 
         self._bus = None
+        self._i2c_errors = 0
+        self._i2c_recover_time = 0.0  # monotonic time of next recovery attempt
+        self._I2C_MAX_ERRORS = 3      # errors before attempting recovery
+        self._I2C_RECOVER_DELAY = 2.0 # seconds between recovery attempts
+
         if _HW:
-            try:
-                bus = smbus2.SMBus(1)
-                # Wake up MPU6050
-                bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0x00)
-                time.sleep(0.1)
-                # Set DLPF to mode 3 (accel 44Hz, gyro 42Hz) — filters vibrations
-                bus.write_byte_data(MPU6050_ADDR, DLPF_CFG, 0x03)
-                # Sample rate = 1kHz / (1 + 9) = 100 Hz
-                bus.write_byte_data(MPU6050_ADDR, SMPLRT_DIV, 9)
-                # Gyro: ±250°/s (most sensitive), Accel: ±2g (most sensitive)
-                bus.write_byte_data(MPU6050_ADDR, GYRO_CONFIG, 0x00)
-                bus.write_byte_data(MPU6050_ADDR, ACCEL_CONFIG, 0x00)
-                self._bus = bus
-                self.log_info('MPU6050 initialised @ 0x%02X (DLPF=3, SR=100Hz)',
-                              MPU6050_ADDR)
-            except Exception as e:
-                self.log_warn('MPU6050 not found (0x%02X): %s — IMU simulated',
-                              MPU6050_ADDR, e)
+            self._init_i2c_bus()
         else:
             self.log_warn('smbus2 unavailable — IMU simulated')
 
@@ -126,13 +114,63 @@ class IMUNode(MqttNode):
 
         self._last_time = time.monotonic()
 
+        # Pre-allocated payload dict — updated in-place each tick
+        self._payload = {
+            'ax': 0.0, 'ay': 0.0, 'az': 0.0,
+            'gx': 0.0, 'gy': 0.0, 'gz': 0.0,
+            'calibrated': False, 'ts': 0.0,
+        }
+        self._ekf_sub = {
+            'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0,
+            'roll_rad': 0.0, 'pitch_rad': 0.0, 'yaw_rad': 0.0,
+            'bias_gx': 0.0, 'bias_gy': 0.0, 'bias_gz': 0.0,
+        }
+        self._gravity_list = [0.0, 0.0, 9.81]
+
         self.log_info('Starting calibration (%d samples, ~%.1f sec)...',
                       CALIBRATION_SAMPLES, CALIBRATION_SAMPLES * 0.02)
         self.create_timer(0.02, self._read_and_publish)  # 50 Hz
 
+    def _init_i2c_bus(self) -> bool:
+        """(Re)initialize I2C bus and MPU6050. Returns True on success."""
+        try:
+            if self._bus:
+                try:
+                    self._bus.close()
+                except Exception:
+                    pass
+            bus = smbus2.SMBus(1)
+            bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0x00)
+            time.sleep(0.1)
+            bus.write_byte_data(MPU6050_ADDR, DLPF_CFG, 0x03)
+            bus.write_byte_data(MPU6050_ADDR, SMPLRT_DIV, 9)
+            bus.write_byte_data(MPU6050_ADDR, GYRO_CONFIG, 0x00)
+            bus.write_byte_data(MPU6050_ADDR, ACCEL_CONFIG, 0x00)
+            self._bus = bus
+            self._i2c_errors = 0
+            self.log_info('MPU6050 initialised @ 0x%02X (DLPF=3, SR=100Hz)',
+                          MPU6050_ADDR)
+            return True
+        except Exception as e:
+            self._bus = None
+            self.log_warn('MPU6050 init failed (0x%02X): %s', MPU6050_ADDR, e)
+            return False
+
     def _read_raw(self):
-        """Read raw sensor values (no offset correction)."""
+        """Read raw sensor values (no offset correction).
+
+        On I2C error: increments error counter. After _I2C_MAX_ERRORS
+        consecutive failures, attempts bus recovery with delay.
+        """
         if not self._bus:
+            # Attempt recovery if delay has passed
+            if _HW and time.monotonic() >= self._i2c_recover_time:
+                if self._init_i2c_bus():
+                    self.log_info('I2C bus recovered after %d errors',
+                                  self._i2c_errors)
+                else:
+                    self._i2c_recover_time = (time.monotonic() +
+                                              self._I2C_RECOVER_DELAY)
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
         try:
             raw = self._bus.read_i2c_block_data(MPU6050_ADDR, ACCEL_XOUT_H, 14)
@@ -142,29 +180,37 @@ class IMUNode(MqttNode):
             gx = struct.unpack('>h', bytes(raw[8:10]))[0] / GYRO_SCALE * DEG2RAD
             gy = struct.unpack('>h', bytes(raw[10:12]))[0] / GYRO_SCALE * DEG2RAD
             gz = struct.unpack('>h', bytes(raw[12:14]))[0] / GYRO_SCALE * DEG2RAD
+            self._i2c_errors = 0  # reset on success
             return (ax, ay, az, gx, gy, gz)
         except Exception as e:
-            self.log_warn('IMU read error: %s — returning zeros', e)
-            self._bus = None  # stop trying until restart
+            self._i2c_errors += 1
+            if self._i2c_errors >= self._I2C_MAX_ERRORS:
+                self.log_warn('IMU I2C: %d errors — scheduling recovery (err: %s)',
+                              self._i2c_errors, e)
+                self._bus = None
+                self._i2c_recover_time = (time.monotonic() +
+                                          self._I2C_RECOVER_DELAY)
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
 
-    def _apply_ema(self, ax, ay, az, gx, gy, gz):
-        """Exponential Moving Average — smooths vibration noise."""
-        a = ACCEL_EMA_ALPHA
-        g = GYRO_EMA_ALPHA
+    def _apply_ema_inplace(self, ax, ay, az, gx, gy, gz):
+        """Exponential Moving Average — smooths vibration noise.
+
+        Updates self._ema_* in-place, returns nothing (avoids tuple alloc at 50 Hz).
+        Caller reads self._ema_ax..gz directly.
+        """
         if self._ema_ax is None:
-            # First sample — initialize
-            self._ema_ax, self._ema_ay, self._ema_az = ax, ay, az
-            self._ema_gx, self._ema_gy, self._ema_gz = gx, gy, gz
-        else:
-            self._ema_ax = a * ax + (1 - a) * self._ema_ax
-            self._ema_ay = a * ay + (1 - a) * self._ema_ay
-            self._ema_az = a * az + (1 - a) * self._ema_az
-            self._ema_gx = g * gx + (1 - g) * self._ema_gx
-            self._ema_gy = g * gy + (1 - g) * self._ema_gy
-            self._ema_gz = g * gz + (1 - g) * self._ema_gz
-        return (self._ema_ax, self._ema_ay, self._ema_az,
-                self._ema_gx, self._ema_gy, self._ema_gz)
+            self._ema_ax = ax; self._ema_ay = ay; self._ema_az = az
+            self._ema_gx = gx; self._ema_gy = gy; self._ema_gz = gz
+            return
+        # Pre-computed complement: (1-a) multiplication is cheaper
+        a = ACCEL_EMA_ALPHA; a1 = 1.0 - a
+        g = GYRO_EMA_ALPHA;  g1 = 1.0 - g
+        self._ema_ax = a * ax + a1 * self._ema_ax
+        self._ema_ay = a * ay + a1 * self._ema_ay
+        self._ema_az = a * az + a1 * self._ema_az
+        self._ema_gx = g * gx + g1 * self._ema_gx
+        self._ema_gy = g * gy + g1 * self._ema_gy
+        self._ema_gz = g * gz + g1 * self._ema_gz
 
     def _finish_calibration(self):
         """Compute offsets from collected samples, init EKF with home position."""
@@ -218,8 +264,10 @@ class IMUNode(MqttNode):
 
         ax, ay, az, gx, gy, gz = self._read_raw()
 
-        # ── EMA low-pass filter (before everything else) ──────────────
-        ax, ay, az, gx, gy, gz = self._apply_ema(ax, ay, az, gx, gy, gz)
+        # ── EMA low-pass filter (in-place, no tuple alloc) ────────────
+        self._apply_ema_inplace(ax, ay, az, gx, gy, gz)
+        ax = self._ema_ax; ay = self._ema_ay; az = self._ema_az
+        gx = self._ema_gx; gy = self._ema_gy; gz = self._ema_gz
 
         # ── Calibration phase ─────────────────────────────────────────
         if not self._calibrated:
@@ -227,12 +275,13 @@ class IMUNode(MqttNode):
             if len(self._cal_samples) >= CALIBRATION_SAMPLES:
                 self._finish_calibration()
             # During calibration publish raw + calibrated=false
-            self.publish('imu', {
-                'ax': round(ax, 4), 'ay': round(ay, 4), 'az': round(az, 4),
-                'gx': round(gx, 5), 'gy': round(gy, 5), 'gz': round(gz, 5),
-                'calibrated': False,
-                'ts': self.timestamp(),
-            })
+            p = self._payload
+            p['ax'] = round(ax, 4); p['ay'] = round(ay, 4); p['az'] = round(az, 4)
+            p['gx'] = round(gx, 5); p['gy'] = round(gy, 5); p['gz'] = round(gz, 5)
+            p['calibrated'] = False; p['ts'] = self.timestamp()
+            # Remove ekf/gravity keys during calibration
+            p.pop('ekf', None); p.pop('gravity_body', None)
+            self.publish('imu', p)
             return
 
         # ── Apply gyro offset correction ──────────────────────────────
@@ -240,36 +289,32 @@ class IMUNode(MqttNode):
         gy -= self._gyro_offset[1]
         gz -= self._gyro_offset[2]
 
-        payload = {
-            'ax': round(ax, 4), 'ay': round(ay, 4), 'az': round(az, 4),
-            'gx': round(gx, 5), 'gy': round(gy, 5), 'gz': round(gz, 5),
-            'calibrated': True,
-            'ts': self.timestamp(),
-        }
+        p = self._payload
+        p['ax'] = round(ax, 4); p['ay'] = round(ay, 4); p['az'] = round(az, 4)
+        p['gx'] = round(gx, 5); p['gy'] = round(gy, 5); p['gz'] = round(gz, 5)
+        p['calibrated'] = True; p['ts'] = self.timestamp()
 
         if self._ekf is not None:
             self._ekf.predict(gx, gy, gz, dt)
             self._ekf.update(ax, ay, az)
             r_deg, p_deg, y_deg = self._ekf.get_euler_deg()
             bx, by, bz = self._ekf.gyro_bias
-            payload['ekf'] = {
-                'roll':  round(r_deg, 2),
-                'pitch': round(p_deg, 2),
-                'yaw':   round(y_deg, 2),
-                'roll_rad':  round(self._ekf.roll, 5),
-                'pitch_rad': round(self._ekf.pitch, 5),
-                'yaw_rad':   round(self._ekf.yaw, 5),
-                'bias_gx': round(bx, 5),
-                'bias_gy': round(by, 5),
-                'bias_gz': round(bz, 5),
-            }
+            e = self._ekf_sub
+            e['roll'] = round(r_deg, 2); e['pitch'] = round(p_deg, 2); e['yaw'] = round(y_deg, 2)
+            e['roll_rad'] = round(self._ekf.roll, 5)
+            e['pitch_rad'] = round(self._ekf.pitch, 5)
+            e['yaw_rad'] = round(self._ekf.yaw, 5)
+            e['bias_gx'] = round(bx, 5); e['bias_gy'] = round(by, 5); e['bias_gz'] = round(bz, 5)
+            p['ekf'] = e
 
         # Include calibration data for position estimator (motor_node)
-        payload['gravity_body'] = [round(self._gravity_body[0], 4),
-                                   round(self._gravity_body[1], 4),
-                                   round(self._gravity_body[2], 4)]
+        gl = self._gravity_list
+        gl[0] = round(self._gravity_body[0], 4)
+        gl[1] = round(self._gravity_body[1], 4)
+        gl[2] = round(self._gravity_body[2], 4)
+        p['gravity_body'] = gl
 
-        self.publish('imu', payload)
+        self.publish('imu', p)
 
     def on_shutdown(self):
         if self._bus:

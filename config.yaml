@@ -27,7 +27,7 @@ voice:
   max_command_length: 200   # discard unreasonably long voice strings
 
 dashboard:
-  state_push_hz: 4          # WebSocket state broadcast frequency
+  state_push_hz: 10         # WebSocket state broadcast frequency (was 4)
   mjpeg_fps: 30             # MJPEG video stream max FPS
   voice_log_size: 20        # entries kept in voice log deque
   event_log_size: 100       # entries kept in event log deque
@@ -85,32 +85,43 @@ imu:
 odometry:
   deadzone_linear: 0.01    # m/s — ниже = стоим
   deadzone_angular: 0.05   # rad/s — ниже = не вращаемся
-  cmd_vel_timeout: 1.0     # sec — auto-stop без новых команд (увеличено с 0.5 для WiFi)
+  cmd_vel_timeout: 0.5     # sec — auto-stop без новых команд (быстрая остановка при потере связи)
 
 # Accelerometer position estimator
 accel_position:
   latitude: 55.75            # широта для компенсации вращения Земли (Москва)
-  complementary_alpha: 0.98  # 0.98 = 98% колёсная одометрия, 2% акселерометр
-  accel_noise_threshold: 0.15  # m/s² — ниже = шум, не движение (увеличено с 0.05)
-  median_window: 5             # сэмплов для медианного фильтра
+  complementary_alpha: 0.98  # fallback: 98% колёсная, 2% акселерометр
+  accel_noise_threshold: 0.12  # m/s² — ниже = шум (снижено с 0.15 для лучшей чувствительности)
+  median_window: 5             # сэмплов для медианного фильтра (spike rejection)
+  lpf_alpha: 0.4               # IIR low-pass alpha (0.4 при 50Hz → ~2.2Hz cutoff, убирает вибрации)
   # ZUPT с гистерезисом — два порога: вход в стоянку (мягкий) и выход (жёсткий)
   zupt_gyro_enter: 0.015     # rad/s — ниже = входим в стоянку
   zupt_accel_enter: 0.10     # m/s² — ниже = входим в стоянку
-  zupt_gyro_exit: 0.04       # rad/s — выше = выходим из стоянки (порог выше!)
-  zupt_accel_exit: 0.25      # m/s² — выше = выходим из стоянки (порог выше!)
-  zupt_enter_count: 5        # сэмплов для входа в стоянку (100мс @ 50Hz)
-  zupt_exit_count: 3         # сэмплов для выхода из стоянки (60мс @ 50Hz)
-  velocity_decay: 0.95       # затухание скорости (было 0.98, агрессивнее для борьбы с дрифтом)
-  lateral_decay: 0.5         # затухание боковой скорости (non-holonomic: гусеницы не едут вбок)
+  zupt_gyro_exit: 0.04       # rad/s — выше = выходим из стоянки
+  zupt_accel_exit: 0.25      # m/s² — выше = выходим из стоянки
+  zupt_enter_count: 5        # сэмплов (100мс @ 50Hz)
+  zupt_exit_count: 3         # сэмплов (60мс @ 50Hz)
+  velocity_decay: 0.95       # fallback: затухание скорости (без EKF)
+  lateral_decay: 0.5         # fallback: non-holonomic constraint
+
+# Velocity EKF — фильтр Калмана для фузии одометрии + акселерометра
+velocity_ekf:
+  motor_tau: 0.25            # постоянная времени мотора (с) — как быстро робот набирает скорость
+                             # 0.2-0.4 для гусеничных платформ, меньше = быстрее реакция
+  q_velocity: 0.08           # (m/s)²/s — шум процесса скорости (distrust мотора: slip, батарея)
+  q_bias: 0.003              # (m/s)²/s — шум блуждания bias акселерометра (медленный дрифт)
+  r_accel: 0.12              # (m/s)² — шум измерения скорости из акселерометра
+  r_zupt: 0.0001             # (m/s)² — шум ZUPT (очень маленький: доверяем что стоим = v=0)
+  lateral_decay: 0.15        # затухание боковой скорости (агрессивнее: гусеницы точно не едут вбок)
 
 # Servo configuration (PCA9685 channels)
 # ch0 = основание клешни, ch1 = сустав 1, ch2 = сустав 2, ch3 = клешня, ch4 = голова
 servos:
   head:
     channel: 4            # один серво — камера
-    home: 0               # всегда смотрит вперёд
-    min: 0                # заблокирован — не двигается
-    max: 0                # заблокирован — не двигается
+    home: 90              # центр (смотрит вперёд)
+    min: 0                # крайнее правое положение
+    max: 180              # крайнее левое положение
     speed: 2.0            # градусов за тик (плавное движение)
   arm:
     channels: [0, 1, 2, 3]   # PCA9685 каналы суставов руки
@@ -191,6 +202,17 @@ object_registry:
   max_age_s:        120.0  # с — объект удаляется если не виден N секунд
   min_conf:         0.35   # минимальная уверенность для регистрации
 
+# HSV colour ranges for ball/object classification (YoloDetectorNode)
+# Each colour has a list of [H_low, S_low, V_low, H_high, S_high, V_high] ranges
+hsv_colours:
+  red:    [[0,70,70, 10,255,255], [160,70,70, 180,255,255]]
+  orange: [[10,80,80, 25,255,255]]
+  yellow: [[22,80,80, 38,255,255]]
+  green:  [[35,60,60, 85,255,255]]
+  blue:   [[85,60,60, 135,255,255]]
+  white:  [[0,0,180, 180,40,255]]
+  black:  [[0,0,0, 180,255,60]]
+
 # GPU laptop (remote YOLO detection via MQTT)
 # GPU-ноутбук подключается к тому же MQTT-брокеру на Pi.
 # Не требует ROS2/Docker — только Python + ultralytics + paho-mqtt.
@@ -202,10 +224,19 @@ gpu_detector:
   publish_annotated: true     # публиковать аннотированные кадры
   annotated_quality: 70       # JPEG качество аннотации
 
+# Watchdog
+watchdog:
+  startup_grace_sec: 15.0  # seconds before emergency stop logic activates (camera boot ~10s)
+  topic_timeout_sec: 3.0   # topic considered dead after this many seconds
+  report_interval: 0.5     # health report publish rate (seconds)
+
 # MQTT settings for pi_nodes (pure Python, no ROS2)
 mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
   port: 1883
   robot_id: "robot1"
-  camera_fps: 12               # MQTT camera framerate (было 10, увеличено для лучшей детекции)
+  camera_fps: 20               # MQTT camera framerate (was 12, увеличено для отзывчивости)
   camera_jpeg_quality: 70      # повышено с 60 для лучшего качества детекции
+  keepalive: 15                # MQTT keepalive (sec) — быстрое обнаружение потери связи
+  reconnect_min: 0.5           # MQTT reconnect min delay (sec)
+  reconnect_max: 5             # MQTT reconnect max delay (sec)

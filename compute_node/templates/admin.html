@@ -603,6 +603,19 @@ body {
           <span class="info-label">Скорость угл.</span>
           <span class="info-val" id="velAng">0.0000 рад/с</span>
         </div>
+        <div style="font-size:10px;color:var(--text-dim);margin:8px 0 4px;">СИСТЕМА</div>
+        <div class="info-row">
+          <span class="info-label">Батарея</span>
+          <span class="info-val" id="batteryInfo">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Темп. CPU</span>
+          <span class="info-val" id="cpuTemp">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Профиль</span>
+          <span class="info-val" id="speedProfile">normal</span>
+        </div>
       </div>
     </div>
 
@@ -612,8 +625,8 @@ body {
       <div class="card-body">
         <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">АКТУАТОРЫ</div>
         <div class="actuator-row">
-          <button class="btn-actuator" id="btnClaw" onclick="toggleClaw()">Клешня: ОТКР</button>
-          <button class="btn-actuator danger" id="btnLaser" onclick="toggleLaser()">Лазер: ВЫКЛ</button>
+          <button class="btn-actuator" id="btnClaw" onclick="toggleClaw()">Клешня: —</button>
+          <button class="btn-actuator danger" id="btnLaser" onclick="toggleLaser()">Лазер: —</button>
           <button class="btn-actuator" id="btnCollisionGuard" onclick="toggleCollisionGuard()">Защита: ВЫКЛ</button>
         </div>
         <div style="font-size:10px;color:var(--text-dim);margin:10px 0 4px;">ДЖОЙСТИК СКОРОСТИ</div>
@@ -651,6 +664,44 @@ body {
         <button class="btn btn-danger" onclick="sendCmd('стоп')">Стоп</button>
         <button class="btn" onclick="sendCmd('домой')">Домой</button>
         <button class="btn btn-warn" onclick="resetSim()">Сброс</button>
+      </div>
+
+      <!-- ── Режимы ── -->
+      <div style="font-size:10px;color:var(--text-dim);margin:12px 0 4px;">РЕЖИМЫ</div>
+      <div class="quick-grid">
+        <button class="btn" id="btnPatrolStart" onclick="sendModeCmd('/api/patrol/command','start')">▶ Патруль</button>
+        <button class="btn btn-danger" id="btnPatrolStop" onclick="sendModeCmd('/api/patrol/command','stop')">⏹ Патруль</button>
+        <button class="btn" id="btnFollowStart" onclick="sendModeCmd('/api/follow_me','start')">▶ Следуй</button>
+        <button class="btn btn-danger" id="btnFollowStop" onclick="sendModeCmd('/api/follow_me','stop')">⏹ Следуй</button>
+      </div>
+
+      <!-- ── Запись пути ── -->
+      <div style="font-size:10px;color:var(--text-dim);margin:12px 0 4px;">ЗАПИСЬ ПУТИ</div>
+      <div class="quick-grid">
+        <button class="btn" onclick="sendModeCmd('/api/path_recorder/command','record')">⏺ Запись</button>
+        <button class="btn btn-danger" onclick="sendModeCmd('/api/path_recorder/command','stop')">⏹ Стоп</button>
+        <button class="btn" onclick="sendModeCmd('/api/path_recorder/command','play')">▶ Воспр.</button>
+      </div>
+
+      <!-- ── Скоростной профиль ── -->
+      <div style="font-size:10px;color:var(--text-dim);margin:12px 0 4px;">СКОРОСТЬ</div>
+      <div class="quick-grid">
+        <button class="btn" id="btnSpeedSlow" onclick="setSpeedProfile('slow')">Медл.</button>
+        <button class="btn" id="btnSpeedNormal" onclick="setSpeedProfile('normal')">Норма</button>
+        <button class="btn" id="btnSpeedFast" onclick="setSpeedProfile('fast')">Быстр.</button>
+      </div>
+
+      <!-- ── LED панели ── -->
+      <div style="font-size:10px;color:var(--text-dim);margin:12px 0 4px;">LED ПАНЕЛЬ</div>
+      <div class="quick-grid">
+        <button class="btn" onclick="setLed('off')" style="color:#888">Выкл</button>
+        <button class="btn" onclick="setLed('white')" style="color:#fff">Белый</button>
+        <button class="btn" onclick="setLed('red')" style="color:#ef5350">Красн.</button>
+        <button class="btn" onclick="setLed('green')" style="color:#66bb6a">Зелён.</button>
+        <button class="btn" onclick="setLed('blue')" style="color:#42a5f5">Синий</button>
+        <button class="btn" onclick="setLed('rainbow')">🌈 Радуга</button>
+        <button class="btn" onclick="setLed('pulse')">💗 Пульс</button>
+        <button class="btn" onclick="setLed('police')">🚨 Полиция</button>
       </div>
     </div>
   </div>
@@ -813,6 +864,20 @@ socket.on('state_update', (data) => {
     document.getElementById('accelX').textContent = data.imu_accel_x.toFixed(3) + ' м/с²';
   }
 
+  // System info
+  if (data.battery_voltage != null && data.battery_voltage > 0) {
+    document.getElementById('batteryInfo').textContent =
+      data.battery_voltage.toFixed(1) + 'В (' + (data.battery_percent || '—') + '%)';
+  }
+  if (data.cpu_temp != null && data.cpu_temp > 0) {
+    const el = document.getElementById('cpuTemp');
+    el.textContent = data.cpu_temp.toFixed(1) + '°C';
+    el.style.color = data.cpu_temp > 70 ? 'var(--red)' : data.cpu_temp > 55 ? 'var(--orange)' : 'var(--text)';
+  }
+  if (data.speed_profile) {
+    document.getElementById('speedProfile').textContent = data.speed_profile;
+  }
+
   // Actuators
   if (data.actuators) {
     clawOpen = data.actuators.claw_open;
@@ -953,6 +1018,29 @@ document.getElementById('cmdSend').addEventListener('click', () => {
 document.getElementById('cmdInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('cmdSend').click();
 });
+
+// ── Mode commands (patrol, follow, path, speed, LED) ──
+function sendModeCmd(url, cmd) {
+  fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({command: cmd})
+  });
+}
+function setSpeedProfile(profile) {
+  fetch('/api/speed_profile', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({profile: profile})
+  });
+}
+function setLed(mode) {
+  fetch('/api/led/command', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({mode: mode})
+  });
+}
 
 // ── Actuators ──
 function toggleClaw() {
@@ -1227,6 +1315,19 @@ function updateMap(data) {
       ctx.moveTo(rx, ry);
       ctx.lineTo(rx + al*Math.cos(-pose.yaw), ry + al*Math.sin(-pose.yaw));
       ctx.stroke();
+    }
+
+    // Draw saved zones
+    if (zones.length > 0) {
+      ctx.strokeStyle = 'rgba(239,83,80,0.7)';
+      ctx.fillStyle = 'rgba(239,83,80,0.15)';
+      ctx.lineWidth = 1.5;
+      for (const z of zones) {
+        const [zx1,zy1] = w2c(z.x1, z.y2);
+        const [zx2,zy2] = w2c(z.x2, z.y1);
+        ctx.fillRect(zx1,zy1,zx2-zx1,zy2-zy1);
+        ctx.strokeRect(zx1,zy1,zx2-zx1,zy2-zy1);
+      }
     }
 
     // Draw preview

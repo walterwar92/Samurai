@@ -12,13 +12,23 @@ Replaces rclpy.Node. Provides:
 
 import json
 import logging
+import os
 import signal
 import socket
+import sys
 import threading
 import time
 from typing import Callable, Any, Optional
 
 import paho.mqtt.client as mqtt
+
+# Load default robot_id from config.yaml (single source of truth)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+try:
+    from config_loader import cfg as _cfg
+    _DEFAULT_ROBOT_ID = _cfg('mqtt.robot_id', 'robot1')
+except ImportError:
+    _DEFAULT_ROBOT_ID = 'robot1'
 
 
 def get_local_ip(timeout: float = 2.0) -> str:
@@ -60,7 +70,7 @@ class MqttNode:
     def __init__(self, name: str, *,
                  broker: str = '127.0.0.1',
                  port: int = 1883,
-                 robot_id: str = 'robot1'):
+                 robot_id: str = _DEFAULT_ROBOT_ID):
         self.name = name
         self._robot_id = robot_id
         self._broker = broker
@@ -78,26 +88,39 @@ class MqttNode:
             self._log.addHandler(handler)
             self._log.setLevel(logging.INFO)
 
-        # MQTT client
+        # MQTT client with keepalive and LWT (Last Will & Testament)
         self._client = mqtt.Client(
             client_id=f'samurai_{robot_id}_{name}',
             protocol=mqtt.MQTTv311,
         )
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
-        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
+        # Fast reconnect: 0.5s min, 5s max (was 1-30s)
+        self._client.reconnect_delay_set(min_delay=0.5, max_delay=5)
+        # LWT: if broker doesn't hear from us, publish offline status
+        self._client.will_set(
+            f'samurai/{robot_id}/{name}/online', 'false',
+            qos=1, retain=True)
         self._subscriptions: dict[str, Any] = {}
+        self._mqtt_connected = False
 
     # ── Connection ─────────────────────────────────────────────
     def _on_connect(self, client, userdata, flags, rc):
+        self._mqtt_connected = True
         self._log.info('MQTT connected (rc=%d)', rc)
+        # Publish online status
+        client.publish(
+            f'samurai/{self._robot_id}/{self.name}/online', 'true',
+            qos=1, retain=True)
+        # Re-subscribe to all topics on reconnect
         for topic_full in self._subscriptions:
             qos = self._subscriptions[topic_full].get('qos', 0)
             client.subscribe(topic_full, qos)
 
     def _on_disconnect(self, client, userdata, rc):
+        self._mqtt_connected = False
         if rc != 0:
-            self._log.warning('MQTT disconnected unexpectedly (rc=%d)', rc)
+            self._log.warning('MQTT disconnected unexpectedly (rc=%d) — reconnecting...', rc)
 
     # ── Topic helpers ──────────────────────────────────────────
     def topic(self, suffix: str) -> str:
@@ -195,12 +218,22 @@ class MqttNode:
     def start(self):
         """Connect to broker and start all timers. Call once."""
         self._running = True
-        self._client.connect_async(self._broker, self._port)
+        # keepalive=15s — broker detects dead client faster (default was 60s)
+        self._client.connect_async(self._broker, self._port, keepalive=15)
         self._client.loop_start()
+        # Heartbeat every 5s — keeps MQTT connection alive over WiFi
+        self.create_timer(5.0, self._heartbeat, name=f'{self.name}_heartbeat')
         for t in self._timers:
             t.start()
         self._log.info('%s started (broker=%s:%d, id=%s)',
                        self.name, self._broker, self._port, self._robot_id)
+
+    def _heartbeat(self):
+        """Periodic heartbeat to keep MQTT alive and detect dead connections."""
+        if self._mqtt_connected:
+            self._client.publish(
+                f'samurai/{self._robot_id}/{self.name}/heartbeat',
+                str(int(time.time())), qos=0)
 
     def spin(self):
         """Block until SIGINT/SIGTERM. Call after start()."""
@@ -219,6 +252,11 @@ class MqttNode:
         self._running = False
         self._log.info('%s shutting down...', self.name)
         self.on_shutdown()
+        # Publish offline before disconnect
+        if self._mqtt_connected:
+            self._client.publish(
+                f'samurai/{self._robot_id}/{self.name}/online', 'false',
+                qos=1, retain=True)
         for t in self._timers:
             t.join(timeout=2.0)
         self._client.loop_stop()
@@ -234,9 +272,27 @@ class MqttNode:
 
     def log_warn(self, msg: str, *args):
         self._log.warning(msg, *args)
+        self._publish_log_event('WARN', msg % args if args else msg)
 
     def log_error(self, msg: str, *args):
         self._log.error(msg, *args)
+        self._publish_log_event('ERROR', msg % args if args else msg)
+
+    def _publish_log_event(self, level: str, text: str):
+        """Publish error/warning to centralized log topic for dashboard aggregation."""
+        if self._mqtt_connected:
+            try:
+                self._client.publish(
+                    f'samurai/{self._robot_id}/log/events',
+                    json.dumps({
+                        'node': self.name,
+                        'level': level,
+                        'msg': text[:200],
+                        'ts': time.time(),
+                    }, separators=(',', ':')),
+                    qos=0)
+            except Exception:
+                pass  # never let logging crash the node
 
     # ── Clock ──────────────────────────────────────────────────
     @staticmethod

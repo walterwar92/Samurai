@@ -141,6 +141,8 @@ class DashboardNode(Node):
         self._imu_has_ekf    = False
         self._map_png        = None
         self._map_info       = {}
+        self._ros2_map_active = False   # True once ROS2 SLAM Toolbox publishes /map
+        self._slam_map_version = 0     # counter for Pi-side SLAM PNG refresh
         self._robot_pose     = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
         self._robot_velocity = {'linear_x': 0.0, 'linear_y': 0.0, 'angular_z': 0.0}
         self._robot_stationary = True
@@ -154,6 +156,7 @@ class DashboardNode(Node):
         self._speed_profile  = 'normal'
         self._claw_open      = False
         self._laser_on       = False
+        self._led_state      = {'mode': 'off', 'color': 'off'}
         self._head_state     = {'angle': 0.0}
         self._arm_state      = {'j1': 0.0, 'j2': 120.0, 'j3': 0.0, 'j4': 0.0}
         self._slam_map       = {}     # Pi-side ultrasonic SLAM map
@@ -167,6 +170,9 @@ class DashboardNode(Node):
         self._explorer_status = {}      # explorer node status
         self._mission_status = {}       # mission node status
         self._tts_enabled = True        # TTS toggle
+        self._zones = []                   # forbidden zones [{id, x1, y1, x2, y2}]
+        self._zone_counter = 0             # auto-increment zone ID
+        self._start_time = time.time()     # for sim_time compatibility
 
         # ── MQTT client (primary sensor source) ──────────────
         if self._mqtt_broker:
@@ -174,8 +180,9 @@ class DashboardNode(Node):
             self._mqtt.on_connect    = self._mqtt_on_connect
             self._mqtt.on_disconnect = self._mqtt_on_disconnect
             self._mqtt.on_message    = self._mqtt_on_message
-            self._mqtt.reconnect_delay_set(min_delay=1, max_delay=10)
-            self._mqtt.connect_async(self._mqtt_broker, self._mqtt_port)
+            self._mqtt.reconnect_delay_set(min_delay=0.5, max_delay=5)
+            self._mqtt.connect_async(self._mqtt_broker, self._mqtt_port,
+                                     keepalive=15)
             self._mqtt.loop_start()
             self.get_logger().info(
                 f'MQTT client connecting → {self._mqtt_broker}:{self._mqtt_port}')
@@ -239,7 +246,11 @@ class DashboardNode(Node):
                       'collision_guard/state',
                       # Remote GPU YOLO detections (via MQTT)
                       'ball_detection', 'detections', 'yolo/annotated',
-                      'yolo/status']:
+                      'yolo/status',
+                      # Centralized error log from all Pi nodes
+                      'log/events',
+                      # LED panel state
+                      'led/state']:
             client.subscribe(f'{p}/{topic}', qos=0)
         self.get_logger().info(f'MQTT connected to {self._mqtt_broker} — subscribed to Pi topics')
 
@@ -304,6 +315,15 @@ class DashboardNode(Node):
                 self._mqtt_yolo_annotated(msg.payload)
             elif suffix == 'yolo/status':
                 self._mqtt_yolo_status(msg.payload)
+            elif suffix == 'log/events':
+                self._mqtt_log_event(msg.payload)
+            elif suffix == 'led/state':
+                try:
+                    d = json.loads(msg.payload)
+                    with self._lock:
+                        self._led_state = d
+                except Exception:
+                    pass
         except Exception as exc:
             self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
 
@@ -465,8 +485,28 @@ class DashboardNode(Node):
     def _mqtt_slam_map(self, payload):
         try:
             d = json.loads(payload)
+            need_png = False
             with self._lock:
                 self._slam_map = d
+                # When ROS2 SLAM Toolbox is not running, use Pi-side SLAM
+                # to populate map_info and generate map PNG
+                if not self._ros2_map_active and 'info' in d:
+                    need_png = True
+                    self._slam_map_version += 1
+                    si = d['info']
+                    self._map_info = {
+                        'width':        si.get('width', 200),
+                        'height':       si.get('height', 200),
+                        'resolution':   si.get('resolution', 0.05),
+                        'origin_x':     si.get('origin_x', -5.0),
+                        'origin_y':     si.get('origin_y', -5.0),
+                        'update_count': self._slam_map_version,
+                    }
+            if need_png:
+                png = self.get_slam_map_png()
+                if png:
+                    with self._lock:
+                        self._map_png = png
         except Exception:
             pass
 
@@ -521,6 +561,21 @@ class DashboardNode(Node):
         except Exception:
             pass
 
+    def _mqtt_log_event(self, payload):
+        """Centralized log event from Pi nodes — store in event_log."""
+        try:
+            d = json.loads(payload)
+            entry = {
+                'ts': d.get('ts', time.time()),
+                'source': d.get('node', '?'),
+                'level': d.get('level', 'INFO'),
+                'text': d.get('msg', ''),
+            }
+            with self._lock:
+                self._event_log.append(entry)
+        except Exception:
+            pass
+
     # ── MQTT publish helpers (commands → Pi directly) ──────────
 
     def _mqtt_pub(self, subtopic: str, payload, qos=0):
@@ -560,6 +615,7 @@ class DashboardNode(Node):
         img = cv2.flip(img, 0)
         _, png = cv2.imencode('.png', img)
         with self._lock:
+            self._ros2_map_active = True
             self._map_png  = png.tobytes()
             self._map_info = {
                 'width': w, 'height': h,
@@ -748,33 +804,42 @@ class DashboardNode(Node):
     def get_state(self):
         """Full state dict for SocketIO push."""
         with self._lock:
+            yaw_rad = self._robot_pose.get('yaw', 0.0)
+            yaw_deg = round(math.degrees(yaw_rad), 1)
+            # Build detection objects list from ball_detection
+            det = self._ball_detection
+            det_objects = det.get('objects', det.get('balls', []))
             return {
                 'status':       self._robot_status,
-                'detection':    self._ball_detection,
+                'detection':    det,
+                'all_detections': det_objects,
                 'range_m':      self._range_m,
                 'imu': {
                     'yaw': self._imu_ypr[0], 'pitch': self._imu_ypr[1], 'roll': self._imu_ypr[2],
                     'gyro':  {'x': self._imu_gyro[0],  'y': self._imu_gyro[1],  'z': self._imu_gyro[2]},
                     'accel': {'x': self._imu_accel[0], 'y': self._imu_accel[1], 'z': self._imu_accel[2]},
                 },
-                # Flat IMU fields (match simulator format, used by React frontend)
                 'imu_ypr':     list(self._imu_ypr),
                 'imu_accel_x': self._imu_accel[0],
                 'imu_gyro_z':  self._imu_gyro[2],
                 'imu_accel':   list(self._imu_accel),
                 'imu_gyro':    list(self._imu_gyro),
-                # EKF vs raw YPR for frontend toggle
                 'imu_ypr_raw':   list(self._imu_ypr_raw),
                 'imu_ypr_ekf':   list(self._imu_ypr_ekf) if self._imu_has_ekf else None,
                 'imu_ekf_bias':  list(self._imu_ekf_bias) if self._imu_has_ekf else None,
                 'imu_has_ekf':   self._imu_has_ekf,
-                'pose':         self._robot_pose,
+                'pose':         {**self._robot_pose, 'yaw_deg': yaw_deg},
                 'stationary':   self._robot_stationary,
-                'velocity':     self._robot_velocity,
+                'velocity':     {
+                    **self._robot_velocity,
+                    'linear':  self._robot_velocity.get('linear_x', 0.0),
+                    'angular': self._robot_velocity.get('angular_z', 0.0),
+                },
                 'cmd_velocity': self._cmd_velocity,
                 'map_info':     self._map_info,
                 'scan_points':  self._scan_points,
                 'voice_log':    list(self._voice_log),
+                'event_log':    list(self._event_log)[-30:],
                 'battery':         self._battery,
                 'battery_voltage': self._battery.get('voltage', -1.0),
                 'battery_percent': self._battery.get('percent', self._battery.get('percentage', -1)),
@@ -785,6 +850,8 @@ class DashboardNode(Node):
                 'actuators': {
                     'claw':  'open'  if self._claw_open else 'closed',
                     'laser': 'on'    if self._laser_on  else 'off',
+                    'claw_open': self._claw_open,
+                    'laser_on':  self._laser_on,
                 },
                 'head': dict(self._head_state),
                 'arm':  dict(self._arm_state),
@@ -799,6 +866,12 @@ class DashboardNode(Node):
                 'explorer':           dict(self._explorer_status) if self._explorer_status else None,
                 'mission':            dict(self._mission_status) if self._mission_status else None,
                 'tts_enabled':        self._tts_enabled,
+                'led':                dict(self._led_state),
+                # Fields expected by admin.html
+                'sim_time':      round(time.time() - self._start_time, 2),
+                'zones':         list(self._zones),
+                'planned_path':  list(self._recorded_path) if self._recorded_path else [],
+                'balls':         [],  # populated by simulator only
             }
 
     def _snapshot(self):
@@ -866,6 +939,8 @@ def create_app(ros_node: DashboardNode):
         cors_allowed_origins='*',
         logger=False,
         engineio_logger=False,
+        ping_interval=10,   # server pings browser every 10s (default 25)
+        ping_timeout=5,     # 5s to respond before disconnect (default 20)
     )
 
     @sio.event
@@ -898,25 +973,33 @@ def create_app(ros_node: DashboardNode):
     async def _sio_push_loop():
         _last_json = ''
         while True:
-            await asyncio.sleep(0.25)
-            state_json = json.dumps(ros_node.get_state())
+            await asyncio.sleep(0.1)  # 10 Hz
+            state = ros_node.get_state()
+            state_json = json.dumps(state, separators=(',', ':'))
             if state_json == _last_json:
                 continue
             _last_json = state_json
-            await sio.emit('state_update', ros_node.get_state())
+            await sio.emit('state_update', state)
 
     @app.on_event('startup')
     async def startup():
         asyncio.create_task(_sio_push_loop())
 
-    # ── SPA ───────────────────────────────────────────────────────
+    # ── Page routes (serve HTML templates directly) ────────────────
+    templates_dir = os.path.join(base_dir, 'templates')
     index_html = os.path.join(static_dir, 'index.html')
 
     @app.get('/')
+    async def serve_root():
+        return FileResponse(os.path.join(templates_dir, 'dashboard.html'))
+
     @app.get('/dashboard')
+    async def serve_dashboard():
+        return FileResponse(os.path.join(templates_dir, 'dashboard.html'))
+
     @app.get('/admin')
-    async def serve_spa():
-        return FileResponse(index_html)
+    async def serve_admin():
+        return FileResponse(os.path.join(templates_dir, 'admin.html'))
 
     # ── MJPEG video stream ────────────────────────────────────────
     async def _mjpeg_generator():
@@ -1215,6 +1298,17 @@ def create_app(ros_node: DashboardNode):
         ros_node.set_laser(state)
         return _ok(laser=state)
 
+    @app.post('/api/led/command')
+    async def api_led_command(req: Request):
+        body = await req.json()
+        mode = body.get('mode', 'off')
+        color = body.get('color', '')
+        payload = {'mode': mode}
+        if color:
+            payload['color'] = color
+        ros_node._mqtt_pub('led/command', payload, qos=1)
+        return _ok(led=mode)
+
     @app.post('/api/actuators/head')
     async def api_head(req: Request):
         body = await req.json()
@@ -1346,6 +1440,68 @@ def create_app(ros_node: DashboardNode):
         ros_node.set_collision_guard(bool(enabled))
         return _ok(collision_guard_enabled=bool(enabled))
 
+    # ── Temperature ────────────────────────────────────────────────
+    @app.get('/api/temperature')
+    async def api_temperature():
+        with ros_node._lock:
+            temp = ros_node._temperature
+        if isinstance(temp, dict):
+            return _ok(**temp)
+        return _ok(value=float(temp), unit='C')
+
+    # ── FSM transition (force state change) ──────────────────────
+    @app.post('/api/fsm/transition')
+    async def api_fsm_transition(req: Request):
+        body = await req.json()
+        state = body.get('state', '').upper().strip()
+        valid = ('IDLE', 'SEARCHING', 'TARGETING', 'APPROACHING',
+                 'GRABBING', 'BURNING', 'CALLING', 'RETURNING')
+        if state not in valid:
+            return _err(f'state must be one of {valid}')
+        ros_node._mqtt_pub('fsm/transition', state, qos=1)
+        ros_node.send_command(f'переход {state}')
+        return _ok(transition=state)
+
+    # ── Zones (forbidden map zones) ──────────────────────────────
+    @app.get('/api/zones')
+    async def api_zones_get():
+        with ros_node._lock:
+            return _ok(zones=list(ros_node._zones))
+
+    @app.post('/api/zones')
+    async def api_zones_create(req: Request):
+        body = await req.json()
+        x1, y1 = float(body.get('x1', 0)), float(body.get('y1', 0))
+        x2, y2 = float(body.get('x2', 0)), float(body.get('y2', 0))
+        with ros_node._lock:
+            if len(ros_node._zones) >= 50:
+                return JSONResponse({'error': 'zone limit reached (50)'},
+                                    status_code=400)
+            ros_node._zone_counter += 1
+            zone = {
+                'id': ros_node._zone_counter,
+                'x1': min(x1, x2), 'y1': min(y1, y2),
+                'x2': max(x1, x2), 'y2': max(y1, y2),
+            }
+            ros_node._zones.append(zone)
+        ros_node._mqtt_pub('zones/update', json.dumps(ros_node._zones), qos=1)
+        return _ok(zone=zone)
+
+    @app.delete('/api/zones/{zone_id}')
+    async def api_zones_delete(zone_id: int):
+        with ros_node._lock:
+            ros_node._zones = [z for z in ros_node._zones if z['id'] != zone_id]
+        ros_node._mqtt_pub('zones/update', json.dumps(ros_node._zones), qos=1)
+        return _ok(deleted=zone_id)
+
+    @app.post('/api/zones/clear')
+    async def api_zones_clear():
+        with ros_node._lock:
+            ros_node._zones = []
+            ros_node._zone_counter = 0
+        ros_node._mqtt_pub('zones/update', '[]', qos=1)
+        return _ok(cleared=True)
+
     # ── Calibration ────────────────────────────────────────────────
     @app.post('/api/calibration/command')
     async def api_calibration_cmd(req: Request):
@@ -1418,9 +1574,12 @@ def create_app(ros_node: DashboardNode):
         ros_node._mqtt_pub('call_robot', target_id, qos=1)
         return _ok(called=target_id)
 
-    # ── Static files (SPA assets) ─────────────────────────────────
+    # ── Static files (JS/CSS assets for React SPA) ─────────────────
+    assets_dir = os.path.join(static_dir, 'assets')
+    if os.path.isdir(assets_dir):
+        app.mount('/assets', StaticFiles(directory=assets_dir), name='assets')
     if os.path.isdir(static_dir):
-        app.mount('/', StaticFiles(directory=static_dir, html=True), name='static')
+        app.mount('/static', StaticFiles(directory=static_dir), name='static')
 
     # Wrap with Socket.IO ASGI middleware so /socket.io/ is handled
     return socketio.ASGIApp(sio, other_asgi_app=app)

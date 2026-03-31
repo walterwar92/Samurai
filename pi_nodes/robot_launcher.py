@@ -18,6 +18,15 @@ import signal
 import sys
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+try:
+    from config_loader import cfg as _cfg
+    _DEFAULT_ROBOT_ID = _cfg('mqtt.robot_id', 'robot1')
+    _DEFAULT_BROKER = _cfg('mqtt.broker', '127.0.0.1')
+except ImportError:
+    _DEFAULT_ROBOT_ID = 'robot1'
+    _DEFAULT_BROKER = '127.0.0.1'
+
 # Ensure project root is in sys.path so child processes can find
 # pi_nodes.*, config_loader, etc. regardless of how launcher was invoked.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,11 +60,12 @@ NODE_REGISTRY = {
     'explorer':      'pi_nodes.nodes.explorer_node.ExplorerNode',
     'mission':       'pi_nodes.nodes.mission_node.MissionNode',
     'tts':           'pi_nodes.nodes.tts_node.TTSNode',
+    'led':           'pi_nodes.nodes.led_node.LedNode',
 }
 
 DEFAULT_NODES = [
     'motor', 'imu', 'camera', 'ultrasonic',
-    'battery', 'temperature', 'head', 'arm', 'laser',
+    'battery', 'temperature', 'head', 'arm', 'laser', 'led',
     'fsm', 'watchdog', 'fallback_nav',
     'path_recorder', 'slam_map',
     'calibration', 'explorer', 'mission', 'tts',
@@ -74,12 +84,12 @@ def _run_node(class_path: str, broker: str, port: int, robot_id: str):
 
 def main():
     parser = argparse.ArgumentParser(description='Samurai Robot Launcher')
-    parser.add_argument('--broker', default='127.0.0.1',
-                        help='MQTT broker IP (default: 127.0.0.1)')
+    parser.add_argument('--broker', default=_DEFAULT_BROKER,
+                        help=f'MQTT broker IP (default: {_DEFAULT_BROKER})')
     parser.add_argument('--port', type=int, default=1883,
                         help='MQTT broker port (default: 1883)')
-    parser.add_argument('--robot-id', default='robot1',
-                        help='Robot identifier (default: robot1)')
+    parser.add_argument('--robot-id', default=_DEFAULT_ROBOT_ID,
+                        help=f'Robot identifier (default: {_DEFAULT_ROBOT_ID})')
     parser.add_argument('--nodes', default='',
                         help='Comma-separated node names (default: all)')
     args = parser.parse_args()
