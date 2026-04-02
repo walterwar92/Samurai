@@ -24,9 +24,11 @@ _WARN_THROTTLE_SEC = 10.0  # log dead topics at most every 10s
 
 MONITORED_TOPICS = [
     'odom', 'camera', 'imu', 'range',
-    'cmd_vel', 'battery', 'temperature',
+    'battery', 'temperature',
 ]
-# ball_detection comes from laptop (YOLO), not Pi — don't monitor here
+# Not monitored (laptop-side topics, often absent):
+#   ball_detection — YOLO on laptop
+#   cmd_vel — Nav2 on laptop, or manual from Android app
 
 # Critical topics — if these die, trigger emergency stop
 CRITICAL_TOPICS = {'odom', 'imu'}

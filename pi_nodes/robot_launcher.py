@@ -64,14 +64,17 @@ NODE_REGISTRY = {
     'perf_monitor':    'pi_nodes.nodes.perf_monitor_node.PerfMonitorNode',
 }
 
+# Core nodes — essential for robot operation (11 nodes, 11 MQTT connections)
+# Non-essential nodes can be added via --nodes flag
 DEFAULT_NODES = [
-    'motor', 'imu', 'camera', 'ultrasonic',
-    'battery', 'temperature', 'head', 'arm', 'led',
-    'fsm', 'watchdog', 'fallback_nav',
-    'path_recorder', 'slam_map',
-    'calibration', 'explorer', 'mission', 'tts',
-    'perf_monitor',
+    'motor', 'imu', 'camera', 'ultrasonic',  # hardware sensors
+    'battery', 'temperature',                  # monitoring (low freq)
+    'head', 'arm', 'led',                      # actuators
+    'fsm', 'watchdog',                         # core logic
 ]
+# Disabled by default (add via --nodes if needed):
+# 'fallback_nav', 'path_recorder', 'slam_map', 'calibration',
+# 'explorer', 'mission', 'tts', 'perf_monitor', 'precision_drive'
 
 
 def _run_node(class_path: str, broker: str, port: int, robot_id: str):
@@ -118,7 +121,7 @@ def main():
         p.start()
         processes.append((name, p))
         log.info('  [+] %s (pid=%d)', name, p.pid)
-        time.sleep(0.1)  # stagger to avoid I2C bus contention
+        time.sleep(0.3)  # stagger: avoid I2C contention + MQTT connection storm
 
     # Graceful shutdown on SIGINT/SIGTERM
     def _shutdown(signum, frame):
