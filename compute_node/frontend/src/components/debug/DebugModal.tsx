@@ -92,11 +92,6 @@ export function DebugModal({ open, onClose, state }: DebugModalProps) {
                 value={state.actuators?.claw_open ? 'ОТКРЫТА' : 'ЗАКРЫТА'}
                 highlight={state.actuators?.claw_open}
               />
-              <KV
-                label="Лазер"
-                value={state.actuators?.laser_on ? 'ВКЛ' : 'ВЫКЛ'}
-                highlight={state.actuators?.laser_on}
-              />
             </Section>
 
             <Separator />

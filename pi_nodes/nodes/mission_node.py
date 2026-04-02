@@ -3,14 +3,13 @@
 mission_node — Запись и воспроизведение полных миссий (путь + действия).
 
 Расширяет концепцию path_recorder: записывает не только маршрут, но и все
-действия робота (клешня, лазер, голосовые команды, движения головы).
+действия робота (клешня, голосовые команды, движения головы).
 При воспроизведении повторяет маршрут + выполняет действия в правильное время.
 
 Subscribes:
     samurai/{robot_id}/odom              — позиция для записи маршрута
     samurai/{robot_id}/status            — состояния FSM
     samurai/{robot_id}/claw/state        — действия клешни
-    samurai/{robot_id}/laser/command     — лазер
     samurai/{robot_id}/head/command      — движения головы
     samurai/{robot_id}/voice_command     — голосовые команды
     samurai/{robot_id}/mission/command   — управление: record/stop/play/save/load/list
@@ -19,7 +18,6 @@ Publishes:
     samurai/{robot_id}/mission/status    — {state, name, events, progress}
     samurai/{robot_id}/voice_command     — повтор голосовых команд
     samurai/{robot_id}/claw/command      — повтор клешни
-    samurai/{robot_id}/laser/command     — повтор лазера
     samurai/{robot_id}/head/command      — повтор головы
 """
 
@@ -72,7 +70,6 @@ class MissionNode(MqttNode):
 
         # Подписки — запись действий
         self.subscribe('claw/state', self._action_cb_factory('claw/command'))
-        self.subscribe('laser/command', self._action_cb_factory('laser/command'))
         self.subscribe('head/command', self._action_cb_factory('head/command'))
         self.subscribe('voice_command', self._action_cb_factory('voice_command'))
 

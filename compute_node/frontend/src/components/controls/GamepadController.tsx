@@ -73,7 +73,7 @@ export function GamepadController() {
     }
 
     // Buttons
-    // A (0) = stop, B (1) = claw toggle, X (2) = laser toggle
+    // A (0) = stop, B (1) = claw toggle, X (2) = reset SLAM
     // Y (3) = reset position, LB (4) = slow, RB (5) = fast
     if (gp.buttons[0]?.pressed) {
       api.emergencyStop()

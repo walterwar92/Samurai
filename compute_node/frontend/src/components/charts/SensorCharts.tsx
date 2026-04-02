@@ -6,6 +6,7 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  Legend,
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { SensorSample } from '@/hooks/useSensorHistory'
@@ -15,6 +16,24 @@ interface SensorChartsProps {
 }
 
 const chartHeight = 140
+
+const axisProps = {
+  tick: { fontSize: 9, fill: '#888' },
+}
+
+const tooltipStyle = {
+  contentStyle: { background: '#1a1a1a', border: '1px solid #333', fontSize: 11 },
+}
+
+function TimeXAxis() {
+  return (
+    <XAxis
+      dataKey="t"
+      {...axisProps}
+      tickFormatter={(v: number) => `${v.toFixed(0)}с`}
+    />
+  )
+}
 
 export function SensorCharts({ data }: SensorChartsProps) {
   if (data.length < 2) {
@@ -42,6 +61,72 @@ export function SensorCharts({ data }: SensorChartsProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="p-3 space-y-3">
+        {/* Speed Chart — Odometry + Accelerometer-integrated */}
+        <div>
+          <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
+            Скорость (м/с)
+          </span>
+          <ResponsiveContainer width="100%" height={chartHeight}>
+            <LineChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <TimeXAxis />
+              <YAxis {...axisProps} />
+              <Tooltip
+                {...tooltipStyle}
+                labelFormatter={(v: number) => `${v.toFixed(1)}с`}
+              />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Line
+                type="monotone"
+                dataKey="linearSpeed"
+                stroke="#22c55e"
+                strokeWidth={2}
+                dot={false}
+                name="Одометрия лин."
+              />
+              <Line
+                type="monotone"
+                dataKey="accelSpeed"
+                stroke="#f59e0b"
+                strokeWidth={1.5}
+                dot={false}
+                name="Акселерометр"
+                strokeDasharray="4 2"
+              />
+              <Line
+                type="monotone"
+                dataKey="angularSpeed"
+                stroke="#a855f7"
+                strokeWidth={1}
+                dot={false}
+                name="Угловая (рад/с)"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Acceleration (gravity-compensated) */}
+        <div>
+          <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
+            Ускорение (без гравитации, g)
+          </span>
+          <ResponsiveContainer width="100%" height={chartHeight}>
+            <LineChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <TimeXAxis />
+              <YAxis {...axisProps} />
+              <Tooltip
+                {...tooltipStyle}
+                labelFormatter={(v: number) => `${v.toFixed(1)}с`}
+              />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Line type="monotone" dataKey="accelX" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Accel X" />
+              <Line type="monotone" dataKey="accelY" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Accel Y" />
+              <Line type="monotone" dataKey="accelZ" stroke="#10b981" strokeWidth={1} dot={false} name="Accel Z" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
         {/* Battery & Temperature */}
         <div>
           <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
@@ -50,14 +135,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
           <ResponsiveContainer width="100%" height={chartHeight}>
             <LineChart data={data}>
               <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis
-                dataKey="t"
-                tick={{ fontSize: 9, fill: '#888' }}
-                tickFormatter={(v: number) => `${v.toFixed(0)}с`}
-              />
-              <YAxis tick={{ fontSize: 9, fill: '#888' }} domain={[0, 100]} />
+              <TimeXAxis />
+              <YAxis {...axisProps} domain={[0, 100]} />
               <Tooltip
-                contentStyle={{ background: '#1a1a1a', border: '1px solid #333', fontSize: 11 }}
+                {...tooltipStyle}
                 labelFormatter={(v: number) => `${v.toFixed(1)}с`}
               />
               <Line
@@ -88,14 +169,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
           <ResponsiveContainer width="100%" height={chartHeight}>
             <LineChart data={data}>
               <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis
-                dataKey="t"
-                tick={{ fontSize: 9, fill: '#888' }}
-                tickFormatter={(v: number) => `${v.toFixed(0)}с`}
-              />
-              <YAxis tick={{ fontSize: 9, fill: '#888' }} domain={[-180, 180]} />
+              <TimeXAxis />
+              <YAxis {...axisProps} domain={[-180, 180]} />
               <Tooltip
-                contentStyle={{ background: '#1a1a1a', border: '1px solid #333', fontSize: 11 }}
+                {...tooltipStyle}
                 labelFormatter={(v: number) => `${v.toFixed(1)}с`}
               />
               <Line type="monotone" dataKey="imuYaw" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Yaw" />
@@ -113,14 +190,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
           <ResponsiveContainer width="100%" height={chartHeight}>
             <LineChart data={data}>
               <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis
-                dataKey="t"
-                tick={{ fontSize: 9, fill: '#888' }}
-                tickFormatter={(v: number) => `${v.toFixed(0)}с`}
-              />
-              <YAxis tick={{ fontSize: 9, fill: '#888' }} domain={[0, 'auto']} />
+              <TimeXAxis />
+              <YAxis {...axisProps} domain={[0, 'auto']} />
               <Tooltip
-                contentStyle={{ background: '#1a1a1a', border: '1px solid #333', fontSize: 11 }}
+                {...tooltipStyle}
                 labelFormatter={(v: number) => `${v.toFixed(1)}с`}
               />
               <Line type="monotone" dataKey="range" stroke="#06b6d4" strokeWidth={1.5} dot={false} name="Дистанция" />
@@ -136,14 +209,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
           <ResponsiveContainer width="100%" height={chartHeight}>
             <LineChart data={data}>
               <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis
-                dataKey="t"
-                tick={{ fontSize: 9, fill: '#888' }}
-                tickFormatter={(v: number) => `${v.toFixed(0)}с`}
-              />
-              <YAxis tick={{ fontSize: 9, fill: '#888' }} />
+              <TimeXAxis />
+              <YAxis {...axisProps} />
               <Tooltip
-                contentStyle={{ background: '#1a1a1a', border: '1px solid #333', fontSize: 11 }}
+                {...tooltipStyle}
                 labelFormatter={(v: number) => `${v.toFixed(1)}с`}
               />
               <Line type="monotone" dataKey="odomX" stroke="#ec4899" strokeWidth={1.5} dot={false} name="X" />

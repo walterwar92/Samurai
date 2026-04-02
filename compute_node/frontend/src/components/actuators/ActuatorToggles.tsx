@@ -9,7 +9,6 @@ interface ActuatorTogglesProps {
 
 export function ActuatorToggles({ actuators, collisionGuardEnabled }: ActuatorTogglesProps) {
   const clawOpen = actuators?.claw_open ?? false
-  const laserOn = actuators?.laser_on ?? false
   const guardOn = collisionGuardEnabled ?? false
 
   return (
@@ -21,14 +20,6 @@ export function ActuatorToggles({ actuators, collisionGuardEnabled }: ActuatorTo
         onClick={() => api.setClaw(!clawOpen)}
       >
         Клешня: {clawOpen ? 'ОТКРЫТА' : 'ЗАКРЫТА'}
-      </Button>
-      <Button
-        variant={laserOn ? 'destructive' : 'outline'}
-        size="sm"
-        className="flex-1 text-xs"
-        onClick={() => api.setLaser(!laserOn)}
-      >
-        Лазер: {laserOn ? 'ВКЛ' : 'ВЫКЛ'}
       </Button>
       <Button
         variant={guardOn ? 'default' : 'outline'}

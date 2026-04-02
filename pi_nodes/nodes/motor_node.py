@@ -127,12 +127,22 @@ class MotorNode(MqttNode):
         self._imu_gz = 0.0       # raw gyro Z for angular velocity
         self._imu_last_ts = None  # for actual dt computation
 
-        # Accelerometer position estimator
+        # Accelerometer position estimator — pass VelocityEKF params from config
         self._pos_estimator = None
         self._pos_estimator_ready = False
         if _ACCEL_POS_AVAILABLE:
-            self._pos_estimator = AccelPositionEstimator()
-            self.log_info('AccelPositionEstimator loaded')
+            vekf_params = {
+                'motor_tau':  cfg('velocity_ekf.motor_tau', 0.25),
+                'q_velocity': cfg('velocity_ekf.q_velocity', 0.20),
+                'q_bias':     cfg('velocity_ekf.q_bias', 0.003),
+                'r_accel':    cfg('velocity_ekf.r_accel', 0.06),
+                'r_zupt':     cfg('velocity_ekf.r_zupt', 0.0001),
+            }
+            self._pos_estimator = AccelPositionEstimator(
+                vekf_params=vekf_params,
+            )
+            self.log_info('AccelPositionEstimator loaded (q_vel=%.3f, r_acc=%.3f)',
+                          vekf_params['q_velocity'], vekf_params['r_accel'])
         else:
             self.log_warn('AccelPositionEstimator not available — wheel-only odom')
 

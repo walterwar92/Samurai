@@ -31,22 +31,37 @@ class HeadNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('head_node', **kwargs)
 
-        # Config — CH4=голова, зафиксирована на 0° (смотрит вперёд)
+        # Config — CH4=голова
         self._channel = cfg('servos.head.channel', 4)
-        self._home = cfg('servos.head.home', 0)
+        self._home = cfg('servos.head.home', 90)
         self._min = cfg('servos.head.min', 0)
-        self._max = cfg('servos.head.max', 0)
+        self._max = cfg('servos.head.max', 180)
         self._speed = cfg('servos.head.speed', 2.0)
 
-        # Servo driver
-        self._servo = ServoDriver(channel=self._channel)
+        # Locked = голова не двигается, остаётся в текущем положении.
+        # При запуске locked=True → серво НЕ дёргается, остаётся как есть.
+        # Разблокировка через head/command: {"command": "unlock"}
+        self._locked = cfg('servos.head.locked', True)
 
-        # Target & current angle (for smooth movement)
+        # Servo driver — при locked=True не посылаем PWM при старте,
+        # голова остаётся в физическом положении при включении.
+        self._servo = ServoDriver(channel=self._channel,
+                                  init_angle=self._home,
+                                  start_disabled=self._locked)
+
+        # Target & current angle
         self._target = self._home
         self._angle = self._home
 
-        # Center on startup
-        self._servo.set_angle(self._home)
+        if self._locked:
+            # НЕ отправляем команду серво — оставляем в том положении,
+            # в котором голова физически находится при включении.
+            # PCA9685 не будет генерировать PWM пока мы не вызовем set_angle.
+            self._servo_initialized = False
+        else:
+            # Разблокирована — ставим в home при старте
+            self._servo.set_angle(self._home)
+            self._servo_initialized = True
 
         # MQTT
         self.subscribe('head/command', self._cmd_cb)
@@ -57,16 +72,26 @@ class HeadNode(MqttNode):
         if sim:
             self.log_warn('Head servo in SIMULATION mode')
         else:
-            self.log_info('Head node ready (ch%d, home=%d)',
-                          self._channel, self._home)
+            self.log_info('Head node ready (ch%d, home=%d, locked=%s)',
+                          self._channel, self._home, self._locked)
 
     def _cmd_cb(self, topic, data):
         # MqttNode with parse_json=True already decodes JSON → dict.
         # But "center" string stays as str.
         if isinstance(data, str):
-            if data.strip().lower() == 'center':
+            cmd_lower = data.strip().lower()
+            if cmd_lower == 'center':
+                self._unlock_if_needed()
                 self._target = self._home
                 self.log_info('Head → CENTER')
+                return
+            if cmd_lower == 'unlock':
+                self._unlock_if_needed()
+                self.log_info('Head unlocked')
+                return
+            if cmd_lower == 'lock':
+                self._locked = True
+                self.log_info('Head locked at %.1f°', self._angle)
                 return
             try:
                 data = json.loads(data)
@@ -81,17 +106,38 @@ class HeadNode(MqttNode):
         d = data
 
         if d.get('command') == 'center':
+            self._unlock_if_needed()
             self._target = self._home
             self.log_info('Head → CENTER')
             return
 
+        if d.get('command') == 'unlock':
+            self._unlock_if_needed()
+            self.log_info('Head unlocked')
+            return
+
+        if d.get('command') == 'lock':
+            self._locked = True
+            self.log_info('Head locked at %.1f°', self._angle)
+            return
+
         if 'angle' in d:
+            self._unlock_if_needed()
             self._target = max(self._min,
                                min(self._max, float(d['angle'])))
             self.log_info('Head target=%.1f', self._target)
 
+    def _unlock_if_needed(self):
+        """Unlock head and initialize servo if first move."""
+        self._locked = False
+        if not self._servo_initialized:
+            self._servo.set_angle(self._angle)
+            self._servo_initialized = True
+
     def _smooth_move(self):
         """Move servo towards target by _speed degrees per tick."""
+        if self._locked:
+            return
         self._angle = self._step(self._angle, self._target)
         self._servo.set_angle(self._angle)
 

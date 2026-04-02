@@ -3,7 +3,7 @@
 fsm_node — Finite State Machine for autonomous ball-hunting robot.
 
 States:
-  IDLE, SEARCHING, TARGETING, APPROACHING, GRABBING, BURNING,
+  IDLE, SEARCHING, TARGETING, APPROACHING, GRABBING,
   CALLING, RETURNING, PATROLLING, FOLLOWING, PATH_REPLAY
 
 Subscribes:
@@ -15,7 +15,6 @@ Subscribes:
 Publishes:
     samurai/{robot_id}/cmd_vel                  — {linear_x, angular_z}
     samurai/{robot_id}/claw/command             — "open" / "close"
-    samurai/{robot_id}/laser/command            — true / false
     samurai/{robot_id}/status                   — JSON state
     samurai/{robot_id}/goal_pose                — {x, y, theta}
     samurai/{robot_id}/patrol/command           — "start" / "stop"
@@ -38,7 +37,6 @@ _MAX_CMD_LEN = 200
 
 _P_CALLING = re.compile(r'вызови.{0,20}машин')
 _P_GRAB    = re.compile(r'получи|возьми|найди')
-_P_BURN    = re.compile(r'сожги|прожги|лазер')
 _P_STOP    = re.compile(r'стоп|остановись|стой')
 _P_HOME    = re.compile(r'домой|вернись')
 _P_PATROL  = re.compile(r'патрул|обход')
@@ -59,7 +57,6 @@ class State:
     TARGETING = 'TARGETING'
     APPROACHING = 'APPROACHING'
     GRABBING = 'GRABBING'
-    BURNING = 'BURNING'
     CALLING = 'CALLING'
     RETURNING = 'RETURNING'
     PATROLLING = 'PATROLLING'
@@ -69,7 +66,7 @@ class State:
 
 _ALL_STATES = frozenset({
     State.IDLE, State.SEARCHING, State.TARGETING,
-    State.APPROACHING, State.GRABBING, State.BURNING,
+    State.APPROACHING, State.GRABBING,
     State.CALLING, State.RETURNING, State.PATROLLING,
     State.FOLLOWING, State.PATH_REPLAY,
 })
@@ -127,12 +124,6 @@ class FSMNode(MqttNode):
             self._target_action = 'grab'
             self._target_colour = self._extract_colour(text)
             self.log_info('Target: grab %s ball', self._target_colour or 'any')
-            self._transition(State.SEARCHING)
-            return
-
-        if _P_BURN.search(text):
-            self._target_action = 'burn'
-            self._target_colour = self._extract_colour(text)
             self._transition(State.SEARCHING)
             return
 
@@ -278,7 +269,7 @@ class FSMNode(MqttNode):
             self._stop_all()
             # Stop path recording when going idle
             if old in (State.SEARCHING, State.TARGETING, State.APPROACHING,
-                       State.GRABBING, State.BURNING):
+                       State.GRABBING):
                 self.publish('path_recorder/command', 'stop', qos=1)
         elif new_state == State.SEARCHING:
             self._search_accumulated = 0.0
@@ -308,8 +299,6 @@ class FSMNode(MqttNode):
             self._do_approach(det, range_m)
         elif self._state == State.GRABBING:
             self._do_grab()
-        elif self._state == State.BURNING:
-            self._do_burn()
         elif self._state == State.RETURNING:
             self._do_return()
 
@@ -393,10 +382,7 @@ class FSMNode(MqttNode):
 
         if range_m < 0.10:
             self._pub_cmd_vel(0.0, 0.0)
-            if self._target_action == 'burn':
-                self._transition(State.BURNING)
-            else:
-                self._transition(State.GRABBING)
+            self._transition(State.GRABBING)
             return
 
         self._pub_cmd_vel(linear, angular)
@@ -413,17 +399,6 @@ class FSMNode(MqttNode):
         else:
             self.log_info('Ball grabbed!')
             self._transition(State.RETURNING)
-
-    def _do_burn(self):
-        self._approach_timeout += 0.1
-        if self._approach_timeout < 0.5:
-            self.publish('laser/command', True, qos=1)
-        elif self._approach_timeout < 5.0:
-            pass
-        else:
-            self.publish('laser/command', False, qos=1)
-            self.log_info('Burn complete')
-            self._transition(State.SEARCHING)
 
     def _do_call(self):
         other_id = 'robot2' if self._robot_id == 'robot1' else 'robot1'
@@ -453,7 +428,6 @@ class FSMNode(MqttNode):
 
     def _stop_all(self):
         self._pub_cmd_vel(0.0, 0.0)
-        self.publish('laser/command', False, qos=1)
 
     def _pub_cmd_vel(self, linear_x: float, angular_z: float):
         m = self._cmd_msg

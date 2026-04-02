@@ -76,7 +76,9 @@ class EkfImu:
         self._home_roll = roll
         self._home_pitch = pitch
         self._yaw = yaw
-        self._gz_bias = gyro_bias[2]  # only Z-axis bias matters for yaw
+        # imu_node already subtracts gyro_offset before calling predict(),
+        # so EKF bias starts at 0 — it will track residual drift only.
+        self._gz_bias = 0.0
         # Low initial covariance — we trust calibration
         self._P_yaw = 0.001
         self._P_bias = 0.0001

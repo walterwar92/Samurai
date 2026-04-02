@@ -49,7 +49,6 @@ NODE_REGISTRY = {
     'temperature':  'pi_nodes.nodes.temperature_node.TemperatureNode',
     'head':         'pi_nodes.nodes.head_node.HeadNode',
     'arm':          'pi_nodes.nodes.arm_node.ArmNode',
-    'laser':        'pi_nodes.nodes.laser_node.LaserNode',
     'fsm':          'pi_nodes.nodes.fsm_node.FSMNode',
     'watchdog':     'pi_nodes.nodes.watchdog_node.WatchdogNode',
     'voice':        'pi_nodes.nodes.voice_node.VoiceNode',
@@ -61,11 +60,12 @@ NODE_REGISTRY = {
     'mission':       'pi_nodes.nodes.mission_node.MissionNode',
     'tts':           'pi_nodes.nodes.tts_node.TTSNode',
     'led':           'pi_nodes.nodes.led_node.LedNode',
+    'precision_drive': 'pi_nodes.nodes.precision_drive_node.PrecisionDriveNode',
 }
 
 DEFAULT_NODES = [
     'motor', 'imu', 'camera', 'ultrasonic',
-    'battery', 'temperature', 'head', 'arm', 'laser', 'led',
+    'battery', 'temperature', 'head', 'arm', 'led',
     'fsm', 'watchdog', 'fallback_nav',
     'path_recorder', 'slam_map',
     'calibration', 'explorer', 'mission', 'tts',

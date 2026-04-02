@@ -31,15 +31,11 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
   propsRef.current = { yaw, pitch, roll, posX, posY, stationary }
 
   // Smoothed position/rotation to avoid jitter from sensor noise
+  // +PI/2 offset: model front is -Z, but robot yaw=0 faces +X in world coords
   const smoothPos = useRef(new THREE.Vector3(posX, 0.05, -posY))
   const smoothRot = useRef(new THREE.Euler(
-    pitch * DEG2RAD, -yaw * DEG2RAD, roll * DEG2RAD, 'YXZ'
+    pitch * DEG2RAD, -yaw * DEG2RAD + Math.PI / 2, roll * DEG2RAD, 'YXZ'
   ))
-  // Frozen targets — locked when stationary to prevent phantom drift
-  const frozenPos = useRef({ x: posX, z: -posY })
-  const frozenRot = useRef({ x: pitch * DEG2RAD, y: -yaw * DEG2RAD, z: roll * DEG2RAD })
-  const wasStationary = useRef(stationary)
-
   useFrame(() => {
     if (!groupRef.current) return
 
@@ -48,53 +44,33 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
     const targetX = p.posX
     const targetZ = -p.posY
     const targetPitch = p.pitch * DEG2RAD
-    const targetYaw = -p.yaw * DEG2RAD
+    const targetYaw = -p.yaw * DEG2RAD + Math.PI / 2  // +90°: align model -Z front with robot +X forward
     const targetRoll = p.roll * DEG2RAD
     const isStationary = p.stationary
 
-    if (isStationary) {
-      // When stationary: freeze targets on entry, snap position
-      if (!wasStationary.current) {
-        // Just became stationary — freeze current targets
-        frozenPos.current = { x: targetX, z: targetZ }
-        frozenRot.current = { x: targetPitch, y: targetYaw, z: targetRoll }
-      }
-      wasStationary.current = true
+    // Always lerp towards target — use slower lerp when stationary to filter noise
+    const lerpPos = isStationary ? 0.08 : POS_LERP
+    const lerpRot = isStationary ? 0.1 : ROT_LERP
+    const deadPos = isStationary ? POS_DEADZONE : POS_DEADZONE
+    const deadRot = isStationary ? ROT_DEADZONE : ROT_DEADZONE
 
-      // Use frozen targets — ignore sensor noise
-      const fx = frozenPos.current.x
-      const fz = frozenPos.current.z
+    const dxPos = targetX - smoothPos.current.x
+    const dzPos = targetZ - smoothPos.current.z
 
-      // Quick snap to frozen position (faster lerp to settle)
-      smoothPos.current.x += (fx - smoothPos.current.x) * 0.3
-      smoothPos.current.z += (fz - smoothPos.current.z) * 0.3
-      smoothPos.current.y = 0.05
+    if (Math.abs(dxPos) > deadPos || Math.abs(dzPos) > deadPos) {
+      smoothPos.current.x += dxPos * lerpPos
+      smoothPos.current.z += dzPos * lerpPos
+    }
+    smoothPos.current.y = 0.05
 
-      smoothRot.current.x += (frozenRot.current.x - smoothRot.current.x) * 0.3
-      smoothRot.current.y += (frozenRot.current.y - smoothRot.current.y) * 0.3
-      smoothRot.current.z += (frozenRot.current.z - smoothRot.current.z) * 0.3
-    } else {
-      wasStationary.current = false
+    const dxRot = targetPitch - smoothRot.current.x
+    const dyRot = targetYaw - smoothRot.current.y
+    const dzRot = targetRoll - smoothRot.current.z
 
-      // When moving: normal lerp with dead zone
-      const dxPos = targetX - smoothPos.current.x
-      const dzPos = targetZ - smoothPos.current.z
-
-      if (Math.abs(dxPos) > POS_DEADZONE || Math.abs(dzPos) > POS_DEADZONE) {
-        smoothPos.current.x += dxPos * POS_LERP
-        smoothPos.current.z += dzPos * POS_LERP
-      }
-      smoothPos.current.y = 0.05
-
-      const dxRot = targetPitch - smoothRot.current.x
-      const dyRot = targetYaw - smoothRot.current.y
-      const dzRot = targetRoll - smoothRot.current.z
-
-      if (Math.abs(dxRot) > ROT_DEADZONE || Math.abs(dyRot) > ROT_DEADZONE || Math.abs(dzRot) > ROT_DEADZONE) {
-        smoothRot.current.x += dxRot * ROT_LERP
-        smoothRot.current.y += dyRot * ROT_LERP
-        smoothRot.current.z += dzRot * ROT_LERP
-      }
+    if (Math.abs(dxRot) > deadRot || Math.abs(dyRot) > deadRot || Math.abs(dzRot) > deadRot) {
+      smoothRot.current.x += dxRot * lerpRot
+      smoothRot.current.y += dyRot * lerpRot
+      smoothRot.current.z += dzRot * lerpRot
     }
 
     groupRef.current.position.copy(smoothPos.current)

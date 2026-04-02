@@ -34,7 +34,17 @@ class _FakeServo:
 class ServoDriver:
     """Controls a servo on any PCA9685 channel."""
 
-    def __init__(self, channel: int = CLAW_CHANNEL, init_angle: float = CLAW_INIT_ANGLE):
+    def __init__(self, channel: int = CLAW_CHANNEL,
+                 init_angle: float = CLAW_INIT_ANGLE,
+                 start_disabled: bool = False):
+        """
+        Args:
+            channel: PCA9685 channel number.
+            init_angle: Initial angle (degrees). Only applied if start_disabled=False.
+            start_disabled: If True, do NOT send any PWM signal on init.
+                The servo stays in whatever physical position it was in.
+                Call set_angle() later to start controlling it.
+        """
         self._pca = PCA9685Driver()
         self._pca.init()
         self._channel = channel
@@ -52,7 +62,8 @@ class ServoDriver:
             )
 
         self._angle = init_angle
-        self._servo.angle = self._angle
+        if not start_disabled:
+            self._servo.angle = self._angle
 
     @property
     def simulated(self) -> bool:

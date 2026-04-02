@@ -181,7 +181,17 @@ class AccelPositionEstimator:
 
     def __init__(self, latitude_deg: float = DEFAULT_LATITUDE,
                  complementary_alpha: float = COMPLEMENTARY_ALPHA,
-                 lpf_alpha: float = 0.4):
+                 lpf_alpha: float = 0.4,
+                 vekf_params: dict = None):
+        """
+        Args:
+            latitude_deg: Latitude for Coriolis correction.
+            complementary_alpha: Fallback blend ratio (without EKF).
+            lpf_alpha: IIR low-pass filter alpha.
+            vekf_params: Dict of VelocityEKF parameters:
+                motor_tau, q_velocity, q_bias, r_accel, r_zupt.
+                If None, uses defaults from config or hardcoded.
+        """
         self._lat_rad = latitude_deg * DEG2RAD
         self._alpha_moving = complementary_alpha
         self._alpha = 1.0
@@ -201,10 +211,11 @@ class AccelPositionEstimator:
         self.vx = 0.0
         self.vy = 0.0
 
-        # Velocity EKF (preferred)
+        # Velocity EKF (preferred) — with configurable parameters
         self._vekf = None
         if _VEKF_AVAILABLE:
-            self._vekf = VelocityEKF()
+            kw = vekf_params or {}
+            self._vekf = VelocityEKF(**kw)
 
         # Wheel odometry position (fallback)
         self._wheel_x = 0.0
@@ -263,6 +274,9 @@ class AccelPositionEstimator:
 
         # -- IMU timestamp tracking --
         self._last_imu_ts = None
+
+        # -- Blend dt: last dt from update_wheel_odom for position integration --
+        self._last_blend_dt = 0.0
 
     def set_calibration(self, gravity_body: tuple,
                         home_roll: float, home_pitch: float):
@@ -490,6 +504,9 @@ class AccelPositionEstimator:
         if dt <= 0:
             return
 
+        # Store dt for blend() position integration
+        self._last_blend_dt = dt
+
         # Update command-based motion hint
         self.set_cmd_moving(abs(vx_wheel) > 0.005)
 
@@ -497,7 +514,9 @@ class AccelPositionEstimator:
         vx_scaled = vx_wheel * self._wheel_scale.scale
 
         if self._vekf is not None:
-            # Velocity EKF: wheel command as prediction source
+            # Velocity EKF: wheel command as velocity prediction source.
+            # Position is NOT integrated here — it's done in blend()
+            # after all Kalman updates, using the fused velocity.
             self._vekf.predict_wheel(vx_scaled, theta, dt)
             # Accumulate wheel distance for adaptive scale
             self._wheel_scale.accumulate_wheel(vx_wheel, dt)
@@ -511,7 +530,9 @@ class AccelPositionEstimator:
     def blend(self):
         """Finalize position estimate for this cycle.
 
-        With VelocityEKF: reads fused position directly from EKF.
+        With VelocityEKF: integrates position from fused velocity AFTER
+        all predict+update steps. This ensures position uses the fully
+        corrected velocity (IMU-corrected, not just motor prediction).
         Without: complementary filter merge of wheel + accel position.
         """
         if self._stationary:
@@ -519,6 +540,13 @@ class AccelPositionEstimator:
             return
 
         if self._vekf is not None:
+            # Integrate position from FUSED velocity (after Kalman correction).
+            # dt = last IMU dt (most frequent update source, ~50 Hz).
+            # This is the key change: position now reflects accelerometer
+            # corrections, not just motor command predictions.
+            dt = self._last_blend_dt
+            if dt > 0:
+                self._vekf.integrate_position(dt)
             self.x = self._vekf.x
             self.y = self._vekf.y
             self.vx = self._vekf.vx
@@ -561,6 +589,7 @@ class AccelPositionEstimator:
         self._lpf_x.reset(0.0)
         self._lpf_y.reset(0.0)
         self._last_imu_ts = None
+        self._last_blend_dt = 0.0
         self._wheel_scale.reset_segment()
         if self._vekf is not None:
             self._vekf.reset()

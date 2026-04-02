@@ -184,7 +184,6 @@ body {
 .fsm-badge.SEARCHING  { background: #1b5e20; color: #a5d6a7; }
 .fsm-badge.APPROACHING{ background: #e65100; color: #ffcc80; }
 .fsm-badge.GRABBING   { background: #4a148c; color: #ce93d8; }
-.fsm-badge.BURNING    { background: #b71c1c; color: #ef9a9a; }
 .fsm-badge.TARGETING  { background: #f57f17; color: #fff9c4; }
 .fsm-badge.CALLING    { background: #01579b; color: #81d4fa; }
 .fsm-badge.RETURNING  { background: #33691e; color: #c5e1a5; }
@@ -396,6 +395,12 @@ body {
   background: rgba(255, 167, 38, 0.15);
 }
 
+.btn-active {
+  background: rgba(79,195,247,0.2) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
 .quick-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -527,6 +532,32 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Nav Menu ── */
+.nav-menu {
+  display: flex;
+  gap: 4px;
+}
+
+.nav-link {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-decoration: none;
+  border-radius: 5px;
+  transition: all 0.15s;
+}
+
+.nav-link:hover {
+  background: rgba(79,195,247,0.1);
+  color: var(--text);
+}
+
+.nav-link.active {
+  background: rgba(79,195,247,0.15);
+  color: var(--accent);
+}
+
 .btn-debug {
   padding: 6px 12px;
   border: 1px solid var(--accent);
@@ -541,13 +572,41 @@ body {
 .btn-debug:hover {
   background: rgba(79,195,247,0.12);
 }
+
+/* ── Chart Modal ── */
+.chart-block {
+  margin-bottom: 14px;
+}
+
+.chart-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.chart-block canvas {
+  width: 100%;
+  background: var(--bg);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>SAMURAI</h1>
+  <div style="display:flex;align-items:center;gap:16px;">
+    <h1>SAMURAI</h1>
+    <nav class="nav-menu">
+      <a href="/dashboard" class="nav-link active">Панель</a>
+      <a href="/admin" class="nav-link">Админ</a>
+      <a href="/3d" class="nav-link">3D Карта</a>
+    </nav>
+  </div>
   <div style="display:flex;align-items:center;gap:12px;">
+    <button class="btn-debug" id="btnCharts">Графики</button>
     <button class="btn-debug" id="btnDebug">Все данные</button>
     <div class="connection-status">
       <div class="status-dot" id="connDot"></div>
@@ -566,6 +625,34 @@ body {
     <div class="modal-body" id="debugBody">
       <div class="debug-section">
         <div class="debug-section-title">Загрузка...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts Modal -->
+<div class="modal-overlay" id="chartsModal">
+  <div class="modal" style="max-width:960px;">
+    <div class="modal-header">
+      <h2>Графики сенсоров</h2>
+      <button class="modal-close" id="chartsClose">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:10px 14px;">
+      <div class="chart-block">
+        <div class="chart-label">Батарея (%) / Температура (&deg;C)</div>
+        <canvas id="chartBattTemp" height="130"></canvas>
+      </div>
+      <div class="chart-block">
+        <div class="chart-label">IMU (Yaw / Pitch / Roll)</div>
+        <canvas id="chartIMU" height="130"></canvas>
+      </div>
+      <div class="chart-block">
+        <div class="chart-label">Дистанция (м)</div>
+        <canvas id="chartRange" height="130"></canvas>
+      </div>
+      <div class="chart-block">
+        <div class="chart-label">Одометрия (X / Y)</div>
+        <canvas id="chartOdom" height="130"></canvas>
       </div>
     </div>
   </div>
@@ -699,9 +786,10 @@ body {
         <button class="btn" onclick="sendQuick('найди оранжевый мяч')">Оранжевый</button>
         <button class="btn btn-danger" onclick="sendQuick('стоп')">Стоп</button>
         <button class="btn" onclick="sendQuick('домой')">Домой</button>
-        <button class="btn" onclick="sendQuick('сожги лазером')">Лазер</button>
         <button class="btn btn-reset" onclick="resetSim()">Сброс</button>
+        <button class="btn btn-danger" onclick="resetSlam()" title="Сбросить SLAM-карту, одометрию и трейл">Сброс SLAM</button>
         <button class="btn" id="btnCollisionGuard" onclick="toggleCollisionGuard()" style="border-color:#ef5350;color:#ef5350">Защита: ВЫКЛ</button>
+        <button class="btn" id="btnGamepad" onclick="toggleGamepad()" style="border-color:#ab47bc;color:#ab47bc">Геймпад: ВЫКЛ</button>
       </div>
       <div style="font-size:10px;color:var(--text-dim);margin:8px 0 4px;">РЕЖИМЫ</div>
       <div class="quick-buttons">
@@ -755,7 +843,7 @@ const COLOUR_CSS = {
   black: '#424242', unknown: '#9e9e9e'
 };
 
-const ACTION_RU = { grab: 'захват', burn: 'лазер' };
+const ACTION_RU = { grab: 'захват' };
 
 // ── Connection ──
 socket.on('connect', () => {
@@ -859,6 +947,10 @@ function updateSensors(data) {
   // Speed profile
   if (data.speed_profile) {
     document.getElementById('speedProfile').textContent = data.speed_profile;
+    ['slow','normal','fast'].forEach(p => {
+      const b = document.getElementById('btnSpeed' + p.charAt(0).toUpperCase() + p.slice(1));
+      if (b) b.classList.toggle('btn-active', data.speed_profile === p);
+    });
   }
 }
 
@@ -1266,6 +1358,12 @@ function resetSim() {
   socket.emit('reset_sim', {});
 }
 
+function resetSlam() {
+  fetch('/api/robot/reset_position', { method:'POST' });
+  // Clear local chart history
+  for (const k in chartHistory) chartHistory[k].length = 0;
+}
+
 function modeCmd(url, cmd) {
   fetch(url, { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({command:cmd}) });
@@ -1387,7 +1485,6 @@ function renderDebug() {
   const act = d.actuators || {};
   html += debugSection('Актуаторы', [
     kvBool('Клешня', act.claw_open),
-    kvBool('Лазер', act.laser_on),
     kvBool('Защита от столкн.', d.collision_guard_enabled),
   ]);
 
@@ -1492,6 +1589,266 @@ setInterval(() => {
   if (debugModal.classList.contains('open')) {
     renderDebug();
   }
+}, 250);
+
+// ═══════════════════════════════════════════════════
+// Gamepad Controller
+// ═══════════════════════════════════════════════════
+
+let gamepadEnabled = false;
+let gamepadClawOpen = false;
+const GP_DEADZONE = 0.12;
+const GP_MAX_LIN = 0.25;
+const GP_MAX_ANG = 1.5;
+let gpLastLin = 0, gpLastAng = 0;
+let gpBtnPrev = {};
+
+function toggleGamepad() {
+  gamepadEnabled = !gamepadEnabled;
+  const btn = document.getElementById('btnGamepad');
+  btn.textContent = 'Геймпад: ' + (gamepadEnabled ? 'ВКЛ' : 'ВЫКЛ');
+  btn.style.borderColor = gamepadEnabled ? '#4caf50' : '#ab47bc';
+  btn.style.color = gamepadEnabled ? '#4caf50' : '#ab47bc';
+  if (!gamepadEnabled) {
+    fetch('/api/robot/velocity', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({linear_x:0, angular_z:0}) });
+    gpLastLin = 0; gpLastAng = 0;
+  }
+}
+
+function gpPollLoop() {
+  if (!gamepadEnabled) { requestAnimationFrame(gpPollLoop); return; }
+  const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let gp = null;
+  for (const g of gamepads) { if (g && g.connected) { gp = g; break; } }
+  if (!gp) { requestAnimationFrame(gpPollLoop); return; }
+
+  // Sticks: left Y → linear, left X → angular
+  let ly = -gp.axes[1]; // invert: push up = forward
+  let lx = -gp.axes[0]; // invert: push left = turn left
+  let ry = -gp.axes[3]; // right stick Y alternative
+  if (Math.abs(ly) < GP_DEADZONE) ly = 0;
+  if (Math.abs(lx) < GP_DEADZONE) lx = 0;
+  if (Math.abs(ry) < GP_DEADZONE) ry = 0;
+
+  // Use whichever stick has larger input
+  const linInput = Math.abs(ly) > Math.abs(ry) ? ly : ry;
+  const lin = linInput * GP_MAX_LIN;
+  const ang = lx * GP_MAX_ANG;
+
+  // Send velocity only on significant change
+  if (Math.abs(lin - gpLastLin) > 0.01 || Math.abs(ang - gpLastAng) > 0.05) {
+    fetch('/api/robot/velocity', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({linear_x: Math.round(lin*1000)/1000, angular_z: Math.round(ang*1000)/1000}) });
+    gpLastLin = lin;
+    gpLastAng = ang;
+  }
+
+  // Buttons (edge-triggered)
+  const btns = gp.buttons;
+  function pressed(i) { return btns[i] && btns[i].pressed && !gpBtnPrev[i]; }
+
+  // A (0) = стоп
+  if (pressed(0)) {
+    sendQuick('стоп');
+  }
+  // B (1) = клешня toggle
+  if (pressed(1)) {
+    gamepadClawOpen = !gamepadClawOpen;
+    fetch('/api/actuators/claw', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({open: gamepadClawOpen}) });
+  }
+  // X (2) = сброс SLAM
+  if (pressed(2)) {
+    resetSlam();
+  }
+  // Y (3) = домой
+  if (pressed(3)) {
+    sendQuick('домой');
+  }
+  // LB (4) = скорость -
+  if (pressed(4)) {
+    const profiles = ['slow','normal','fast'];
+    const cur = document.getElementById('speedProfile').textContent || 'normal';
+    const idx = Math.max(0, profiles.indexOf(cur) - 1);
+    setSpeed(profiles[idx]);
+  }
+  // RB (5) = скорость +
+  if (pressed(5)) {
+    const profiles = ['slow','normal','fast'];
+    const cur = document.getElementById('speedProfile').textContent || 'normal';
+    const idx = Math.min(2, profiles.indexOf(cur) + 1);
+    setSpeed(profiles[idx]);
+  }
+
+  // Save button states for edge detection
+  for (let i = 0; i < btns.length; i++) gpBtnPrev[i] = btns[i] && btns[i].pressed;
+
+  requestAnimationFrame(gpPollLoop);
+}
+requestAnimationFrame(gpPollLoop);
+
+// ═══════════════════════════════════════════════════
+// Charts Modal — real-time sensor graphs
+// ═══════════════════════════════════════════════════
+
+const chartsModal = document.getElementById('chartsModal');
+const MAX_CHART_POINTS = 200;
+
+// Sensor history buffers
+const chartHistory = {
+  t: [],        // seconds since page load
+  battery: [],
+  cpuTemp: [],
+  imuYaw: [],
+  imuPitch: [],
+  imuRoll: [],
+  range: [],
+  odomX: [],
+  odomY: [],
+};
+const chartT0 = Date.now();
+
+// Collect data from state_update
+socket.on('state_update', (data) => {
+  const t = (Date.now() - chartT0) / 1000;
+  chartHistory.t.push(t);
+  chartHistory.battery.push(data.battery_percent ?? 0);
+  chartHistory.cpuTemp.push(data.cpu_temp ?? 0);
+  const ypr = data.imu_ypr || [0, 0, 0];
+  chartHistory.imuYaw.push(ypr[0]);
+  chartHistory.imuPitch.push(ypr[1]);
+  chartHistory.imuRoll.push(ypr[2]);
+  chartHistory.range.push(data.range_m >= 0 ? data.range_m : 0);
+  chartHistory.odomX.push(data.pose ? data.pose.x : 0);
+  chartHistory.odomY.push(data.pose ? data.pose.y : 0);
+
+  // Trim to max
+  if (chartHistory.t.length > MAX_CHART_POINTS) {
+    for (const k in chartHistory) chartHistory[k].shift();
+  }
+});
+
+document.getElementById('btnCharts').addEventListener('click', () => {
+  chartsModal.classList.add('open');
+});
+document.getElementById('chartsClose').addEventListener('click', () => {
+  chartsModal.classList.remove('open');
+});
+chartsModal.addEventListener('click', (e) => {
+  if (e.target === chartsModal) chartsModal.classList.remove('open');
+});
+
+// Generic line chart renderer
+function drawChart(canvasId, series, yMin, yMax) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  const W = Math.round(rect.width * devicePixelRatio);
+  const H = Math.round(rect.height * devicePixelRatio);
+  if (canvas.width !== W || canvas.height !== H) {
+    canvas.width = W;
+    canvas.height = H;
+  }
+  ctx.clearRect(0, 0, W, H);
+
+  const pad = { l: 45 * devicePixelRatio, r: 10 * devicePixelRatio, t: 10 * devicePixelRatio, b: 22 * devicePixelRatio };
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+
+  const times = chartHistory.t;
+  const n = times.length;
+  if (n < 2) return;
+
+  const tMin = times[0], tMax = times[n - 1];
+  const tRange = tMax - tMin || 1;
+
+  // Auto Y range if not fixed
+  if (yMin == null || yMax == null) {
+    let lo = Infinity, hi = -Infinity;
+    for (const s of series) {
+      for (const v of s.data) {
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+    const margin = (hi - lo) * 0.1 || 1;
+    if (yMin == null) yMin = lo - margin;
+    if (yMax == null) yMax = hi + margin;
+  }
+  const yRange = yMax - yMin || 1;
+
+  // Grid lines
+  ctx.strokeStyle = '#2a2d3a';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const gy = pad.t + plotH * (1 - i / 4);
+    ctx.beginPath();
+    ctx.moveTo(pad.l, gy);
+    ctx.lineTo(pad.l + plotW, gy);
+    ctx.stroke();
+
+    // Y label
+    ctx.fillStyle = '#6b7490';
+    ctx.font = (9 * devicePixelRatio) + 'px monospace';
+    ctx.textAlign = 'right';
+    const yVal = yMin + yRange * (i / 4);
+    ctx.fillText(yVal.toFixed(1), pad.l - 4 * devicePixelRatio, gy + 3 * devicePixelRatio);
+  }
+
+  // T labels
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#6b7490';
+  for (let i = 0; i <= 4; i++) {
+    const tx = pad.l + plotW * (i / 4);
+    const tVal = tMin + tRange * (i / 4);
+    ctx.fillText(tVal.toFixed(0) + 'с', tx, H - 3 * devicePixelRatio);
+  }
+
+  // Lines
+  for (const s of series) {
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5 * devicePixelRatio;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = pad.l + ((times[i] - tMin) / tRange) * plotW;
+      const y = pad.t + (1 - (s.data[i] - yMin) / yRange) * plotH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Legend
+  ctx.font = (9 * devicePixelRatio) + 'px sans-serif';
+  ctx.textAlign = 'left';
+  let lx = pad.l + 6 * devicePixelRatio;
+  for (const s of series) {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(lx, pad.t + 2 * devicePixelRatio, 12 * devicePixelRatio, 3 * devicePixelRatio);
+    ctx.fillText(s.label, lx + 16 * devicePixelRatio, pad.t + 9 * devicePixelRatio);
+    lx += ctx.measureText(s.label).width + 30 * devicePixelRatio;
+  }
+}
+
+// Render all charts at 4 Hz while modal open
+setInterval(() => {
+  if (!chartsModal.classList.contains('open')) return;
+  drawChart('chartBattTemp', [
+    { data: chartHistory.battery, color: '#22c55e', label: 'Батарея %' },
+    { data: chartHistory.cpuTemp, color: '#ef4444', label: 'Темп. °C' },
+  ], 0, 100);
+  drawChart('chartIMU', [
+    { data: chartHistory.imuYaw, color: '#3b82f6', label: 'Yaw' },
+    { data: chartHistory.imuPitch, color: '#a855f7', label: 'Pitch' },
+    { data: chartHistory.imuRoll, color: '#f59e0b', label: 'Roll' },
+  ], -180, 180);
+  drawChart('chartRange', [
+    { data: chartHistory.range, color: '#06b6d4', label: 'Дистанция' },
+  ], 0, null);
+  drawChart('chartOdom', [
+    { data: chartHistory.odomX, color: '#ec4899', label: 'X' },
+    { data: chartHistory.odomY, color: '#14b8a6', label: 'Y' },
+  ], null, null);
 }, 250);
 </script>
 </body>

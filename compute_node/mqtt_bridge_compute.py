@@ -22,7 +22,6 @@ ROS2 → MQTT:
     /cmd_vel                 → samurai/robot1/cmd_vel
     /voice_command           → samurai/robot1/voice_command
     /claw/command            → samurai/robot1/claw/command
-    /laser/command           → samurai/robot1/laser/command
     /speed_profile           → samurai/robot1/speed_profile
     /patrol/command          → samurai/robot1/patrol/command
     /follow_me/command       → samurai/robot1/follow_me/command
@@ -124,8 +123,6 @@ class MqttBridgeCompute(Node):
         self.create_subscription(
             String, '/claw/command', self._claw_to_mqtt_cb, 10)
         self.create_subscription(
-            String, '/laser/command', self._laser_to_mqtt_cb, 10)
-        self.create_subscription(
             String, '/speed_profile', self._speed_to_mqtt_cb, 10)
         self.create_subscription(
             String, '/patrol/command', self._patrol_to_mqtt_cb, 10)
@@ -149,7 +146,6 @@ class MqttBridgeCompute(Node):
             ('base_link', 'ultrasonic_link', (0.10, 0.0, 0.05), (0, 0, 0)),
             ('base_link', 'camera_link', (0.08, 0.0, 0.12), (0, 0.26, 0)),
             ('base_link', 'imu_link', (0.0, 0.0, 0.03), (0, 0, 0)),
-            ('base_link', 'laser_link', (0.10, 0.0, 0.10), (0, 0, 0)),
         ]
         static_msgs = []
         for parent, child, (x, y, z), (roll, pitch, yaw) in transforms:
@@ -452,9 +448,6 @@ class MqttBridgeCompute(Node):
 
     def _claw_to_mqtt_cb(self, msg: String):
         self._mqtt.publish(f'{self._prefix}/claw/command', msg.data)
-
-    def _laser_to_mqtt_cb(self, msg: String):
-        self._mqtt.publish(f'{self._prefix}/laser/command', msg.data)
 
     def _speed_to_mqtt_cb(self, msg: String):
         self._mqtt.publish(f'{self._prefix}/speed_profile', msg.data)
