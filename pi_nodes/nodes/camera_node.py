@@ -38,8 +38,8 @@ class CameraNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('camera_node', **kwargs)
 
-        self._quality = cfg('mqtt.camera_jpeg_quality', 70)
-        self._fps = cfg('mqtt.camera_fps', 20)
+        self._quality = cfg('mqtt.camera_jpeg_quality', 65)
+        self._fps = cfg('mqtt.camera_fps', 10)
         self._w, self._h = 640, 480
 
         self._cam = None
@@ -98,6 +98,10 @@ class CameraNode(MqttNode):
 
     def _capture(self):
         if self._cam is None:
+            return
+
+        # Backpressure: skip frames while MQTT broker is disconnected
+        if not self._mqtt_connected:
             return
 
         # Non-blocking: skip if previous capture still in flight
