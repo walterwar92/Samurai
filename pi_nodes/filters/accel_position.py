@@ -269,6 +269,13 @@ class AccelPositionEstimator:
         # At 50 Hz, 8 samples = 160ms — enough for motor to physically start.
         self._CMD_EXIT_COUNT = 8
 
+        # Command-timeout ZUPT: if no commands for this many IMU samples
+        # AND velocity is small, force enter stationary even if accel
+        # is noisy (vibrations after impulse).
+        # At 50 Hz, 15 samples = 300ms.
+        self._CMD_STOP_TIMEOUT = 15
+        self._no_cmd_count = 0
+
         # -- Adaptive wheel scale --
         self._wheel_scale = _AdaptiveWheelScale()
 
@@ -389,8 +396,10 @@ class AccelPositionEstimator:
         # Track consecutive cmd_moving samples for command-based ZUPT exit
         if self._cmd_moving:
             self._cmd_moving_count += 1
+            self._no_cmd_count = 0
         else:
             self._cmd_moving_count = 0
+            self._no_cmd_count += 1
 
         if self._stationary:
             # Currently stationary — need evidence to exit.
@@ -409,23 +418,36 @@ class AccelPositionEstimator:
             if self._exit_count >= ZUPT_EXIT_COUNT:
                 self._stationary = False
                 self._exit_count = 0
+                self._no_cmd_count = 0
                 self._frozen_x = self.x
                 self._frozen_y = self.y
                 # Reset adaptive scale segment
                 self._wheel_scale.reset_segment()
         else:
-            # Currently moving — require commands stopped AND sensors quiet.
-            # If commands are active, robot IS moving (constant velocity has
-            # zero acceleration, but robot is NOT stationary).
-            if (not self._cmd_moving and
-                    gyro_mag < ZUPT_GYRO_ENTER and
-                    accel_mag < ZUPT_ACCEL_ENTER):
+            # Currently moving — check if robot has stopped.
+            sensors_quiet = (gyro_mag < ZUPT_GYRO_ENTER and
+                             accel_mag < ZUPT_ACCEL_ENTER)
+
+            if not self._cmd_moving and sensors_quiet:
                 self._enter_count += 1
+                self._exit_count = 0
+            elif not self._cmd_moving:
+                # Commands stopped but sensors still noisy (vibrations).
+                # Soft decrement instead of hard reset — forgive occasional
+                # vibration spikes that would delay ZUPT indefinitely.
+                self._enter_count = max(0, self._enter_count - 1)
                 self._exit_count = 0
             else:
                 self._enter_count = 0
 
-            if self._enter_count >= ZUPT_ENTER_COUNT:
+            # Command-timeout ZUPT: no commands for 300ms → force stationary
+            # even if vibrations keep accel above threshold.
+            # This handles the "impulse push" case where robot is physically
+            # stopped but accelerometer rings from the mechanical shock.
+            cmd_timeout = (self._no_cmd_count >= self._CMD_STOP_TIMEOUT and
+                           gyro_mag < ZUPT_GYRO_EXIT)
+
+            if self._enter_count >= ZUPT_ENTER_COUNT or cmd_timeout:
                 self._stationary = True
                 self._enter_count = ZUPT_ENTER_COUNT
                 self._frozen_x = self.x
@@ -583,6 +605,7 @@ class AccelPositionEstimator:
         self._exit_count = 0
         self._cmd_moving = False
         self._cmd_moving_count = 0
+        self._no_cmd_count = 0
         self._alpha = 1.0
         self._buf_ax.clear()
         self._buf_ay.clear()
