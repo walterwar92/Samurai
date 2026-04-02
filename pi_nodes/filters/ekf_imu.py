@@ -7,7 +7,9 @@ orientation causing roll≈±180° and yaw divergence.
 
 Approach:
     - Yaw:   1D Kalman filter on gz gyro integration + bias tracking.
-             ZUPT (Zero-velocity Update): if |gz| < threshold, skip integration.
+             ZUPT (Zero-velocity Update) with hysteresis: when stationary,
+             a Kalman measurement update (gz_measured = bias) corrects
+             both yaw drift and residual bias in real time.
     - Roll/Pitch: direct from accelerometer (atan2), relative to home position.
              No filtering needed — informational only for a ground robot.
 
@@ -50,9 +52,21 @@ class EkfImu:
         self._roll = 0.0
         self._pitch = 0.0
 
-        # ZUPT threshold: ignore gyro below this (rad/s)
-        # Prevents drift from noise when stationary
-        self._zupt_threshold = 0.01  # ~0.6 °/s
+        # ── ZUPT with hysteresis ──────────────────────────────────
+        # Two thresholds prevent chattering at the boundary.
+        # Enter stationary when |gz_corrected| < enter for N consecutive ticks.
+        # Exit stationary when |gz_corrected| > exit.
+        self._zupt_enter = 0.015    # rad/s  (~0.86°/s)
+        self._zupt_exit = 0.04      # rad/s  (~2.3°/s)
+        self._zupt_accel_enter = 0.12   # m/s² — accel magnitude change
+        self._zupt_accel_exit = 0.30    # m/s²
+        self._zupt_confirm = 5      # consecutive ticks to confirm stationary
+        self._zupt_count = 0        # ticks where gz < enter threshold
+        self._stationary = False
+
+        # Measurement noise for ZUPT observation (gz = 0 when still).
+        # Very small = trust ZUPT strongly → fast bias convergence.
+        self._r_zupt = 0.0005
 
     def reset(self):
         self._yaw = 0.0
@@ -62,6 +76,8 @@ class EkfImu:
         self._P_cross = 0.0
         self._roll = 0.0
         self._pitch = 0.0
+        self._stationary = False
+        self._zupt_count = 0
 
     def init_from_calibration(self, roll: float, pitch: float, yaw: float,
                               gyro_bias: tuple):
@@ -83,6 +99,13 @@ class EkfImu:
         self._P_yaw = 0.001
         self._P_bias = 0.0001
         self._P_cross = 0.0
+        self._stationary = False
+        self._zupt_count = 0
+
+    @property
+    def stationary(self) -> bool:
+        """True when ZUPT detects the robot is stationary."""
+        return self._stationary
 
     def predict(self, gx: float, gy: float, gz: float, dt: float):
         """Predict step: integrate gyro Z for yaw.
@@ -99,14 +122,64 @@ class EkfImu:
         # Bias-corrected gz
         wz = gz - self._gz_bias
 
-        # ZUPT: if angular rate is tiny, robot is stationary — don't integrate
-        if abs(wz) < self._zupt_threshold:
-            # Still update covariance (uncertainty grows slowly)
-            self._P_yaw += self.q_angle * dt * 0.1  # much slower growth
+        # ── ZUPT hysteresis state machine ─────────────────────────
+        abs_wz = abs(wz)
+        if self._stationary:
+            if abs_wz > self._zupt_exit:
+                self._stationary = False
+                self._zupt_count = 0
+        else:
+            if abs_wz < self._zupt_enter:
+                self._zupt_count += 1
+                if self._zupt_count >= self._zupt_confirm:
+                    self._stationary = True
+            else:
+                self._zupt_count = 0
+
+        if self._stationary:
+            # ── ZUPT measurement update ───────────────────────────
+            # Observation model: measured gz should be 0 (stationary).
+            # H = [0, 1] applied to state [yaw, bias]:
+            #   innovation = gz_raw - (0 + bias) = gz - bias = wz
+            # But we want: "true angular rate is 0", so the measurement
+            # is z = gz (raw, bias-corrected by imu_node), expected = bias.
+            # innovation = gz - self._gz_bias = wz
+            #
+            # S = H @ P @ H.T + R  →  S = P_bias + r_zupt
+            # K = P @ H.T / S      →  K = [P_cross, P_bias] / S
+            S = self._P_bias + self._r_zupt
+            if S > 1e-12:
+                K_yaw = self._P_cross / S
+                K_bias = self._P_bias / S
+
+                # State correction: push bias toward measured gz,
+                # and correct yaw for the residual that leaked through.
+                self._yaw += K_yaw * wz
+                self._gz_bias += K_bias * wz
+
+                # Covariance update: P = (I - K @ H) @ P
+                p11 = self._P_yaw
+                p12 = self._P_cross
+                p22 = self._P_bias
+                self._P_yaw = p11 - K_yaw * p12
+                self._P_cross = p12 - K_yaw * p22
+                self._P_bias = p22 - K_bias * p22
+
+                # Enforce symmetry / positive definiteness floor
+                if self._P_yaw < 1e-10:
+                    self._P_yaw = 1e-10
+                if self._P_bias < 1e-10:
+                    self._P_bias = 1e-10
+
+            # Slow covariance growth even when stationary (process noise)
+            self._P_yaw += self.q_angle * dt * 0.01
             self._P_bias += self.q_bias * dt
+
+            # Normalize yaw
+            self._yaw = (self._yaw + pi) % (2 * pi) - pi
             return
 
-        # Yaw prediction: simple integration
+        # ── Normal predict: integrate gyro ────────────────────────
         self._yaw += wz * dt
 
         # Normalize to [-π, π]
@@ -131,9 +204,22 @@ class EkfImu:
 
         Accel gate: skip if acceleration magnitude is far from g
         (robot is accelerating, not just gravity).
+
+        Also used for ZUPT accel confirmation: if accel magnitude is
+        close to g, the robot is likely stationary (reinforces ZUPT).
         """
         a_mag = sqrt(ax * ax + ay * ay + az * az)
-        if abs(a_mag - self.g) > self.accel_gate * self.g:
+        a_dev = abs(a_mag - self.g)
+
+        # Accel-based stationary reinforcement
+        if self._stationary and a_dev > self._zupt_accel_exit:
+            self._stationary = False
+            self._zupt_count = 0
+        elif not self._stationary and a_dev < self._zupt_accel_enter:
+            # Accelerometer confirms near-stationary — boost ZUPT counter
+            self._zupt_count = min(self._zupt_count + 1, self._zupt_confirm)
+
+        if a_dev > self.accel_gate * self.g:
             return
 
         # Raw roll/pitch from gravity vector

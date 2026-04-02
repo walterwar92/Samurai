@@ -19,7 +19,8 @@ except ImportError:
     cfg = lambda k, d=None: d
 
 TIMEOUT_SEC = 3.0       # topic dead after 3s (was 5s)
-REPORT_INTERVAL = 0.5   # report at 2 Hz (was 1 Hz)
+REPORT_INTERVAL = 2.0   # report at 0.5 Hz (was 2 Hz — reduced to avoid log storm)
+_WARN_THROTTLE_SEC = 10.0  # log dead topics at most every 10s
 
 MONITORED_TOPICS = [
     'odom', 'camera', 'imu', 'range',
@@ -36,6 +37,7 @@ class WatchdogNode(MqttNode):
 
         self._last_seen: dict[str, float] = {}
         self._emergency_sent = False
+        self._last_warn_time = 0.0  # throttle dead-topic warnings
         grace_sec = cfg('watchdog.startup_grace_sec', 15.0)
         self._startup_grace = time.time() + grace_sec  # configurable grace period
 
@@ -77,17 +79,19 @@ class WatchdogNode(MqttNode):
                 if suffix in CRITICAL_TOPICS:
                     critical_dead.append(suffix)
 
-        if dead_topics:
+        if dead_topics and (now - self._last_warn_time) >= _WARN_THROTTLE_SEC:
+            self._last_warn_time = now
             self.log_warn('Dead topics: %s', ', '.join(dead_topics))
 
         # Emergency stop if critical topics die (after grace period)
         if critical_dead and not self._emergency_sent and now > self._startup_grace:
             self.log_error('CRITICAL topics dead: %s — sending emergency stop!',
                            ', '.join(critical_dead))
+            # QoS 0 — non-blocking; QoS 1 would block waiting for dead broker ACK
             self.publish('cmd_vel',
-                         {'linear_x': 0.0, 'angular_z': 0.0}, qos=1)
+                         {'linear_x': 0.0, 'angular_z': 0.0}, qos=0)
             self.publish('cmd_vel/manual',
-                         {'linear_x': 0.0, 'angular_z': 0.0}, qos=1)
+                         {'linear_x': 0.0, 'angular_z': 0.0}, qos=0)
             self._emergency_sent = True
 
         report['mqtt'] = self._mqtt_connected

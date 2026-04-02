@@ -122,15 +122,31 @@ check_mqtt() {
     # Mosquitto 2.0+ blocks remote connections by default.
     # Ensure a listener config exists so laptop/Android can connect.
     local SAMURAI_CONF="/etc/mosquitto/conf.d/samurai.conf"
-    if [[ ! -f "$SAMURAI_CONF" ]]; then
-        log_warn "Конфиг для удалённых подключений не найден — создаю..."
-        sudo tee "$SAMURAI_CONF" >/dev/null <<'MQTTCFG'
+    local NEED_RESTART=false
+    # Always regenerate config to keep limits up-to-date
+    local DESIRED_CFG
+    read -r -d '' DESIRED_CFG <<'MQTTCFG' || true
 # Samurai Robot — allow LAN connections
 listener 1883
 allow_anonymous true
+
+# ── Anti-freeze limits ──
+# Max inflight QoS 1/2 messages per client (default=20, keep low on Pi)
+max_inflight_messages 10
+# Max queued QoS 1/2 messages per client (prevent RAM bloat)
+max_queued_messages 50
+# Max message size: 300 KB (enough for 640x480 JPEG, blocks oversized payloads)
+message_size_limit 300000
+# Memory limit — prevent Mosquitto from eating all Pi RAM
+memory_limit 50000000
 MQTTCFG
-        log_ok "Создан $SAMURAI_CONF (listener 1883, allow_anonymous)"
-        # Restart mosquitto to pick up new config
+    if [[ ! -f "$SAMURAI_CONF" ]] || ! diff -q <(echo "$DESIRED_CFG") "$SAMURAI_CONF" &>/dev/null; then
+        log_warn "Конфиг mosquitto обновляю (anti-freeze лимиты)..."
+        echo "$DESIRED_CFG" | sudo tee "$SAMURAI_CONF" >/dev/null
+        log_ok "Создан $SAMURAI_CONF (listener 1883, limits)"
+        NEED_RESTART=true
+    fi
+    if $NEED_RESTART; then
         sudo systemctl restart mosquitto 2>/dev/null || true
     fi
 

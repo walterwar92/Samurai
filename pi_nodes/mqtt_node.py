@@ -13,6 +13,7 @@ Replaces rclpy.Node. Provides:
 import json
 import logging
 import os
+import random
 import signal
 import socket
 import sys
@@ -98,9 +99,10 @@ class MqttNode:
         # Fast reconnect: 0.5s min, 5s max (was 1-30s)
         self._client.reconnect_delay_set(min_delay=0.5, max_delay=5)
         # LWT: if broker doesn't hear from us, publish offline status
+        # QoS 0 — avoids blocking; retain ensures last state is kept
         self._client.will_set(
             f'samurai/{robot_id}/{name}/online', 'false',
-            qos=1, retain=True)
+            qos=0, retain=True)
         self._subscriptions: dict[str, Any] = {}
         self._mqtt_connected = False
 
@@ -108,10 +110,10 @@ class MqttNode:
     def _on_connect(self, client, userdata, flags, rc):
         self._mqtt_connected = True
         self._log.info('MQTT connected (rc=%d)', rc)
-        # Publish online status
+        # Publish online status (QoS 0 — non-blocking)
         client.publish(
             f'samurai/{self._robot_id}/{self.name}/online', 'true',
-            qos=1, retain=True)
+            qos=0, retain=True)
         # Re-subscribe to all topics on reconnect
         for topic_full in self._subscriptions:
             qos = self._subscriptions[topic_full].get('qos', 0)
@@ -208,7 +210,8 @@ class MqttNode:
                     if next_time < now:
                         next_time = now + period_sec
                 else:
-                    time.sleep(min(next_time - now, 0.005))
+                    # Sleep until next tick (was 5ms busy-loop → GIL contention)
+                    time.sleep(max(next_time - now, 0.001))
 
         t = threading.Thread(target=_loop, name=timer_name, daemon=True)
         self._timers.append(t)
@@ -222,7 +225,9 @@ class MqttNode:
         self._client.connect_async(self._broker, self._port, keepalive=15)
         self._client.loop_start()
         # Heartbeat every 5s — keeps MQTT connection alive over WiFi
-        self.create_timer(5.0, self._heartbeat, name=f'{self.name}_heartbeat')
+        # Jitter 0-2s per node to avoid thundering herd on broker
+        heartbeat_period = 5.0 + random.uniform(0.0, 2.0)
+        self.create_timer(heartbeat_period, self._heartbeat, name=f'{self.name}_heartbeat')
         for t in self._timers:
             t.start()
         self._log.info('%s started (broker=%s:%d, id=%s)',
@@ -252,11 +257,11 @@ class MqttNode:
         self._running = False
         self._log.info('%s shutting down...', self.name)
         self.on_shutdown()
-        # Publish offline before disconnect
+        # Publish offline before disconnect (QoS 0 — non-blocking)
         if self._mqtt_connected:
             self._client.publish(
                 f'samurai/{self._robot_id}/{self.name}/online', 'false',
-                qos=1, retain=True)
+                qos=0, retain=True)
         for t in self._timers:
             t.join(timeout=2.0)
         self._client.loop_stop()

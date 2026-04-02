@@ -54,14 +54,16 @@ ACCEL_SCALE = 16384.0
 GYRO_SCALE = 131.0
 DEG2RAD = math.pi / 180.0
 
-# Calibration: 100 samples @ 50 Hz = 2 seconds
-CALIBRATION_SAMPLES = 100
+# Calibration: 200 samples @ 50 Hz = 4 seconds
+# Longer calibration → more accurate gyro bias → less yaw drift
+CALIBRATION_SAMPLES = 200
 
 # Exponential Moving Average alpha for accelerometer (0..1)
 # Lower = smoother but more lag.  0.2 @ 50Hz ≈ 8Hz cutoff — good for vibrations.
 ACCEL_EMA_ALPHA = 0.2
-# EMA for gyroscope — less aggressive, gyro is less noisy
-GYRO_EMA_ALPHA = 0.5
+# EMA for gyroscope — moderate smoothing to reduce noise for ZUPT detection
+# 0.3 @ 50 Hz ≈ 5 Hz cutoff — still responsive but cuts high-freq noise
+GYRO_EMA_ALPHA = 0.3
 
 
 class IMUNode(MqttNode):
