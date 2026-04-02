@@ -80,8 +80,10 @@ class MqttNode:
         self._timers: list[threading.Thread] = []
         self._lock = threading.Lock()
 
-        # Logging
+        # Logging — propagate=False prevents duplication via root logger
+        # (launcher's basicConfig sets root format to [launcher], causing double output)
         self._log = logging.getLogger(name)
+        self._log.propagate = False
         if not self._log.handlers:
             handler = logging.StreamHandler()
             handler.setFormatter(

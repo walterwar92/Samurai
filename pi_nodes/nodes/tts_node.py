@@ -70,8 +70,13 @@ class TTSEngine:
         self._log = logger
         self._engine = None
         self._use_espeak = False
+        self._disabled = False       # True when no TTS backend works
         self._lock = threading.Lock()
         self._init_engine()
+
+    @property
+    def available(self) -> bool:
+        return not self._disabled
 
     def _init_engine(self):
         try:
@@ -89,11 +94,24 @@ class TTSEngine:
             self._engine.setProperty('rate', 150)
             self._log('TTS engine: pyttsx3')
         except Exception as e:
-            self._log('pyttsx3 unavailable (%s), falling back to espeak', e)
+            self._log('pyttsx3 unavailable (%s), trying espeak', e)
             self._engine = None
             self._use_espeak = True
+            self._check_espeak()
+
+    def _check_espeak(self):
+        """Check espeak availability once at init."""
+        try:
+            subprocess.run(['espeak', '--version'],
+                           capture_output=True, timeout=5)
+            self._log('TTS engine: espeak')
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            self._log('espeak not found — TTS disabled')
+            self._disabled = True
 
     def speak(self, text):
+        if self._disabled:
+            return
         with self._lock:
             if self._use_espeak:
                 self._speak_espeak(text)
@@ -107,7 +125,9 @@ class TTSEngine:
         except Exception as e:
             self._log('pyttsx3 error: %s — switching to espeak', e)
             self._use_espeak = True
-            self._speak_espeak(text)
+            self._check_espeak()
+            if not self._disabled:
+                self._speak_espeak(text)
 
     def _speak_espeak(self, text):
         try:
@@ -117,7 +137,8 @@ class TTSEngine:
                 capture_output=True,
             )
         except FileNotFoundError:
-            self._log('espeak not found — TTS unavailable')
+            self._log('espeak disappeared — TTS disabled')
+            self._disabled = True
         except subprocess.TimeoutExpired:
             self._log('espeak timed out for: %s', text[:50])
         except Exception as e:
@@ -159,6 +180,9 @@ class TTSNode(MqttNode):
             return
         color = data.get('color', 'unknown')
         distance = data.get('distance', 0)
+        # Skip garbage detections (unknown color or zero distance)
+        if color == 'unknown' or distance <= 0.01:
+            return
         color_ru = COLOR_NAMES_RU.get(color, color)
         text = f'Обнаружен {color_ru} мяч на расстоянии {distance:.1f} метров'
         self._enqueue(f'ball_{color}', text)
