@@ -64,17 +64,19 @@ NODE_REGISTRY = {
     'perf_monitor':    'pi_nodes.nodes.perf_monitor_node.PerfMonitorNode',
 }
 
-# Core nodes — essential for robot operation (11 nodes, 11 MQTT connections)
+# Core nodes — essential for robot operation (13 nodes, 13 MQTT connections)
 # Non-essential nodes can be added via --nodes flag
 DEFAULT_NODES = [
     'motor', 'imu', 'camera', 'ultrasonic',  # hardware sensors
     'battery', 'temperature',                  # monitoring (low freq)
     'head', 'arm', 'led',                      # actuators
     'fsm', 'watchdog',                         # core logic
+    'slam_map',                                # SLAM map relay for laptop
+    'precision_drive',                         # test scenarios (dashboard UI)
 ]
 # Disabled by default (add via --nodes if needed):
-# 'fallback_nav', 'path_recorder', 'slam_map', 'calibration',
-# 'explorer', 'mission', 'tts', 'perf_monitor', 'precision_drive'
+# 'fallback_nav', 'path_recorder', 'calibration',
+# 'explorer', 'mission', 'tts', 'perf_monitor'
 
 
 def _run_node(class_path: str, broker: str, port: int, robot_id: str):
