@@ -61,6 +61,7 @@ NODE_REGISTRY = {
     'tts':           'pi_nodes.nodes.tts_node.TTSNode',
     'led':           'pi_nodes.nodes.led_node.LedNode',
     'precision_drive': 'pi_nodes.nodes.precision_drive_node.PrecisionDriveNode',
+    'perf_monitor':    'pi_nodes.nodes.perf_monitor_node.PerfMonitorNode',
 }
 
 DEFAULT_NODES = [
@@ -69,6 +70,7 @@ DEFAULT_NODES = [
     'fsm', 'watchdog', 'fallback_nav',
     'path_recorder', 'slam_map',
     'calibration', 'explorer', 'mission', 'tts',
+    'perf_monitor',
 ]
 
 

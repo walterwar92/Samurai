@@ -68,6 +68,13 @@ class MqttNode:
             node.spin()
     """
 
+    # ── Performance thresholds (seconds) ──────────────────────
+    _SLOW_TIMER_WARN = 0.05      # timer callback > 50ms → warning
+    _SLOW_TIMER_ERROR = 0.2      # timer callback > 200ms → error
+    _SLOW_CALLBACK_WARN = 0.02   # MQTT callback > 20ms → warning
+    _SLOW_PUBLISH_WARN = 0.01    # publish > 10ms → warning
+    _PERF_LOG_INTERVAL = 30.0    # aggregate perf stats every 30s
+
     def __init__(self, name: str, *,
                  broker: str = '127.0.0.1',
                  port: int = 1883,
@@ -79,6 +86,18 @@ class MqttNode:
         self._running = False
         self._timers: list[threading.Thread] = []
         self._lock = threading.Lock()
+
+        # ── Performance counters ──────────────────────────────
+        self._perf_slow_timers = 0
+        self._perf_slow_callbacks = 0
+        self._perf_slow_publishes = 0
+        self._perf_publish_count = 0
+        self._perf_msg_recv_count = 0
+        self._perf_timer_max_ms = 0.0
+        self._perf_cb_max_ms = 0.0
+        self._perf_pub_max_ms = 0.0
+        self._perf_last_report = time.monotonic()
+        self._perf_mqtt_disconnects = 0
 
         # Logging — propagate=False prevents duplication via root logger
         # (launcher's basicConfig sets root format to [launcher], causing double output)
@@ -123,6 +142,7 @@ class MqttNode:
 
     def _on_disconnect(self, client, userdata, rc):
         self._mqtt_connected = False
+        self._perf_mqtt_disconnects += 1
         if rc != 0:
             self._log.warning('MQTT disconnected unexpectedly (rc=%d) — reconnecting...', rc)
 
@@ -154,7 +174,19 @@ class MqttNode:
             data = str(payload)
         else:
             data = str(payload)
+        t0 = time.monotonic()
         self._client.publish(full_topic, data, qos=qos, retain=retain)
+        elapsed = time.monotonic() - t0
+        self._perf_publish_count += 1
+        elapsed_ms = elapsed * 1000
+        if elapsed_ms > self._perf_pub_max_ms:
+            self._perf_pub_max_ms = elapsed_ms
+        if elapsed > self._SLOW_PUBLISH_WARN:
+            self._perf_slow_publishes += 1
+            size = len(data) if isinstance(data, (bytes, bytearray)) else len(str(data))
+            self._log.warning(
+                'PERF publish %s slow %.0fms (%dB, qos=%d)',
+                full_topic.split('/')[-1], elapsed_ms, size, qos)
 
     # ── Subscribe ──────────────────────────────────────────────
     def subscribe(self, suffix: str, callback: Callable,
@@ -174,6 +206,7 @@ class MqttNode:
         """Subscribe to an arbitrary MQTT topic (no robot_id prefix)."""
 
         def _wrapper(_client, _userdata, mqtt_msg):
+            self._perf_msg_recv_count += 1
             raw = mqtt_msg.payload
             if parse_json:
                 try:
@@ -182,10 +215,20 @@ class MqttNode:
                     data = raw.decode('utf-8', errors='replace')
             else:
                 data = raw
+            t0 = time.monotonic()
             try:
                 callback(mqtt_msg.topic, data)
             except Exception as exc:
                 self._log.error('Callback error on %s: %s', mqtt_msg.topic, exc)
+            elapsed = time.monotonic() - t0
+            elapsed_ms = elapsed * 1000
+            if elapsed_ms > self._perf_cb_max_ms:
+                self._perf_cb_max_ms = elapsed_ms
+            if elapsed > self._SLOW_CALLBACK_WARN:
+                self._perf_slow_callbacks += 1
+                self._log.warning(
+                    'PERF callback %s slow %.0fms (payload %dB)',
+                    mqtt_msg.topic.split('/')[-1], elapsed_ms, len(raw))
 
         self._subscriptions[full_topic] = {'wrapper': _wrapper, 'qos': qos}
         self._client.message_callback_add(full_topic, _wrapper)
@@ -204,12 +247,30 @@ class MqttNode:
             while self._running:
                 now = time.monotonic()
                 if now >= next_time:
+                    t0 = now
                     try:
                         callback()
                     except Exception as exc:
                         self._log.error('Timer %s error: %s', timer_name, exc)
+                    elapsed = time.monotonic() - t0
+                    elapsed_ms = elapsed * 1000
+                    if elapsed_ms > self._perf_timer_max_ms:
+                        self._perf_timer_max_ms = elapsed_ms
+                    if elapsed > self._SLOW_TIMER_ERROR:
+                        self._perf_slow_timers += 1
+                        self._log.error(
+                            'PERF timer %s BLOCKED %.0fms', timer_name, elapsed_ms)
+                    elif elapsed > self._SLOW_TIMER_WARN:
+                        self._perf_slow_timers += 1
+                        self._log.warning(
+                            'PERF timer %s slow %.0fms', timer_name, elapsed_ms)
                     next_time += period_sec
                     if next_time < now:
+                        skipped = int((now - next_time) / period_sec)
+                        if skipped > 0:
+                            self._log.warning(
+                                'PERF timer %s skipped %d ticks (%.0fms behind)',
+                                timer_name, skipped, (now - next_time) * 1000)
                         next_time = now + period_sec
                 else:
                     # Sleep until next tick (was 5ms busy-loop → GIL contention)
@@ -241,6 +302,60 @@ class MqttNode:
             self._client.publish(
                 f'samurai/{self._robot_id}/{self.name}/heartbeat',
                 str(int(time.time())), qos=0)
+        # Periodic performance report
+        now = time.monotonic()
+        if now - self._perf_last_report >= self._PERF_LOG_INTERVAL:
+            self._log_perf_report()
+            self._perf_last_report = now
+
+    def _log_perf_report(self):
+        """Log aggregated performance stats and publish to MQTT."""
+        st = self._perf_slow_timers
+        sc = self._perf_slow_callbacks
+        sp = self._perf_slow_publishes
+        dc = self._perf_mqtt_disconnects
+        total = st + sc + sp + dc
+        report = {
+            'node': self.name,
+            'pub_count': self._perf_publish_count,
+            'msg_recv': self._perf_msg_recv_count,
+            'slow_timers': st,
+            'slow_callbacks': sc,
+            'slow_publishes': sp,
+            'timer_max_ms': round(self._perf_timer_max_ms, 1),
+            'cb_max_ms': round(self._perf_cb_max_ms, 1),
+            'pub_max_ms': round(self._perf_pub_max_ms, 1),
+            'mqtt_disconnects': dc,
+            'mqtt_connected': self._mqtt_connected,
+            'ts': time.time(),
+        }
+        if total > 0 or dc > 0:
+            self._log.warning(
+                'PERF [%ds] pub=%d recv=%d | slow: timer=%d(max%.0fms) '
+                'cb=%d(max%.0fms) pub=%d(max%.0fms) | mqtt_dc=%d',
+                int(self._PERF_LOG_INTERVAL),
+                self._perf_publish_count, self._perf_msg_recv_count,
+                st, self._perf_timer_max_ms,
+                sc, self._perf_cb_max_ms,
+                sp, self._perf_pub_max_ms, dc)
+        # Publish to MQTT for dashboard
+        if self._mqtt_connected:
+            try:
+                self._client.publish(
+                    f'samurai/{self._robot_id}/perf/{self.name}',
+                    json.dumps(report, separators=(',', ':')), qos=0)
+            except Exception:
+                pass
+        # Reset counters
+        self._perf_slow_timers = 0
+        self._perf_slow_callbacks = 0
+        self._perf_slow_publishes = 0
+        self._perf_publish_count = 0
+        self._perf_msg_recv_count = 0
+        self._perf_timer_max_ms = 0.0
+        self._perf_cb_max_ms = 0.0
+        self._perf_pub_max_ms = 0.0
+        self._perf_mqtt_disconnects = 0
 
     def spin(self):
         """Block until SIGINT/SIGTERM. Call after start()."""
