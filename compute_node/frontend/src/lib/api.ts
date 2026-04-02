@@ -41,9 +41,6 @@ export const api = {
   setClaw: (open: boolean) =>
     post('/api/actuators/claw', { open }),
 
-  setLaser: (on: boolean) =>
-    post('/api/actuators/laser', { on }),
-
   // Head (single servo camera)
   setHeadAngle: (angle: number) =>
     post('/api/actuators/head', { angle }),
@@ -108,4 +105,8 @@ export const api = {
   // Collision guard toggle
   setCollisionGuard: (enabled: boolean) =>
     post('/api/collision_guard/toggle', { enabled }),
+
+  // Precision drive
+  precisionDriveCommand: (body: object) =>
+    post('/api/precision_drive/command', body),
 }

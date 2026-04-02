@@ -106,6 +106,10 @@ class VelocityEKF:
         instantly reach commanded speed, but converges exponentially
         with time constant motor_tau.
 
+        NOTE: Position is NOT integrated here. Call integrate_position()
+        after all predict+update steps are done, so that position uses
+        the fully-fused velocity (not pre-correction motor prediction).
+
         Args:
             v_cmd: Commanded forward velocity (m/s), already scaled.
             theta: Current heading from IMU (radians).
@@ -114,8 +118,6 @@ class VelocityEKF:
         if dt <= 0 or dt > 1.0:
             return
 
-        # -- Trapezoidal position integration (BEFORE velocity change) --
-        # Uses average of current and predicted velocity
         ct, st = cos(theta), sin(theta)
         vcx = v_cmd * ct
         vcy = v_cmd * st
@@ -123,17 +125,9 @@ class VelocityEKF:
         # Motor response: alpha = fraction of gap closed in dt
         alpha = min(dt / self.motor_tau, 1.0)
 
-        # Predicted velocity
-        vx_new = self.vx + (vcx - self.vx) * alpha
-        vy_new = self.vy + (vcy - self.vy) * alpha
-
-        # Trapezoidal integration: x += 0.5*(v_old + v_new)*dt
-        self.x += 0.5 * (self.vx + vx_new) * dt
-        self.y += 0.5 * (self.vy + vy_new) * dt
-
-        # Apply velocity prediction
-        self.vx = vx_new
-        self.vy = vy_new
+        # Predicted velocity (motor dynamics model)
+        self.vx += (vcx - self.vx) * alpha
+        self.vy += (vcy - self.vy) * alpha
 
         # Bias unchanged in prediction (random walk)
 
@@ -156,6 +150,23 @@ class VelocityEKF:
         p[1] = f_vv * p[1]
         p[2] = f_vv * p[2]
         p[3] += qb
+
+    def integrate_position(self, dt: float):
+        """Integrate position from fused velocity.
+
+        MUST be called AFTER all predict + update steps for this cycle.
+        This way position uses the fully-corrected velocity that includes
+        both motor prediction and accelerometer correction.
+
+        Uses trapezoidal integration for accuracy.
+
+        Args:
+            dt: Time step (seconds) since last integration.
+        """
+        if dt <= 0 or dt > 1.0:
+            return
+        self.x += self.vx * dt
+        self.y += self.vy * dt
 
     def reanchor_accel(self):
         """Re-anchor accel-integrated velocity to current state estimate.

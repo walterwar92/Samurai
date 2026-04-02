@@ -24,7 +24,7 @@ REST API reference:
     GET  /api/detection               — YOLO detections
     GET  /api/detection/closest       — closest object (optional ?color=)
     GET  /api/fsm                     — current FSM state
-    GET  /api/actuators               — claw + laser state
+    GET  /api/actuators               — claw state
     GET  /api/battery                 — battery info
     GET  /api/speed_profile           — current speed profile
     GET  /api/camera/frame            — JPEG binary
@@ -36,7 +36,6 @@ REST API reference:
     POST /api/robot/velocity          — {linear_x, angular_z}
     POST /api/fsm/command             — send voice command
     POST /api/actuators/claw          — open / close
-    POST /api/actuators/laser         — on / off
     GET  /api/actuators/head          — head pan/tilt state
     POST /api/actuators/head          — {pan, tilt} or {command: "center"}
     GET  /api/actuators/arm           — arm joint angles
@@ -155,7 +154,6 @@ class DashboardNode(Node):
         self._watchdog       = {}
         self._speed_profile  = 'normal'
         self._claw_open      = False
-        self._laser_on       = False
         self._led_state      = {'mode': 'off', 'color': 'off'}
         self._head_state     = {'angle': 0.0}
         self._arm_state      = {'j1': 0.0, 'j2': 120.0, 'j3': 0.0, 'j4': 0.0}
@@ -169,6 +167,8 @@ class DashboardNode(Node):
         self._calibration_result = {}   # calibration result
         self._explorer_status = {}      # explorer node status
         self._mission_status = {}       # mission node status
+        self._precision_drive_status = {}  # precision drive status
+        self._precision_drive_result = {}  # precision drive result
         self._tts_enabled = True        # TTS toggle
         self._zones = []                   # forbidden zones [{id, x1, y1, x2, y2}]
         self._zone_counter = 0             # auto-increment zone ID
@@ -243,6 +243,7 @@ class DashboardNode(Node):
                       'slam_map', 'path_recorder/status', 'path_recorder/path',
                       'calibration/status', 'calibration/result',
                       'explorer/status', 'mission/status',
+                      'precision_drive/status', 'precision_drive/result',
                       'collision_guard/state',
                       # Remote GPU YOLO detections (via MQTT)
                       'ball_detection', 'detections', 'yolo/annotated',
@@ -302,6 +303,10 @@ class DashboardNode(Node):
                 self._mqtt_json_field(msg.payload, '_explorer_status')
             elif suffix == 'mission/status':
                 self._mqtt_json_field(msg.payload, '_mission_status')
+            elif suffix == 'precision_drive/status':
+                self._mqtt_json_field(msg.payload, '_precision_drive_status')
+            elif suffix == 'precision_drive/result':
+                self._mqtt_json_field(msg.payload, '_precision_drive_result')
             elif suffix == 'collision_guard/state':
                 val = msg.payload.decode('utf-8', errors='ignore').strip().lower()
                 with self._lock:
@@ -675,11 +680,6 @@ class DashboardNode(Node):
         with self._lock:
             self._claw_open = (state == 'open')
 
-    def set_laser(self, state: str):
-        self._mqtt_pub('laser/command', state, qos=1)
-        with self._lock:
-            self._laser_on = (state == 'on')
-
     def set_head(self, payload: dict):
         self._mqtt_pub('head/command', json.dumps(payload), qos=1)
 
@@ -849,9 +849,7 @@ class DashboardNode(Node):
                 'speed_profile': self._speed_profile,
                 'actuators': {
                     'claw':  'open'  if self._claw_open else 'closed',
-                    'laser': 'on'    if self._laser_on  else 'off',
                     'claw_open': self._claw_open,
-                    'laser_on':  self._laser_on,
                 },
                 'head': dict(self._head_state),
                 'arm':  dict(self._arm_state),
@@ -866,6 +864,8 @@ class DashboardNode(Node):
                 'explorer':           dict(self._explorer_status) if self._explorer_status else None,
                 'mission':            dict(self._mission_status) if self._mission_status else None,
                 'tts_enabled':        self._tts_enabled,
+                'precision_drive':        dict(self._precision_drive_status) if self._precision_drive_status else None,
+                'precision_drive_result': dict(self._precision_drive_result) if self._precision_drive_result else None,
                 'led':                dict(self._led_state),
                 # Fields expected by admin.html
                 'sim_time':      round(time.time() - self._start_time, 2),
@@ -893,7 +893,6 @@ class DashboardNode(Node):
                 'detection':     dict(self._ball_detection),
                 'actuators': {
                     'claw':  'open' if self._claw_open else 'closed',
-                    'laser': 'on'   if self._laser_on  else 'off',
                 },
                 'head': dict(self._head_state),
                 'arm':  dict(self._arm_state),
@@ -985,21 +984,31 @@ def create_app(ros_node: DashboardNode):
     async def startup():
         asyncio.create_task(_sio_push_loop())
 
-    # ── Page routes (serve HTML templates directly) ────────────────
+    # ── Page routes (React SPA — all pages served from index.html) ─
     templates_dir = os.path.join(base_dir, 'templates')
     index_html = os.path.join(static_dir, 'index.html')
 
+    def _serve_spa():
+        """Serve React SPA index.html, fallback to old HTML templates."""
+        if os.path.isfile(index_html):
+            return FileResponse(index_html)
+        return JSONResponse({'error': 'Frontend not built — run npm build in compute_node/frontend/'}, 404)
+
     @app.get('/')
     async def serve_root():
-        return FileResponse(os.path.join(templates_dir, 'dashboard.html'))
+        return _serve_spa()
 
     @app.get('/dashboard')
     async def serve_dashboard():
-        return FileResponse(os.path.join(templates_dir, 'dashboard.html'))
+        return _serve_spa()
 
     @app.get('/admin')
     async def serve_admin():
-        return FileResponse(os.path.join(templates_dir, 'admin.html'))
+        return _serve_spa()
+
+    @app.get('/3d')
+    async def serve_3d():
+        return _serve_spa()
 
     # ── MJPEG video stream ────────────────────────────────────────
     async def _mjpeg_generator():
@@ -1055,7 +1064,7 @@ def create_app(ros_node: DashboardNode):
                     '/api/log'],
             'POST': ['/api/emergency_stop', '/api/robot/reset_position',
                      '/api/fsm/command',
-                     '/api/actuators/claw', '/api/actuators/laser',
+                     '/api/actuators/claw',
                      '/api/speed_profile', '/api/patrol/command', '/api/patrol/waypoints',
                      '/api/follow_me', '/api/path_recorder/command',
                      '/api/map/save', '/api/map/load'],
@@ -1148,8 +1157,7 @@ def create_app(ros_node: DashboardNode):
     @app.get('/api/actuators')
     async def api_actuators():
         with ros_node._lock:
-            return _ok(claw='open' if ros_node._claw_open else 'closed',
-                       laser='on'  if ros_node._laser_on  else 'off')
+            return _ok(claw='open' if ros_node._claw_open else 'closed')
 
     @app.get('/api/battery')
     async def api_battery():
@@ -1284,19 +1292,6 @@ def create_app(ros_node: DashboardNode):
             cmd = 'open' if state == 'open' else 'close'
         ros_node.set_claw(cmd)
         return _ok(claw='open' if cmd == 'open' else 'closed')
-
-    @app.post('/api/actuators/laser')
-    async def api_laser(req: Request):
-        body = await req.json()
-        # Accept both { on: bool } (frontend) and { state: "on"/"off" } (legacy)
-        if 'on' in body:
-            state = 'on' if body['on'] else 'off'
-        else:
-            state = body.get('state', '').lower().strip()
-            if state not in ('on', 'off'):
-                return _err('body must contain "on" (bool) or "state" ("on"/"off")')
-        ros_node.set_laser(state)
-        return _ok(laser=state)
 
     @app.post('/api/led/command')
     async def api_led_command(req: Request):
@@ -1455,7 +1450,7 @@ def create_app(ros_node: DashboardNode):
         body = await req.json()
         state = body.get('state', '').upper().strip()
         valid = ('IDLE', 'SEARCHING', 'TARGETING', 'APPROACHING',
-                 'GRABBING', 'BURNING', 'CALLING', 'RETURNING')
+                 'GRABBING', 'CALLING', 'RETURNING')
         if state not in valid:
             return _err(f'state must be one of {valid}')
         ros_node._mqtt_pub('fsm/transition', state, qos=1)
@@ -1533,6 +1528,13 @@ def create_app(ros_node: DashboardNode):
         missions = sorted(f.replace('.json', '') for f in os.listdir(missions_dir)
                           if f.endswith('.json'))
         return _ok(missions=missions)
+
+    # ── Precision Drive ────────────────────────────────────────────
+    @app.post('/api/precision_drive/command')
+    async def api_precision_drive_cmd(req: Request):
+        body = await req.json()
+        ros_node._mqtt_pub('precision_drive/command', json.dumps(body), qos=1)
+        return _ok(precision_drive=body.get('action', ''))
 
     # ── TTS ────────────────────────────────────────────────────────
     @app.post('/api/tts/toggle')

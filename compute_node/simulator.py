@@ -64,7 +64,7 @@ def json_err(message, code=400):
 
 ALL_STATES = [
     'IDLE', 'SEARCHING', 'TARGETING', 'APPROACHING',
-    'GRABBING', 'BURNING', 'CALLING', 'RETURNING',
+    'GRABBING', 'CALLING', 'RETURNING',
 ]
 
 
@@ -360,7 +360,6 @@ class SimRobot:
         self.v_linear = 0.0
         self.v_angular = 0.0
         self.claw_open = False
-        self.laser_on = False
         self.head_angle = 0.0           # servo ch4 — голова (зафиксирована 0°)
         self.arm_joints = [0.0, 120.0, 0.0, 0.0]    # ch0-ch3 home позиции
         self._prev_v_linear = 0.0
@@ -655,7 +654,6 @@ class State:
     TARGETING = 'TARGETING'
     APPROACHING = 'APPROACHING'
     GRABBING = 'GRABBING'
-    BURNING = 'BURNING'
     CALLING = 'CALLING'
     RETURNING = 'RETURNING'
 
@@ -666,7 +664,7 @@ class SimFSM:
         self.arena = arena
         self.state = State.IDLE
         self.target_colour = ''
-        self.target_action = ''  # 'grab' or 'burn'
+        self.target_action = ''  # 'grab'
         self._timeout = 0.0
         self._last_detection = None
         self._last_steer = 0.0
@@ -738,11 +736,6 @@ class SimFSM:
             self._log(f'Цель: захватить {c} мяч')
             self._transition(State.SEARCHING)
             return
-        if 'сожги' in text or 'прожги' in text or 'лазер' in text:
-            self.target_action = 'burn'
-            self.target_colour = self._extract_colour(text)
-            self._transition(State.SEARCHING)
-            return
         if 'стоп' in text or 'остановись' in text:
             self._manual_mode = False
             self._transition(State.IDLE)
@@ -799,7 +792,6 @@ class SimFSM:
 
         if new_state == State.IDLE:
             self.robot.stop()
-            self.robot.laser_on = False
             self.planned_path = []
             self._remembered_ball = None
             self._last_known_target = None
@@ -888,8 +880,6 @@ class SimFSM:
             self._do_approach(sensors, dt)
         elif self.state == State.GRABBING:
             self._do_grab(dt)
-        elif self.state == State.BURNING:
-            self._do_burn(dt)
         elif self.state == State.RETURNING:
             self._do_return(dt)
 
@@ -1072,18 +1062,14 @@ class SimFSM:
             self._transition(State.SEARCHING)
             return
 
-        # Check if we're close enough to grab/burn (works with or without detection)
+        # Check if we're close enough to grab (works with or without detection)
         if sensors.range_m < 0.10:
             self.robot.stop()
             self.planned_path = []
             self._remembered_ball = None
             colour = det['colour'] if det else self.target_colour or '?'
-            if self.target_action == 'burn':
-                self._log(f'Достиг цели — жгу {colour} мяч')
-                self._transition(State.BURNING)
-            else:
-                self._log(f'Достиг цели — захватываю {colour} мяч')
-                self._transition(State.GRABBING)
+            self._log(f'Достиг цели — захватываю {colour} мяч')
+            self._transition(State.GRABBING)
             return
 
         if det is not None:
@@ -1167,17 +1153,6 @@ class SimFSM:
         else:
             self._log('Мяч захвачен!')
             self._transition(State.RETURNING)
-
-    def _do_burn(self, dt: float):
-        self._timeout += dt
-        if self._timeout < 0.5:
-            self.robot.laser_on = True
-        elif self._timeout < 5.0:
-            pass  # hold
-        else:
-            self.robot.laser_on = False
-            self._log('Прожиг завершён')
-            self._transition(State.SEARCHING)
 
     def _do_return(self, dt: float):
         """Navigate toward home using pathfinding around forbidden zones."""
@@ -1339,12 +1314,6 @@ class MapRenderer:
         cv2.arrowedLine(img, (rx, ry), (ax, ay), (40, 100, 130), 2,
                         tipLength=0.3)
 
-        # Laser beam
-        if robot.laser_on:
-            lx = int(rx + 50 * math.cos(robot.theta))
-            ly = int(ry - 50 * math.sin(robot.theta))
-            cv2.line(img, (rx, ry), (lx, ly), (0, 0, 255), 2)
-
         # FOV cone
         fov_len = int(ULTRASONIC_MAX * self.scale * 0.4)
         for sign in (-1, 1):
@@ -1397,6 +1366,7 @@ def main():
     @app.route('/')
     @app.route('/dashboard')
     @app.route('/admin')
+    @app.route('/3d')
     def serve_spa():
         return send_from_directory(static_dir, 'index.html')
 
@@ -1437,7 +1407,6 @@ def main():
             robot.y = arena.height / 2.0
             robot.theta = 0.0
             robot.stop()
-            robot.laser_on = False
             robot.claw_open = False
             fsm.state = State.IDLE
             fsm.target_colour = ''
@@ -1463,7 +1432,6 @@ def main():
                     'v_linear': round(robot.v_linear, 4),
                     'v_angular': round(robot.v_angular, 4),
                     'claw_open': robot.claw_open,
-                    'laser_on': robot.laser_on,
                     'head_angle': round(robot.head_angle, 1),
                     'arm_joints': [round(a, 1) for a in robot.arm_joints],
                 },
@@ -1557,7 +1525,6 @@ def main():
             robot.y = arena.height / 2.0
             robot.theta = 0.0
             robot.stop()
-            robot.laser_on = False
             robot.claw_open = False
             fsm.state = State.IDLE
             fsm.target_colour = ''
@@ -1636,7 +1603,6 @@ def main():
         with lock:
             data = {
                 'claw_open': robot.claw_open,
-                'laser_on': robot.laser_on,
             }
         return json_ok(data)
 
@@ -1651,18 +1617,6 @@ def main():
         with lock:
             robot.claw_open = open_val
         return json_ok({'claw_open': open_val})
-
-    @app.route('/api/actuators/laser', methods=['POST'])
-    def api_actuators_laser():
-        body = request.get_json(silent=True)
-        if body is None:
-            return json_err("Request body must be JSON")
-        on_val = body.get('on')
-        if not isinstance(on_val, bool):
-            return json_err("'on' must be a boolean")
-        with lock:
-            robot.laser_on = on_val
-        return json_ok({'laser_on': on_val})
 
     # ── 5a-2. Head servo (ch4) ──
 
@@ -2004,7 +1958,6 @@ def main():
                     },
                     'actuators': {
                         'claw_open': robot.claw_open,
-                        'laser_on': robot.laser_on,
                     },
                     'head': {
                         'angle': round(robot.head_angle, 1),

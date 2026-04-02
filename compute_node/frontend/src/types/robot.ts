@@ -53,7 +53,6 @@ export interface ForbiddenZone {
 
 export interface Actuators {
   claw_open: boolean
-  laser_on: boolean
 }
 
 export interface HeadState {
@@ -88,7 +87,6 @@ export type FsmState =
   | 'TARGETING'
   | 'APPROACHING'
   | 'GRABBING'
-  | 'BURNING'
   | 'CALLING'
   | 'RETURNING'
 
@@ -186,6 +184,24 @@ export interface RobotState {
   mission: { state?: string; name?: string; events_count?: number; progress?: number } | null
   // TTS
   tts_enabled: boolean
+  // Precision drive
+  precision_drive: {
+    state?: string
+    scenario?: string
+    leg?: number
+    total_legs?: number
+    distance_done_cm?: number
+    distance_target_cm?: number
+    heading_error_deg?: number
+    lateral_error_cm?: number
+    disturbance?: string
+  } | null
+  precision_drive_result: {
+    success?: boolean
+    detail?: string
+    scenario?: string
+    ts?: number
+  } | null
 }
 
 export interface SlamMapObstacle {

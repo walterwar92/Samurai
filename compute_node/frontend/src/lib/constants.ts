@@ -24,7 +24,6 @@ export const COLOUR_CSS: Record<string, string> = {
 
 export const ACTION_RU: Record<string, string> = {
   grab: 'захват',
-  burn: 'лазер',
 }
 
 export const ALL_STATES: FsmState[] = [
@@ -33,7 +32,6 @@ export const ALL_STATES: FsmState[] = [
   'TARGETING',
   'APPROACHING',
   'GRABBING',
-  'BURNING',
   'CALLING',
   'RETURNING',
 ]
@@ -44,7 +42,6 @@ export const FSM_COLORS: Record<FsmState, string> = {
   TARGETING: '#f57f17',
   APPROACHING: '#e65100',
   GRABBING: '#4a148c',
-  BURNING: '#b71c1c',
   CALLING: '#01579b',
   RETURNING: '#33691e',
 }
@@ -55,7 +52,6 @@ export const QUICK_COMMANDS = [
   { label: 'Зелёный', command: 'найди зелёный мяч', color: '#66bb6a' },
   { label: 'Жёлтый', command: 'найди жёлтый мяч', color: '#ffee58' },
   { label: 'Оранжевый', command: 'найди оранжевый мяч', color: '#ffa726' },
-  { label: 'Лазер', command: 'лазер', color: undefined },
   { label: 'Стоп', command: 'стоп', color: undefined, variant: 'destructive' as const },
   { label: 'Домой', command: 'домой', color: undefined },
 ]
