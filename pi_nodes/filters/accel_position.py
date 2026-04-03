@@ -440,12 +440,19 @@ class AccelPositionEstimator:
             else:
                 self._enter_count = 0
 
-            # Command-timeout ZUPT: no commands for 300ms → force stationary
+            # Command-timeout ZUPT: no commands for 160ms → force stationary
             # even if vibrations keep accel above threshold.
             # This handles the "impulse push" case where robot is physically
             # stopped but accelerometer rings from the mechanical shock.
+            # BUT: if EKF still sees significant velocity, don't force ZUPT —
+            # this prevents false stops during slow precision driving where
+            # cmd_vel updates arrive at 20Hz (50ms gaps between commands).
+            ekf_has_velocity = False
+            if self._vekf is not None:
+                ekf_has_velocity = self._vekf.velocity_magnitude > 0.02
             cmd_timeout = (self._no_cmd_count >= self._CMD_STOP_TIMEOUT and
-                           gyro_mag < ZUPT_GYRO_EXIT)
+                           gyro_mag < ZUPT_GYRO_EXIT and
+                           not ekf_has_velocity)
 
             if self._enter_count >= ZUPT_ENTER_COUNT or cmd_timeout:
                 self._stationary = True
