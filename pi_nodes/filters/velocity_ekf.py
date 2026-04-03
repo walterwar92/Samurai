@@ -48,6 +48,7 @@ class VelocityEKF:
 
     def __init__(self,
                  motor_tau: float = 0.25,
+                 braking_tau: float = 0.08,
                  q_velocity: float = 0.08,
                  q_bias: float = 0.003,
                  r_accel: float = 0.12,
@@ -57,6 +58,10 @@ class VelocityEKF:
             motor_tau: Motor time constant (seconds). How fast the robot
                        actually reaches commanded speed. Smaller = faster
                        response. 0.2-0.4s typical for tracked robots.
+            braking_tau: Braking time constant (seconds). How fast the
+                         robot stops when command is zero. Tracked robots
+                         stop much faster than they accelerate due to
+                         track friction. 0.05-0.1s typical.
             q_velocity: Velocity process noise (m/s)^2/s. How much we
                         distrust the motor model (slip, friction changes).
             q_bias: Bias random walk noise (m/s)^2/s. How fast the accel
@@ -67,6 +72,7 @@ class VelocityEKF:
                     trust that stationary means zero velocity.
         """
         self.motor_tau = max(motor_tau, 0.05)
+        self.braking_tau = max(braking_tau, 0.02)
         self.q_velocity = q_velocity
         self.q_bias = q_bias
         self.r_accel = r_accel
@@ -123,7 +129,12 @@ class VelocityEKF:
         vcy = v_cmd * st
 
         # Motor response: alpha = fraction of gap closed in dt
-        alpha = min(dt / self.motor_tau, 1.0)
+        # Use braking_tau (faster) when decelerating to zero,
+        # motor_tau (slower) when accelerating. Tracked robots stop
+        # nearly instantly due to track friction.
+        is_braking = abs(v_cmd) < 0.005 and (abs(self.vx) > 0.005 or abs(self.vy) > 0.005)
+        tau = self.braking_tau if is_braking else self.motor_tau
+        alpha = min(dt / tau, 1.0)
 
         # Predicted velocity (motor dynamics model)
         self.vx += (vcx - self.vx) * alpha

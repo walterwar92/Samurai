@@ -8,6 +8,7 @@ export interface RobotPose {
 export interface RobotVelocity {
   linear: number
   angular: number
+  speed: number
 }
 
 export interface RobotStatus {

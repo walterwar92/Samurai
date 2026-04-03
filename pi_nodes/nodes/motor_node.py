@@ -101,6 +101,7 @@ class MotorNode(MqttNode):
         self._theta = 0.0
         self._vx = 0.0      # published forward velocity
         self._vz = 0.0      # published angular velocity
+        self._speed = 0.0   # velocity magnitude (scalar)
         self._last_time = self.now_sec()
         self._linear = 0.0
         self._angular = 0.0
@@ -132,11 +133,12 @@ class MotorNode(MqttNode):
         self._pos_estimator_ready = False
         if _ACCEL_POS_AVAILABLE:
             vekf_params = {
-                'motor_tau':  cfg('velocity_ekf.motor_tau', 0.25),
-                'q_velocity': cfg('velocity_ekf.q_velocity', 0.20),
-                'q_bias':     cfg('velocity_ekf.q_bias', 0.003),
-                'r_accel':    cfg('velocity_ekf.r_accel', 0.06),
-                'r_zupt':     cfg('velocity_ekf.r_zupt', 0.0001),
+                'motor_tau':   cfg('velocity_ekf.motor_tau', 0.25),
+                'braking_tau': cfg('velocity_ekf.braking_tau', 0.08),
+                'q_velocity':  cfg('velocity_ekf.q_velocity', 0.20),
+                'q_bias':      cfg('velocity_ekf.q_bias', 0.003),
+                'r_accel':     cfg('velocity_ekf.r_accel', 0.06),
+                'r_zupt':      cfg('velocity_ekf.r_zupt', 0.0001),
             }
             self._pos_estimator = AccelPositionEstimator(
                 vekf_params=vekf_params,
@@ -156,6 +158,7 @@ class MotorNode(MqttNode):
         # Pre-allocate odom message template (avoid dict creation every 50ms)
         self._odom_msg = {
             'x': 0.0, 'y': 0.0, 'theta': 0.0, 'vx': 0.0, 'vz': 0.0,
+            'speed': 0.0,
             'accel_x': 0.0, 'accel_y': 0.0, 'stationary': False, 'ts': 0.0,
         }
         self.create_timer(0.05, self._control_loop)    # 20 Hz
@@ -373,11 +376,13 @@ class MotorNode(MqttNode):
             if is_stationary:
                 self._vx = 0.0
                 self._vz = 0.0
+                self._speed = 0.0
             else:
                 fused_vx = self._pos_estimator.vx
                 fused_vy = self._pos_estimator.vy
                 self._vx = fused_vx * cy + fused_vy * sy
                 self._vz = self._imu_gz
+                self._speed = math.sqrt(fused_vx * fused_vx + fused_vy * fused_vy)
 
             la_x, la_y = self._pos_estimator.linear_accel_world
         else:
@@ -388,6 +393,7 @@ class MotorNode(MqttNode):
                 self._x += avg_vx * cy * dt
                 self._y += avg_vx * sy * dt
             self._vx = 0.0 if is_stationary else lin_scaled
+            self._speed = abs(self._vx)
             if self._imu_yaw_rad is not None:
                 self._vz = 0.0 if is_stationary else self._imu_gz
             else:
@@ -401,6 +407,7 @@ class MotorNode(MqttNode):
         m['theta'] = round(self._theta, 4)
         m['vx'] = round(self._vx, 3)
         m['vz'] = round(self._vz, 3)
+        m['speed'] = round(self._speed, 3)
         m['accel_x'] = round(la_x, 4)
         m['accel_y'] = round(la_y, 4)
         m['stationary'] = is_stationary
