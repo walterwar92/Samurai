@@ -5,6 +5,7 @@ Based on adeept_rasptank2/web/RPIservo.py patterns.
 """
 
 import logging
+import threading
 
 try:
     from adafruit_motor import servo as adafruit_servo
@@ -22,6 +23,9 @@ ACTUATION_RANGE = 180  # degrees
 CLAW_OPEN_ANGLE = 0.0
 CLAW_CLOSE_ANGLE = 180.0
 CLAW_INIT_ANGLE = 0.0
+
+# Time (seconds) to keep PWM active after set_angle, then release
+HOLD_TIME = 0.5
 
 _log = logging.getLogger(__name__)
 
@@ -49,6 +53,7 @@ class ServoDriver:
         self._pca.init()
         self._channel = channel
         self._simulated = self._pca.simulated or not _HW_SERVO
+        self._release_timer: threading.Timer | None = None
 
         if self._simulated:
             _log.warning('Servo ch%d hardware unavailable — simulation mode', channel)
@@ -64,6 +69,7 @@ class ServoDriver:
         self._angle = init_angle
         if not start_disabled:
             self._servo.angle = self._angle
+            self._schedule_release()
 
     @property
     def simulated(self) -> bool:
@@ -74,10 +80,28 @@ class ServoDriver:
         return self._angle
 
     def set_angle(self, angle: float):
-        """Set servo to *angle* degrees (0-180)."""
+        """Set servo to *angle* degrees (0-180).
+
+        PWM is sent immediately, then automatically released after
+        HOLD_TIME seconds so the servo doesn't buzz at rest.
+        """
         angle = max(0.0, min(180.0, angle))
         self._servo.angle = angle
         self._angle = angle
+        self._schedule_release()
+
+    def release(self):
+        """Disable PWM signal — servo goes limp, stops buzzing."""
+        self._servo.angle = None
+        _log.debug('Servo ch%d PWM released', self._channel)
+
+    def _schedule_release(self):
+        """Cancel any pending release and schedule a new one."""
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+        self._release_timer = threading.Timer(HOLD_TIME, self.release)
+        self._release_timer.daemon = True
+        self._release_timer.start()
 
     def open_claw(self):
         self.set_angle(CLAW_OPEN_ANGLE)
