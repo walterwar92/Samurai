@@ -25,6 +25,7 @@ Commands (JSON to precision_drive/command):
         {"action": "scenario", "name": "cross",  "distance_cm": 50}
         {"action": "scenario", "name": "square", "distance_cm": 40}
         {"action": "scenario", "name": "line",   "distance_cm": 100}
+        {"action": "scenario", "name": "zigzag", "distance_cm": 50}
 
     Control:
         {"action": "stop"}                      # abort current task
@@ -32,8 +33,8 @@ Commands (JSON to precision_drive/command):
         {"action": "resume"}
 
 Disturbance handling:
-    - Push: lateral accel spike → pause, re-align heading, continue
-    - Lift: gravity loss (|a| << g) → full stop, wait for ground, resume
+    - Push: lateral accel spike -> pause, re-align heading, continue
+    - Lift: gravity loss (|a| << g) -> full stop, wait for ground, resume
 """
 
 import math
@@ -56,34 +57,44 @@ except ImportError:
 # Driving
 DRIVE_SPEED       = cfg('precision_drive.drive_speed', 0.12)       # m/s
 DRIVE_SPEED_SLOW  = cfg('precision_drive.drive_speed_slow', 0.06)  # m/s near target
-SLOW_DIST_M       = cfg('precision_drive.slow_distance_m', 0.05)   # start slowing at 5cm
-ARRIVE_TOL_M      = cfg('precision_drive.arrive_tolerance_m', 0.01) # 1cm arrival
-OVERSHOOT_TOL_M   = cfg('precision_drive.overshoot_tolerance_m', 0.02)
+DRIVE_SPEED_CRAWL = cfg('precision_drive.drive_speed_crawl', 0.04) # m/s final approach
+SLOW_DIST_M       = cfg('precision_drive.slow_distance_m', 0.08)   # start slowing at 8cm
+CRAWL_DIST_M      = cfg('precision_drive.crawl_distance_m', 0.02)  # crawl at 2cm
+ARRIVE_TOL_M      = cfg('precision_drive.arrive_tolerance_m', 0.005) # 5mm arrival
+OVERSHOOT_TOL_M   = cfg('precision_drive.overshoot_tolerance_m', 0.015)
 
 # Turning
 TURN_SPEED        = cfg('precision_drive.turn_speed', 0.5)         # rad/s
+TURN_SPEED_SLOW   = cfg('precision_drive.turn_speed_slow', 0.15)   # rad/s near target
 TURN_SLOW_RAD     = cfg('precision_drive.turn_slow_rad', 0.15)     # slow zone
-TURN_TOL_RAD      = cfg('precision_drive.turn_tolerance_rad', 0.03) # ~1.7 deg
+TURN_TOL_RAD      = cfg('precision_drive.turn_tolerance_rad', 0.02) # ~1.1 deg
 
-# Heading correction during straight drive (P-controller)
-HEADING_KP        = cfg('precision_drive.heading_kp', 2.0)
+# Heading correction during straight drive (PI-controller)
+HEADING_KP        = cfg('precision_drive.heading_kp', 2.5)
+HEADING_KI        = cfg('precision_drive.heading_ki', 0.3)
 HEADING_MAX_CORR  = cfg('precision_drive.heading_max_correction', 0.4) # rad/s
 
-# Lateral drift correction — drive back to the original line
-LATERAL_KP        = cfg('precision_drive.lateral_kp', 1.5)
+# Lateral drift correction
+LATERAL_KP        = cfg('precision_drive.lateral_kp', 2.0)
 LATERAL_MAX_CORR  = cfg('precision_drive.lateral_max_correction', 0.3) # rad/s
 
 # Disturbance detection
-PUSH_ACCEL_THRESHOLD = cfg('precision_drive.push_accel_threshold', 3.0)   # m/s²
+PUSH_ACCEL_THRESHOLD = cfg('precision_drive.push_accel_threshold', 3.0)   # m/s^2
 PUSH_COOLDOWN_S      = cfg('precision_drive.push_cooldown_s', 1.0)
-LIFT_GRAVITY_LOW     = cfg('precision_drive.lift_gravity_low', 6.0)       # m/s² (< 0.6g)
-LIFT_GRAVITY_OK      = cfg('precision_drive.lift_gravity_ok', 8.5)        # m/s² (> 0.87g)
-LIFT_SAMPLES         = cfg('precision_drive.lift_samples', 5)             # consecutive
-SETTLE_TIME_S        = cfg('precision_drive.settle_time_s', 0.5)          # after put back down
+LIFT_GRAVITY_LOW     = cfg('precision_drive.lift_gravity_low', 6.0)       # m/s^2
+LIFT_GRAVITY_OK      = cfg('precision_drive.lift_gravity_ok', 8.5)        # m/s^2
+LIFT_SAMPLES         = cfg('precision_drive.lift_samples', 5)
+SETTLE_TIME_S        = cfg('precision_drive.settle_time_s', 0.3)          # reduced from 0.5
 
 # Safety
-TIMEOUT_PER_CM_S  = cfg('precision_drive.timeout_per_cm_s', 0.5)  # max time per cm
+TIMEOUT_PER_CM_S  = cfg('precision_drive.timeout_per_cm_s', 0.5)
 MAX_LEG_TIMEOUT_S = cfg('precision_drive.max_leg_timeout_s', 30.0)
+
+# Scenario transition — shorter pause between legs
+SCENARIO_SETTLE_S = cfg('precision_drive.scenario_settle_s', 0.15)
+
+# Odom smoothing — average last N readings for stable position
+ODOM_SMOOTH_N = 3
 
 CONTROL_HZ = 20
 
@@ -101,8 +112,13 @@ class PrecisionDriveNode(MqttNode):
         self._odom_x = 0.0
         self._odom_y = 0.0
         self._odom_theta = 0.0
+        self._odom_stationary = False
         self._odom_ready = False
         self._odom_lock = threading.Lock()
+
+        # Odom smoothing ring buffer
+        self._odom_buf_x = []
+        self._odom_buf_y = []
 
         # ── IMU raw state (for disturbance detection) ────────────
         self._imu_ax = 0.0
@@ -112,23 +128,28 @@ class PrecisionDriveNode(MqttNode):
         self._imu_lock = threading.Lock()
 
         # ── State machine ────────────────────────────────────────
-        # States: idle, aligning, driving, turning,
-        #         paused_push, paused_lift, paused_user,
-        #         settling, done
         self._state = 'idle'
-        self._prev_state = 'idle'  # for resuming after pause
+        self._prev_state = 'idle'
 
         # ── Current leg target ───────────────────────────────────
         self._start_x = 0.0
         self._start_y = 0.0
-        self._target_heading = 0.0   # heading to maintain during drive
-        self._target_distance = 0.0  # meters
-        self._target_yaw = 0.0       # for turn commands
-        self._turn_direction = 1.0   # +1 = CCW, -1 = CW
+        self._target_heading = 0.0
+        self._target_distance = 0.0
+        self._target_yaw = 0.0
+        self._turn_direction = 1.0
         self._leg_start_time = 0.0
 
+        # ── PI controller state (heading) ────────────────────────
+        self._heading_integral = 0.0
+        self._heading_integral_max = 0.3  # anti-windup
+
+        # ── Position confirmation — require stable arrival ───────
+        self._arrive_count = 0
+        self._ARRIVE_CONFIRM = 3  # consecutive ticks within tolerance
+
         # ── Scenario queue ───────────────────────────────────────
-        self._scenario_legs = []     # list of dicts: {type, distance/angle, ...}
+        self._scenario_legs = []
         self._scenario_name = ''
         self._scenario_idx = 0
 
@@ -136,6 +157,7 @@ class PrecisionDriveNode(MqttNode):
         self._push_last_time = 0.0
         self._lift_low_count = 0
         self._settle_start = 0.0
+        self._settle_duration = SETTLE_TIME_S
 
         # ── Pre-allocated messages ───────────────────────────────
         self._cmd_msg = {'linear_x': 0.0, 'angular_z': 0.0}
@@ -160,8 +182,10 @@ class PrecisionDriveNode(MqttNode):
         self.create_timer(1.0 / CONTROL_HZ, self._control_loop)
         self.create_timer(0.25, self._publish_status)
 
-        self.log_info('PrecisionDriveNode ready (speed=%.2f m/s, tol=%.0f mm)',
-                      DRIVE_SPEED, ARRIVE_TOL_M * 1000)
+        self.log_info('PrecisionDriveNode ready (speed=%.2f m/s, tol=%.0f mm, '
+                      'heading PI kp=%.1f ki=%.1f)',
+                      DRIVE_SPEED, ARRIVE_TOL_M * 1000,
+                      HEADING_KP, HEADING_KI)
 
     # ── Callbacks ────────────────────────────────────────────────
 
@@ -169,9 +193,20 @@ class PrecisionDriveNode(MqttNode):
         if not isinstance(data, dict):
             return
         with self._odom_lock:
-            self._odom_x = data.get('x', 0.0)
-            self._odom_y = data.get('y', 0.0)
+            x = data.get('x', 0.0)
+            y = data.get('y', 0.0)
+
+            # Smooth odom with ring buffer
+            self._odom_buf_x.append(x)
+            self._odom_buf_y.append(y)
+            if len(self._odom_buf_x) > ODOM_SMOOTH_N:
+                self._odom_buf_x.pop(0)
+                self._odom_buf_y.pop(0)
+
+            self._odom_x = sum(self._odom_buf_x) / len(self._odom_buf_x)
+            self._odom_y = sum(self._odom_buf_y) / len(self._odom_buf_y)
             self._odom_theta = data.get('theta', 0.0)
+            self._odom_stationary = data.get('stationary', False)
             self._odom_ready = True
 
     def _imu_cb(self, topic, data):
@@ -236,10 +271,9 @@ class PrecisionDriveNode(MqttNode):
     # ── Scenario builders ────────────────────────────────────────
 
     def _build_scenario(self, name, dist_cm):
-        """Build a list of legs for a scenario. Returns list of dicts."""
+        """Build a list of legs for a scenario."""
         d = dist_cm
         if name == 'cross':
-            # Forward, back to start, right, back to start
             return [
                 {'type': 'drive', 'cm': d, 'dir': 'forward',  'label': 'forward %dcm' % d},
                 {'type': 'drive', 'cm': d, 'dir': 'backward', 'label': 'back %dcm' % d},
@@ -265,7 +299,6 @@ class PrecisionDriveNode(MqttNode):
                              'label': 'corner %d' % (i+1)})
             return legs
         elif name == 'line':
-            # Forward and back in one line
             return [
                 {'type': 'drive', 'cm': d, 'dir': 'forward',  'label': 'forward %dcm' % d},
                 {'type': 'drive', 'cm': d, 'dir': 'backward', 'label': 'return %dcm' % d},
@@ -279,7 +312,6 @@ class PrecisionDriveNode(MqttNode):
                 if i < 3:
                     legs.append({'type': 'turn', 'deg': angle,
                                  'label': 'zigzag turn'})
-            # return home
             legs.append({'type': 'turn', 'deg': 180, 'label': 'turn back'})
             legs.append({'type': 'drive', 'cm': d, 'dir': 'forward',
                          'label': 'return'})
@@ -301,7 +333,6 @@ class PrecisionDriveNode(MqttNode):
 
     def _start_next_leg(self):
         if self._scenario_idx >= len(self._scenario_legs):
-            # Scenario complete
             self.log_info('Scenario "%s" completed!', self._scenario_name)
             self._publish_result(True, 'scenario %s done' % self._scenario_name)
             self._state = 'idle'
@@ -333,7 +364,7 @@ class PrecisionDriveNode(MqttNode):
             self._target_distance = dist_m
         elif direction == 'backward':
             self._target_heading = theta
-            self._target_distance = -dist_m  # negative = reverse
+            self._target_distance = -dist_m
         elif direction == 'left':
             self._target_heading = _normalize_angle(theta + math.pi / 2)
             self._target_distance = dist_m
@@ -343,6 +374,10 @@ class PrecisionDriveNode(MqttNode):
         else:
             self.log_warn('Unknown direction: %s', direction)
             return
+
+        # Reset PI controller
+        self._heading_integral = 0.0
+        self._arrive_count = 0
 
         self._leg_start_time = time.monotonic()
         # If direction requires turning first, align first
@@ -363,6 +398,7 @@ class PrecisionDriveNode(MqttNode):
         angle_rad = math.radians(angle_deg)
         self._target_yaw = _normalize_angle(theta + angle_rad)
         self._turn_direction = 1.0 if angle_rad > 0 else -1.0
+        self._arrive_count = 0
         self._leg_start_time = time.monotonic()
         self._state = 'turning'
         self.log_info('Turn: %.1f deg (target=%.1f deg)',
@@ -378,13 +414,13 @@ class PrecisionDriveNode(MqttNode):
         if self._state in ('driving', 'aligning', 'turning'):
             disturbance = self._check_disturbances()
             if disturbance:
-                return  # state already changed by disturbance handler
+                return
 
         state = self._state
 
         if state == 'idle' or state == 'done':
             return
-        elif state == 'paused_user' or state == 'paused_push':
+        elif state in ('paused_user', 'paused_push'):
             self._send_cmd(0.0, 0.0)
             return
         elif state == 'paused_lift':
@@ -393,9 +429,13 @@ class PrecisionDriveNode(MqttNode):
             return
         elif state == 'settling':
             self._send_cmd(0.0, 0.0)
-            if time.monotonic() - self._settle_start >= SETTLE_TIME_S:
-                self.log_info('Settled, resuming %s', self._prev_state)
-                self._state = self._prev_state
+            if time.monotonic() - self._settle_start >= self._settle_duration:
+                if self._prev_state == '_next_leg':
+                    self._state = 'idle'  # temp
+                    self._start_next_leg()
+                else:
+                    self.log_info('Settled, resuming %s', self._prev_state)
+                    self._state = self._prev_state
             return
         elif state == 'aligning':
             self._do_align()
@@ -436,11 +476,19 @@ class PrecisionDriveNode(MqttNode):
             self._finish_leg(False, 'timeout')
             return
 
-        # Arrival check
+        # Arrival check — require multiple consecutive ticks within tolerance
         if remaining <= ARRIVE_TOL_M:
-            self.log_info('Arrived! (error=%.1f mm)', remaining * 1000)
-            self._finish_leg(True, 'arrived (%.1f mm)' % (remaining * 1000))
+            self._arrive_count += 1
+            if self._arrive_count >= self._ARRIVE_CONFIRM:
+                self.log_info('Arrived! (error=%.1f mm, %d confirms)',
+                              remaining * 1000, self._arrive_count)
+                self._finish_leg(True, 'arrived (%.1f mm)' % (remaining * 1000))
+                return
+            # Keep sending crawl speed to maintain position lock
+            self._send_cmd(0.0, 0.0)
             return
+        else:
+            self._arrive_count = 0
 
         # Overshoot check
         if remaining < -OVERSHOOT_TOL_M:
@@ -448,19 +496,34 @@ class PrecisionDriveNode(MqttNode):
             self._finish_leg(True, 'overshoot %.1f mm' % (-remaining * 1000))
             return
 
-        # Speed: slow down near target
-        if remaining < SLOW_DIST_M:
-            # Proportional slowdown, but not below minimum
-            speed = DRIVE_SPEED_SLOW + (DRIVE_SPEED - DRIVE_SPEED_SLOW) * (remaining / SLOW_DIST_M)
+        # Speed profile: 3-zone ramp (full -> slow -> crawl)
+        if remaining < CRAWL_DIST_M:
+            speed = DRIVE_SPEED_CRAWL
+        elif remaining < SLOW_DIST_M:
+            # Linear ramp from crawl to full speed
+            t = (remaining - CRAWL_DIST_M) / (SLOW_DIST_M - CRAWL_DIST_M)
+            speed = DRIVE_SPEED_CRAWL + (DRIVE_SPEED - DRIVE_SPEED_CRAWL) * t
         else:
             speed = DRIVE_SPEED
 
         if is_reverse:
             speed = -speed
 
-        # Heading correction (P-controller)
+        # Heading correction (PI-controller)
         heading_err = _normalize_angle(self._target_heading - theta)
-        ang_correction = HEADING_KP * heading_err
+        dt = 1.0 / CONTROL_HZ
+
+        # Proportional term
+        ang_p = HEADING_KP * heading_err
+
+        # Integral term (with anti-windup)
+        self._heading_integral += heading_err * dt
+        self._heading_integral = max(-self._heading_integral_max,
+                                     min(self._heading_integral_max,
+                                         self._heading_integral))
+        ang_i = HEADING_KI * self._heading_integral
+
+        ang_correction = ang_p + ang_i
         ang_correction = max(-HEADING_MAX_CORR, min(HEADING_MAX_CORR, ang_correction))
 
         # Lateral drift correction — steer back onto the original line
@@ -470,8 +533,8 @@ class PrecisionDriveNode(MqttNode):
             lat_correction = -lat_correction
 
         angular = ang_correction + lat_correction
-        angular = max(-HEADING_MAX_CORR - LATERAL_MAX_CORR,
-                      min(HEADING_MAX_CORR + LATERAL_MAX_CORR, angular))
+        max_ang = HEADING_MAX_CORR + LATERAL_MAX_CORR
+        angular = max(-max_ang, min(max_ang, angular))
 
         self._send_cmd(speed, angular)
 
@@ -482,16 +545,20 @@ class PrecisionDriveNode(MqttNode):
 
         err = _normalize_angle(self._target_yaw - theta)
         if abs(err) <= TURN_TOL_RAD:
-            # Aligned — start driving, update start position
             self._send_cmd(0.0, 0.0)
             with self._odom_lock:
                 self._start_x = self._odom_x
                 self._start_y = self._odom_y
+            self._heading_integral = 0.0
             self._state = 'driving'
             self.log_info('Aligned (err=%.1f deg), driving', math.degrees(err))
             return
 
-        speed = TURN_SPEED if abs(err) > TURN_SLOW_RAD else TURN_SPEED * 0.4
+        # Proportional speed with minimum
+        if abs(err) > TURN_SLOW_RAD:
+            speed = TURN_SPEED
+        else:
+            speed = TURN_SPEED_SLOW + (TURN_SPEED - TURN_SPEED_SLOW) * (abs(err) / TURN_SLOW_RAD)
         angular = speed * (1.0 if err > 0 else -1.0)
         self._send_cmd(0.0, angular)
 
@@ -501,11 +568,19 @@ class PrecisionDriveNode(MqttNode):
             theta = self._odom_theta
 
         err = _normalize_angle(self._target_yaw - theta)
+
+        # Confirmed arrival
         if abs(err) <= TURN_TOL_RAD:
+            self._arrive_count += 1
+            if self._arrive_count >= self._ARRIVE_CONFIRM:
+                self._send_cmd(0.0, 0.0)
+                self.log_info('Turn done (err=%.1f deg)', math.degrees(err))
+                self._finish_leg(True, 'turn done (%.1f deg)' % math.degrees(err))
+                return
             self._send_cmd(0.0, 0.0)
-            self.log_info('Turn done (err=%.1f deg)', math.degrees(err))
-            self._finish_leg(True, 'turn done (%.1f deg)' % math.degrees(err))
             return
+        else:
+            self._arrive_count = 0
 
         # Timeout
         timeout = min(abs(math.degrees(err)) * 0.1 + 5, MAX_LEG_TIMEOUT_S)
@@ -513,7 +588,11 @@ class PrecisionDriveNode(MqttNode):
             self._finish_leg(False, 'turn timeout')
             return
 
-        speed = TURN_SPEED if abs(err) > TURN_SLOW_RAD else TURN_SPEED * 0.4
+        # Proportional speed with minimum
+        if abs(err) > TURN_SLOW_RAD:
+            speed = TURN_SPEED
+        else:
+            speed = TURN_SPEED_SLOW + (TURN_SPEED - TURN_SPEED_SLOW) * (abs(err) / TURN_SLOW_RAD)
         angular = speed * (1.0 if err > 0 else -1.0)
         self._send_cmd(0.0, angular)
 
@@ -536,7 +615,7 @@ class PrecisionDriveNode(MqttNode):
                 self._prev_state = self._state
                 self._state = 'paused_lift'
                 self._send_cmd(0.0, 0.0)
-                self.log_warn('LIFT detected (|a|=%.2f m/s²) — motors stopped', a_mag)
+                self.log_warn('LIFT detected (|a|=%.2f m/s^2) — motors stopped', a_mag)
                 return True
         else:
             self._lift_low_count = 0
@@ -548,10 +627,8 @@ class PrecisionDriveNode(MqttNode):
         with self._odom_lock:
             theta = self._odom_theta
 
-        # Compute lateral acceleration (perpendicular to heading)
         cos_h = math.cos(theta)
         sin_h = math.sin(theta)
-        # Lateral component in body frame (perpendicular to direction of travel)
         a_lateral = abs(-ax * sin_h + ay * cos_h)
 
         if a_lateral > PUSH_ACCEL_THRESHOLD:
@@ -559,8 +636,9 @@ class PrecisionDriveNode(MqttNode):
             self._prev_state = self._state
             self._state = 'settling'
             self._settle_start = now
+            self._settle_duration = SETTLE_TIME_S
             self._send_cmd(0.0, 0.0)
-            self.log_warn('PUSH detected (a_lat=%.2f m/s²) — pausing to settle', a_lateral)
+            self.log_warn('PUSH detected (a_lat=%.2f m/s^2) — pausing to settle', a_lateral)
             return True
 
         return False
@@ -576,23 +654,26 @@ class PrecisionDriveNode(MqttNode):
 
         if a_mag >= LIFT_GRAVITY_OK:
             self._lift_low_count = 0
-            # Transition to settling (wait for stability before resuming)
             self._state = 'settling'
             self._settle_start = time.monotonic()
-            self.log_info('Back on ground (|a|=%.2f m/s²) — settling...', a_mag)
+            self._settle_duration = SETTLE_TIME_S
+            self.log_info('Back on ground (|a|=%.2f m/s^2) — settling...', a_mag)
 
     # ── Leg completion ───────────────────────────────────────────
 
     def _finish_leg(self, success, reason):
         self._send_cmd(0.0, 0.0)
+        self._heading_integral = 0.0
+        self._arrive_count = 0
 
         if self._scenario_legs:
             self._scenario_idx += 1
             if success:
-                # Small pause between legs
+                # Short pause between scenario legs
                 self._state = 'settling'
                 self._settle_start = time.monotonic()
-                self._prev_state = '_next_leg'  # sentinel
+                self._settle_duration = SCENARIO_SETTLE_S
+                self._prev_state = '_next_leg'
             else:
                 self.log_warn('Scenario "%s" leg %d failed: %s',
                               self._scenario_name, self._scenario_idx, reason)
@@ -600,7 +681,6 @@ class PrecisionDriveNode(MqttNode):
                 self._state = 'idle'
                 self._scenario_legs = []
         else:
-            # Single command
             self._publish_result(success, reason)
             self._state = 'idle'
 
@@ -608,17 +688,10 @@ class PrecisionDriveNode(MqttNode):
         self._send_cmd(0.0, 0.0)
         self._state = 'idle'
         self._scenario_legs = []
+        self._heading_integral = 0.0
+        self._arrive_count = 0
         self.log_info('Aborted: %s', reason)
         self._publish_result(False, 'aborted: %s' % reason)
-
-    # ── Override settling to handle scenario continuation ─────────
-
-    def _control_loop_orig(self):
-        pass  # placeholder, actual logic is in _control_loop
-
-    # Patched in _control_loop: after settling, check if next leg
-    # This is handled inline in the settling state:
-    # When settling finishes and _prev_state == '_next_leg', start next leg
 
     # ── Publishing helpers ───────────────────────────────────────
 
@@ -660,7 +733,6 @@ class PrecisionDriveNode(MqttNode):
             s['heading_error_deg'] = 0.0
             s['lateral_error_cm'] = 0.0
 
-        # Disturbance indicator
         if self._state == 'paused_lift':
             s['disturbance'] = 'lift'
         elif self._state == 'settling' and self._prev_state in ('driving', 'turning', 'aligning'):
@@ -677,47 +749,6 @@ class PrecisionDriveNode(MqttNode):
             'scenario': self._scenario_name,
             'ts': self.timestamp(),
         })
-
-    # ── Override the settling exit to handle scenario transitions ─
-
-    def _control_loop(self):
-        if not self._odom_ready or not self._imu_calibrated:
-            return
-
-        # Check for disturbances (in any active state)
-        if self._state in ('driving', 'aligning', 'turning'):
-            disturbance = self._check_disturbances()
-            if disturbance:
-                return
-
-        state = self._state
-
-        if state == 'idle' or state == 'done':
-            return
-        elif state in ('paused_user', 'paused_push'):
-            self._send_cmd(0.0, 0.0)
-            return
-        elif state == 'paused_lift':
-            self._send_cmd(0.0, 0.0)
-            self._handle_lift_recovery()
-            return
-        elif state == 'settling':
-            self._send_cmd(0.0, 0.0)
-            if time.monotonic() - self._settle_start >= SETTLE_TIME_S:
-                if self._prev_state == '_next_leg':
-                    # Scenario: start next leg
-                    self._state = 'idle'  # temp
-                    self._start_next_leg()
-                else:
-                    self.log_info('Settled, resuming %s', self._prev_state)
-                    self._state = self._prev_state
-            return
-        elif state == 'aligning':
-            self._do_align()
-        elif state == 'driving':
-            self._do_drive()
-        elif state == 'turning':
-            self._do_turn()
 
 
 def main():

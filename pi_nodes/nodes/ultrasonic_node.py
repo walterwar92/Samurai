@@ -8,6 +8,7 @@ Publishes:
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
@@ -23,6 +24,9 @@ ECHO_PIN = 24
 MAX_RANGE = 2.0
 MIN_RANGE = 0.02
 
+# Consecutive read failures before attempting sensor re-init
+MAX_FAILURES = 10
+
 
 class UltrasonicNode(MqttNode):
     PUBLISH_DELTA = 0.01   # m — publish only when change exceeds this
@@ -35,29 +39,67 @@ class UltrasonicNode(MqttNode):
         self._simulated = True
         self._last_published = -1.0
         self._last_publish_time = 0.0
+        self._fail_count = 0
+        self._last_valid = MAX_RANGE
         # Pre-allocated message dict — updated in-place
         self._msg = {'range': 0.0, 'ts': 0.0}
 
-        if _HW:
-            try:
-                self._sensor = DistanceSensor(
-                    echo=ECHO_PIN, trigger=TRIGGER_PIN,
-                    max_distance=MAX_RANGE)
-                self._simulated = False
-                self.log_info('HC-SR04 ready (trig=%d echo=%d)',
-                              TRIGGER_PIN, ECHO_PIN)
-            except Exception as exc:
-                self.log_error('HC-SR04 init failed: %s — simulated', exc)
-        else:
-            self.log_warn('gpiozero unavailable — ultrasonic simulated')
+        self._init_sensor()
 
         self.create_timer(0.05, self._publish)  # 20 Hz read rate
+
+    def _init_sensor(self):
+        """Initialize or re-initialize HC-SR04 sensor."""
+        if self._sensor is not None:
+            try:
+                self._sensor.close()
+            except Exception:
+                pass
+            self._sensor = None
+
+        if not _HW:
+            self.log_warn('gpiozero unavailable — ultrasonic simulated')
+            return
+
+        try:
+            self._sensor = DistanceSensor(
+                echo=ECHO_PIN, trigger=TRIGGER_PIN,
+                max_distance=MAX_RANGE)
+            self._simulated = False
+            self._fail_count = 0
+            self.log_info('HC-SR04 ready (trig=%d echo=%d)',
+                          TRIGGER_PIN, ECHO_PIN)
+        except Exception as exc:
+            self.log_error('HC-SR04 init failed: %s — simulated', exc)
+            self._simulated = True
 
     def _publish(self):
         if self._simulated:
             dist = MAX_RANGE
         else:
-            dist = self._sensor.distance
+            try:
+                dist = self._sensor.distance
+                # Validate range
+                if dist < MIN_RANGE:
+                    dist = MIN_RANGE
+                elif dist > MAX_RANGE:
+                    dist = MAX_RANGE
+                self._last_valid = dist
+                self._fail_count = 0
+            except Exception as exc:
+                self._fail_count += 1
+                if self._fail_count <= 3 or self._fail_count % 50 == 0:
+                    self.log_warn('HC-SR04 read error (%d): %s',
+                                  self._fail_count, exc)
+                # Use last valid reading to avoid data gap
+                dist = self._last_valid
+
+                # After too many failures, re-init sensor
+                if self._fail_count >= MAX_FAILURES:
+                    self.log_error('HC-SR04 %d consecutive failures — '
+                                   're-initializing sensor', self._fail_count)
+                    self._init_sensor()
+                    return
 
         # Publish only on significant change or after force interval
         now = self.timestamp()
