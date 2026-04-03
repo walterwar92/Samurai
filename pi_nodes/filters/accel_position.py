@@ -45,7 +45,7 @@ ZUPT_GYRO_ENTER = 0.015
 ZUPT_ACCEL_ENTER = 0.10
 ZUPT_GYRO_EXIT = 0.04
 ZUPT_ACCEL_EXIT = 0.25
-ZUPT_ENTER_COUNT = 5
+ZUPT_ENTER_COUNT = 3
 ZUPT_EXIT_COUNT = 3
 
 # ── Velocity / lateral decay ─────────────────────────────────────
@@ -272,8 +272,8 @@ class AccelPositionEstimator:
         # Command-timeout ZUPT: if no commands for this many IMU samples
         # AND velocity is small, force enter stationary even if accel
         # is noisy (vibrations after impulse).
-        # At 50 Hz, 15 samples = 300ms.
-        self._CMD_STOP_TIMEOUT = 15
+        # At 50 Hz, 8 samples = 160ms — tracked robot stops almost instantly.
+        self._CMD_STOP_TIMEOUT = 8
         self._no_cmd_count = 0
 
         # -- Adaptive wheel scale --

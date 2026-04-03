@@ -427,9 +427,11 @@ class DashboardNode(Node):
         with self._lock:
             self._robot_pose     = {'x': round(x, 3), 'y': round(y, 3),
                                     'yaw': round(theta, 3)}
+            speed = d.get('speed', abs(vx))
             self._robot_velocity = {'linear_x': round(vx, 3),
                                     'linear_y': 0.0,
-                                    'angular_z': round(vz, 3)}
+                                    'angular_z': round(vz, 3),
+                                    'speed': round(speed, 3)}
             self._robot_stationary = stationary
 
     def _mqtt_claw_state(self, payload):
@@ -834,6 +836,7 @@ class DashboardNode(Node):
                     **self._robot_velocity,
                     'linear':  self._robot_velocity.get('linear_x', 0.0),
                     'angular': self._robot_velocity.get('angular_z', 0.0),
+                    'speed':   self._robot_velocity.get('speed', 0.0),
                 },
                 'cmd_velocity': self._cmd_velocity,
                 'map_info':     self._map_info,

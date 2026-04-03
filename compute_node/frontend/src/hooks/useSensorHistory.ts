@@ -15,9 +15,9 @@ export interface SensorSample {
   accelX: number
   accelY: number
   accelZ: number
-  // Integrated speed from accelerometer (м/с)
-  accelSpeed: number
-  // Odometry speed
+  // Fused speed from backend EKF (м/с) — true robot speed
+  fusedSpeed: number
+  // Odometry linear velocity (forward component, signed)
   linearSpeed: number
   angularSpeed: number
 }
@@ -31,9 +31,6 @@ export function useSensorHistory(state: RobotState | null) {
   const gravityRef = useRef<{ x: number; y: number; z: number; calibrated: boolean; count: number }>({
     x: 0, y: 0, z: 0, calibrated: false, count: 0,
   })
-  // Accumulated velocity from accelerometer integration
-  const integratedVelRef = useRef(0)
-  const lastTimeRef = useRef<number | null>(null)
 
   const data = useMemo(() => {
     if (!state) return samplesRef.current
@@ -59,32 +56,16 @@ export function useSensorHistory(state: RobotState | null) {
       }
     }
 
-    // Compensated acceleration (remove gravity)
+    // Compensated acceleration (remove gravity) — for graph display only
     const compAx = rawAx - grav.x
     const compAy = rawAy - grav.y
     const compAz = rawAz - grav.z
 
-    // Integrate acceleration to get speed estimate
-    const dt = lastTimeRef.current !== null ? (now - lastTimeRef.current) : 0
-    lastTimeRef.current = now
-
-    if (grav.calibrated && dt > 0 && dt < 1) {
-      // Forward acceleration magnitude (use X and Y as horizontal plane)
-      const horizontalAccel = Math.sqrt(compAx * compAx + compAy * compAy)
-      // Sign: use compAx direction as "forward"
-      const signedAccel = compAx >= 0 ? horizontalAccel : -horizontalAccel
-
-      integratedVelRef.current += signedAccel * 9.81 * dt
-
-      // Apply decay to counteract drift (high-pass effect)
-      // Without this, noise accumulates indefinitely
-      integratedVelRef.current *= 0.98
-
-      // Clamp small values to zero (deadband)
-      if (Math.abs(integratedVelRef.current) < 0.005) {
-        integratedVelRef.current = 0
-      }
-    }
+    // Use backend-computed fused speed (EKF + ZUPT).
+    // This is the true robot speed — properly filtered, with instant
+    // zero when stopped (ZUPT), and accurate during motion (accel+wheel fusion).
+    const isStationary = state.stationary ?? false
+    const fusedSpeed = isStationary ? 0 : (state.velocity?.speed ?? Math.abs(state.velocity?.linear ?? 0))
 
     const sample: SensorSample = {
       t: Math.round(now * 10) / 10,
@@ -99,7 +80,7 @@ export function useSensorHistory(state: RobotState | null) {
       accelX: compAx,
       accelY: compAy,
       accelZ: compAz,
-      accelSpeed: integratedVelRef.current,
+      fusedSpeed,
       linearSpeed: state.velocity?.linear ?? 0,
       angularSpeed: state.velocity?.angular ?? 0,
     }

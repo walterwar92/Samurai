@@ -78,19 +78,19 @@ export function SensorCharts({ data }: SensorChartsProps) {
               <Legend wrapperStyle={{ fontSize: 10 }} />
               <Line
                 type="monotone"
-                dataKey="linearSpeed"
+                dataKey="fusedSpeed"
                 stroke="#22c55e"
                 strokeWidth={2}
                 dot={false}
-                name="Одометрия лин."
+                name="Скорость (EKF)"
               />
               <Line
                 type="monotone"
-                dataKey="accelSpeed"
+                dataKey="linearSpeed"
                 stroke="#f59e0b"
                 strokeWidth={1.5}
                 dot={false}
-                name="Акселерометр"
+                name="Лин. (vx)"
                 strokeDasharray="4 2"
               />
               <Line
