@@ -588,6 +588,7 @@ body {
 
 .chart-block canvas {
   width: 100%;
+  height: 130px;
   background: var(--bg);
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -637,7 +638,7 @@ body {
       <h2>Графики сенсоров</h2>
       <button class="modal-close" id="chartsClose">&times;</button>
     </div>
-    <div class="modal-body" style="padding:10px 14px;">
+    <div class="modal-body" style="padding:10px 14px; max-height:80vh; overflow-y:auto;">
       <div class="chart-block">
         <div class="chart-label">Батарея (%) / Температура (&deg;C)</div>
         <canvas id="chartBattTemp" height="130"></canvas>
@@ -653,6 +654,10 @@ body {
       <div class="chart-block">
         <div class="chart-label">Одометрия (X / Y)</div>
         <canvas id="chartOdom" height="130"></canvas>
+      </div>
+      <div class="chart-block">
+        <div class="chart-label">Скорость (м/с) / Угловая (рад/с)</div>
+        <canvas id="chartSpeed" height="130"></canvas>
       </div>
     </div>
   </div>
@@ -1706,6 +1711,9 @@ const chartHistory = {
   range: [],
   odomX: [],
   odomY: [],
+  vLinear: [],
+  vAngular: [],
+  vSpeed: [],
 };
 const chartT0 = Date.now();
 
@@ -1722,6 +1730,10 @@ socket.on('state_update', (data) => {
   chartHistory.range.push(data.range_m >= 0 ? data.range_m : 0);
   chartHistory.odomX.push(data.pose ? data.pose.x : 0);
   chartHistory.odomY.push(data.pose ? data.pose.y : 0);
+  const vel = data.velocity || {};
+  chartHistory.vLinear.push(vel.linear != null ? vel.linear : 0);
+  chartHistory.vAngular.push(vel.angular != null ? vel.angular : 0);
+  chartHistory.vSpeed.push(vel.speed != null ? vel.speed : Math.abs(vel.linear || 0));
 
   // Trim to max
   if (chartHistory.t.length > MAX_CHART_POINTS) {
@@ -1739,17 +1751,25 @@ chartsModal.addEventListener('click', (e) => {
   if (e.target === chartsModal) chartsModal.classList.remove('open');
 });
 
+// Chart tooltip element
+const chartTooltip = document.createElement('div');
+chartTooltip.style.cssText = 'position:fixed;pointer-events:none;display:none;background:#1a1d27;border:1px solid #4fc3f7;border-radius:6px;padding:6px 10px;font-size:11px;color:#e0e0e0;z-index:9999;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.5);';
+document.body.appendChild(chartTooltip);
+
+// Store chart metadata for hover lookup
+const chartMeta = {};
+
 // Generic line chart renderer
 function drawChart(canvasId, series, yMin, yMax) {
   const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext('2d');
   const rect = canvas.getBoundingClientRect();
-  const W = Math.round(rect.width * devicePixelRatio);
-  const H = Math.round(rect.height * devicePixelRatio);
-  if (canvas.width !== W || canvas.height !== H) {
-    canvas.width = W;
-    canvas.height = H;
-  }
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.round(rect.width * dpr);
+  const H = Math.round(rect.height * dpr);
+  canvas.width = W;
+  canvas.height = H;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
   const pad = { l: 45 * devicePixelRatio, r: 10 * devicePixelRatio, t: 10 * devicePixelRatio, b: 22 * devicePixelRatio };
@@ -1777,6 +1797,9 @@ function drawChart(canvasId, series, yMin, yMax) {
     if (yMax == null) yMax = hi + margin;
   }
   const yRange = yMax - yMin || 1;
+
+  // Save metadata for hover
+  chartMeta[canvasId] = { series, tMin, tMax, tRange, yMin, yMax, yRange, pad, plotW, plotH, n };
 
   // Grid lines
   ctx.strokeStyle = '#2a2d3a';
@@ -1828,7 +1851,78 @@ function drawChart(canvasId, series, yMin, yMax) {
     ctx.fillText(s.label, lx + 16 * devicePixelRatio, pad.t + 9 * devicePixelRatio);
     lx += ctx.measureText(s.label).width + 30 * devicePixelRatio;
   }
+
+  // Draw hover crosshair if this chart has active hover
+  const hoverIdx = canvas._hoverIdx;
+  if (hoverIdx != null && hoverIdx >= 0 && hoverIdx < n) {
+    const hx = pad.l + ((times[hoverIdx] - tMin) / tRange) * plotW;
+    ctx.strokeStyle = 'rgba(79,195,247,0.4)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(hx, pad.t);
+    ctx.lineTo(hx, pad.t + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Draw dots at intersection
+    for (const s of series) {
+      const dy = pad.t + (1 - (s.data[hoverIdx] - yMin) / yRange) * plotH;
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(hx, dy, 3 * devicePixelRatio, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 }
+
+// Attach hover handlers to all chart canvases
+function initChartHover(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || canvas._hoverBound) return;
+  canvas._hoverBound = true;
+
+  canvas.addEventListener('mousemove', (e) => {
+    const meta = chartMeta[canvasId];
+    if (!meta || meta.n < 2) { chartTooltip.style.display = 'none'; return; }
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * devicePixelRatio;
+    const padL = meta.pad.l;
+    // Map mouse X to time
+    const frac = (mx - padL) / meta.plotW;
+    if (frac < 0 || frac > 1) { chartTooltip.style.display = 'none'; canvas._hoverIdx = null; return; }
+    const t = meta.tMin + frac * meta.tRange;
+    // Find closest index
+    const times = chartHistory.t;
+    let best = 0, bestDist = Infinity;
+    for (let i = 0; i < meta.n; i++) {
+      const d = Math.abs(times[i] - t);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    canvas._hoverIdx = best;
+    // Build tooltip
+    let html = '<div style="color:#4fc3f7;margin-bottom:3px;font-weight:600;">t = ' + times[best].toFixed(1) + 'с</div>';
+    for (const s of meta.series) {
+      const val = s.data[best];
+      html += '<div><span style="color:' + s.color + ';">\u25CF</span> ' + s.label + ': <b>' + (val != null ? val.toFixed(3) : '—') + '</b></div>';
+    }
+    chartTooltip.innerHTML = html;
+    chartTooltip.style.display = 'block';
+    chartTooltip.style.left = (e.clientX + 14) + 'px';
+    chartTooltip.style.top = (e.clientY - 10) + 'px';
+    // Keep tooltip within viewport
+    const ttRect = chartTooltip.getBoundingClientRect();
+    if (ttRect.right > window.innerWidth) chartTooltip.style.left = (e.clientX - ttRect.width - 10) + 'px';
+    if (ttRect.bottom > window.innerHeight) chartTooltip.style.top = (e.clientY - ttRect.height - 10) + 'px';
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    chartTooltip.style.display = 'none';
+    canvas._hoverIdx = null;
+  });
+}
+
+// Init hover for all chart canvases
+['chartBattTemp','chartIMU','chartRange','chartOdom','chartSpeed'].forEach(initChartHover);
 
 // Render all charts at 4 Hz while modal open
 setInterval(() => {
@@ -1848,6 +1942,11 @@ setInterval(() => {
   drawChart('chartOdom', [
     { data: chartHistory.odomX, color: '#ec4899', label: 'X' },
     { data: chartHistory.odomY, color: '#14b8a6', label: 'Y' },
+  ], null, null);
+  drawChart('chartSpeed', [
+    { data: chartHistory.vSpeed, color: '#22c55e', label: 'Скорость (EKF)' },
+    { data: chartHistory.vLinear, color: '#f59e0b', label: 'Лин. (vx)' },
+    { data: chartHistory.vAngular, color: '#a855f7', label: 'Угловая (рад/с)' },
   ], null, null);
 }, 250);
 </script>

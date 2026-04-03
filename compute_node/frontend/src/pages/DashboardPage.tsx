@@ -13,6 +13,7 @@ import { EventLog } from '@/components/log/EventLog'
 import { CommandInput } from '@/components/controls/CommandInput'
 import { QuickCommandButtons } from '@/components/controls/QuickCommandButtons'
 import { DebugModal } from '@/components/debug/DebugModal'
+import { GamepadController } from '@/components/controls/GamepadController'
 import { SensorCharts } from '@/components/charts/SensorCharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -122,6 +123,9 @@ export function DashboardPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* ── Геймпад ── */}
+              <GamepadController />
 
               {/* ── Обнаружение ── */}
               <DetectionBanner detection={state?.detection ?? null} />

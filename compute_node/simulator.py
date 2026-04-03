@@ -727,9 +727,11 @@ class SimFSM:
 
         # Autonomous commands
         if 'вызови' in text and 'машин' in text:
+            self._manual_mode = False
             self._transition(State.CALLING)
             return
         if 'получи' in text or 'возьми' in text or 'найди' in text:
+            self._manual_mode = False
             self.target_action = 'grab'
             self.target_colour = self._extract_colour(text)
             c = self.target_colour or 'любой'
@@ -741,6 +743,7 @@ class SimFSM:
             self._transition(State.IDLE)
             return
         if 'домой' in text or 'вернись' in text:
+            self._manual_mode = False
             self._transition(State.RETURNING)
             return
 
@@ -1365,7 +1368,14 @@ def main():
 
     @app.route('/')
     @app.route('/dashboard')
+    def serve_dashboard():
+        return render_template('dashboard.html')
+
     @app.route('/admin')
+    def serve_admin():
+        return render_template('admin.html')
+
+    @app.route('/react')
     @app.route('/3d')
     def serve_spa():
         return send_from_directory(static_dir, 'index.html')
@@ -1487,8 +1497,8 @@ def main():
         body = request.get_json(silent=True)
         if body is None:
             return json_err("Request body must be JSON")
-        linear = body.get('linear')
-        angular = body.get('angular')
+        linear = body.get('linear', body.get('linear_x'))
+        angular = body.get('angular', body.get('angular_z'))
         if linear is not None and not isinstance(linear, (int, float)):
             return json_err("'linear' must be a number")
         if angular is not None and not isinstance(angular, (int, float)):
@@ -1946,15 +1956,21 @@ def main():
                     ],
                     'imu_gyro_z': round(sensors.imu_gyro_z, 3),
                     'imu_accel_x': round(sensors.accel_x, 3),
+                    'imu_accel': [round(sensors.accel_x, 3), 0.0, 9.81],
+                    'imu_gyro': [0.0, 0.0, round(sensors.imu_gyro_z, 3)],
                     'pose': {
                         'x': round(robot.x, 3),
                         'y': round(robot.y, 3),
                         'yaw': round(robot.theta, 3),
                         'yaw_deg': round(math.degrees(robot.theta), 1),
                     },
+                    'stationary': abs(robot.v_linear) < 0.001 and abs(robot.v_angular) < 0.01,
                     'velocity': {
                         'linear': round(robot.v_linear, 4),
                         'angular': round(robot.v_angular, 4),
+                        'speed': round(abs(robot.v_linear), 4),
+                        'linear_x': round(robot.v_linear, 4),
+                        'angular_z': round(robot.v_angular, 4),
                     },
                     'actuators': {
                         'claw_open': robot.claw_open,
