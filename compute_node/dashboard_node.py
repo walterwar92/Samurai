@@ -99,9 +99,8 @@ from std_msgs.msg import String
 
 import socketio
 from fastapi import FastAPI, Request
-from fastapi.responses import Response, JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import Response, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -988,43 +987,26 @@ def create_app(ros_node: DashboardNode):
     async def startup():
         asyncio.create_task(_sio_push_loop())
 
-    # ── Page routes ─────────────────────────────────────────────────
+    # ── Page routes (React SPA — all pages served from index.html) ─
     templates_dir = os.path.join(base_dir, 'templates')
     index_html = os.path.join(static_dir, 'index.html')
-    templates = Jinja2Templates(directory=templates_dir)
 
     def _serve_spa():
-        """Serve React SPA index.html."""
+        """Serve React SPA index.html, fallback to old HTML templates."""
         if os.path.isfile(index_html):
             return FileResponse(index_html)
         return JSONResponse({'error': 'Frontend not built — run npm build in compute_node/frontend/'}, 404)
 
     @app.get('/')
     async def serve_root():
-        dashboard_html = os.path.join(templates_dir, 'dashboard.html')
-        if os.path.isfile(dashboard_html):
-            with open(dashboard_html, 'r', encoding='utf-8') as f:
-                return HTMLResponse(f.read())
         return _serve_spa()
 
     @app.get('/dashboard')
     async def serve_dashboard():
-        dashboard_html = os.path.join(templates_dir, 'dashboard.html')
-        if os.path.isfile(dashboard_html):
-            with open(dashboard_html, 'r', encoding='utf-8') as f:
-                return HTMLResponse(f.read())
         return _serve_spa()
 
     @app.get('/admin')
     async def serve_admin():
-        admin_html = os.path.join(templates_dir, 'admin.html')
-        if os.path.isfile(admin_html):
-            with open(admin_html, 'r', encoding='utf-8') as f:
-                return HTMLResponse(f.read())
-        return _serve_spa()
-
-    @app.get('/react')
-    async def serve_react():
         return _serve_spa()
 
     @app.get('/3d')
