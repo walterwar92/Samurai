@@ -109,4 +109,8 @@ export const api = {
   // Precision drive
   precisionDriveCommand: (body: object) =>
     post('/api/precision_drive/command', body),
+
+  // LED
+  setLed: (mode: string) =>
+    post('/api/led/command', { mode }),
 }

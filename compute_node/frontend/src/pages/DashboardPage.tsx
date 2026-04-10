@@ -13,6 +13,10 @@ import { EventLog } from '@/components/log/EventLog'
 import { CommandInput } from '@/components/controls/CommandInput'
 import { QuickCommandButtons } from '@/components/controls/QuickCommandButtons'
 import { DebugModal } from '@/components/debug/DebugModal'
+import { GamepadController } from '@/components/controls/GamepadController'
+import { PathRecorderPanel } from '@/components/controls/PathRecorderPanel'
+import { ActuatorToggles } from '@/components/actuators/ActuatorToggles'
+import { LedPanel } from '@/components/controls/LedPanel'
 import { SensorCharts } from '@/components/charts/SensorCharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -123,6 +127,24 @@ export function DashboardPage() {
                 </CardContent>
               </Card>
 
+              {/* ── Актуаторы ── */}
+              <Card>
+                <CardHeader className="py-2 px-3">
+                  <CardTitle className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
+                    Актуаторы
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-3">
+                  <ActuatorToggles actuators={state?.actuators} collisionGuardEnabled={state?.collision_guard_enabled} />
+                </CardContent>
+              </Card>
+
+              {/* ── Геймпад ── */}
+              <GamepadController />
+
+              {/* ── LED ── */}
+              <LedPanel />
+
               {/* ── Обнаружение ── */}
               <DetectionBanner detection={state?.detection ?? null} />
             </div>
@@ -162,6 +184,11 @@ export function DashboardPage() {
                 </Button>
               </div>
             </div>
+
+            <Separator />
+
+            {/* Запись пути */}
+            <PathRecorderPanel pathRecorder={state?.path_recorder ?? null} />
 
             <Separator />
 
