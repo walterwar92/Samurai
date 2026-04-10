@@ -51,10 +51,12 @@ WHEEL_BASE = 0.17
 COLLISION_GUARD_STOP_M  = 0.20   # full stop distance
 COLLISION_GUARD_SLOW_M  = 0.40   # start slowing down
 
-# Wheel odometry scale correction — calibrate by driving a known distance
-# and comparing measured vs actual. >1.0 = robot moves further than reported.
-WHEEL_SCALE_LINEAR = 1.0    # tune: measure 1m, adjust if odom reads differently
-WHEEL_SCALE_ANGULAR = 1.0   # tune: measure 360° turn, adjust accordingly
+# Wheel odometry scale correction (from config.yaml → wheel_calibration).
+# Forward and backward have different efficiencies due to motor/gearbox asymmetry.
+# >1.0 means the robot travels further than the commanded distance implies.
+WHEEL_SCALE_FWD     = cfg('wheel_calibration.scale_linear_fwd', 1.235)
+WHEEL_SCALE_BWD     = cfg('wheel_calibration.scale_linear_bwd', 0.988)
+WHEEL_SCALE_ANGULAR = cfg('wheel_calibration.scale_angular', 1.0)
 
 SPEED_PROFILES = {
     'slow':   (0.10, 0.8),
@@ -361,8 +363,8 @@ class MotorNode(MqttNode):
         cmd_is_moving = (abs(lin_cmd) >= DEADZONE_LINEAR or
                          abs(ang_cmd) >= DEADZONE_ANGULAR)
 
-        # Apply wheel calibration scale factors
-        lin_scaled = lin_cmd * WHEEL_SCALE_LINEAR
+        # Apply direction-dependent wheel scale (fwd/bwd differ by ~20%)
+        lin_scaled = lin_cmd * (WHEEL_SCALE_FWD if lin_cmd >= 0.0 else WHEEL_SCALE_BWD)
 
         if self._pos_estimator_ready:
             self._pos_estimator.set_cmd_moving(cmd_is_moving)

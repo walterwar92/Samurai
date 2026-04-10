@@ -90,6 +90,14 @@ SETTLE_TIME_S        = cfg('precision_drive.settle_time_s', 0.3)          # redu
 TIMEOUT_PER_CM_S  = cfg('precision_drive.timeout_per_cm_s', 0.5)
 MAX_LEG_TIMEOUT_S = cfg('precision_drive.max_leg_timeout_s', 30.0)
 
+# Motor trim — feedforward angular correction for physical motor imbalance.
+# Compensates the weaker motor so the robot goes straight without relying
+# solely on the reactive PI heading controller.
+# Formula: motor_trim_pct / 100 * MAX_ANGULAR (2.0 rad/s)
+# Sign:  forward → +trim,  backward → −trim  (same physical fix, mirrored direction)
+_MAX_ANGULAR_RAD_S = 2.0   # fast profile max (rad/s)
+MOTOR_TRIM_RAD_S = cfg('wheel_calibration.motor_trim_pct', -12.003) / 100.0 * _MAX_ANGULAR_RAD_S
+
 # Scenario transition — shorter pause between legs
 SCENARIO_SETTLE_S = cfg('precision_drive.scenario_settle_s', 0.15)
 
@@ -536,7 +544,11 @@ class PrecisionDriveNode(MqttNode):
         max_ang = HEADING_MAX_CORR + LATERAL_MAX_CORR
         angular = max(-max_ang, min(max_ang, angular))
 
-        self._send_cmd(speed, angular)
+        # Feedforward motor trim: adds a constant bias to compensate the
+        # weaker motor. Sign mirrors direction so the same physical
+        # asymmetry is corrected whether driving forward or backward.
+        trim = MOTOR_TRIM_RAD_S if speed >= 0 else -MOTOR_TRIM_RAD_S
+        self._send_cmd(speed, angular + trim)
 
     def _do_align(self):
         """Turn to target heading before driving."""
