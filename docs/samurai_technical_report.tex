@@ -1,0 +1,1441 @@
+%==============================================================
+% SAMURAI ROBOT — ПОЛНЫЙ ТЕХНИЧЕСКИЙ ОТЧЁТ
+% Архитектура системы управления
+%==============================================================
+\documentclass[12pt, a4paper]{article}
+
+%---------- Пакеты -------------------------------------------
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian,english]{babel}
+\usepackage{geometry}
+\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{bm}           % жирные математические символы
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{titletoc}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{float}
+\usepackage[protrusion=true,expansion=false]{microtype}
+\usepackage{lmodern}
+\usepackage{colortbl}
+
+%---------- Цветовая схема -----------------------------------
+\definecolor{primary}{RGB}{33, 97, 140}       % тёмно-синий
+\definecolor{secondary}{RGB}{39, 174, 96}      % зелёный
+\definecolor{accent}{RGB}{231, 76, 60}         % красный
+\definecolor{warning}{RGB}{230, 126, 34}       % оранжевый
+\definecolor{purple}{RGB}{142, 68, 173}        % фиолетовый
+\definecolor{gray}{RGB}{127, 140, 141}         % серый
+\definecolor{lightblue}{RGB}{214, 234, 248}    % светло-голубой
+\definecolor{lightgreen}{RGB}{212, 239, 223}   % светло-зелёный
+\definecolor{codebackground}{RGB}{248, 248, 248}
+
+%---------- Стиль страницы -----------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray}Samurai Robot — Система управления}
+\fancyhead[R]{\small\color{gray}\leftmark}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+%---------- Стиль секций -------------------------------------
+\titleformat{\section}
+  {\Large\bfseries\color{primary}}
+  {\thesection.}{0.8em}{}
+  [\vspace{-0.5em}\rule{\linewidth}{1.5pt}]
+
+\titleformat{\subsection}
+  {\large\bfseries\color{primary!80!black}}
+  {\thesubsection.}{0.7em}{}
+
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\color{primary!60!black}}
+  {\thesubsubsection.}{0.6em}{}
+
+%---------- Листинги кода ------------------------------------
+\lstset{
+  backgroundcolor=\color{codebackground},
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  captionpos=b,
+  commentstyle=\color{gray}\itshape,
+  keywordstyle=\color{primary}\bfseries,
+  stringstyle=\color{secondary},
+  numberstyle=\tiny\color{gray},
+  numbers=left,
+  numbersep=6pt,
+  frame=single,
+  rulecolor=\color{gray!30},
+  tabsize=4,
+  showstringspaces=false,
+  language=Python
+}
+
+%---------- tcolorbox окружения ------------------------------
+\tcbuselibrary{skins, breakable, theorems}
+
+\newtcolorbox{mathbox}[1][]{
+  enhanced, breakable,
+  colback=lightblue, colframe=primary,
+  fonttitle=\bfseries, title=#1,
+  left=4pt, right=4pt, top=4pt, bottom=4pt
+}
+
+\newtcolorbox{codebox}[1][]{
+  enhanced, breakable,
+  colback=codebackground, colframe=gray!50,
+  fonttitle=\bfseries\small, title=#1,
+  left=4pt, right=4pt, top=4pt, bottom=4pt
+}
+
+\newtcolorbox{notebox}[1][Примечание]{
+  enhanced, breakable,
+  colback=lightgreen, colframe=secondary,
+  fonttitle=\bfseries, title=#1,
+  left=4pt, right=4pt
+}
+
+\newtcolorbox{warnbox}[1][Внимание]{
+  enhanced, breakable,
+  colback=yellow!10, colframe=warning,
+  fonttitle=\bfseries, title=#1,
+  left=4pt, right=4pt
+}
+
+%---------- Гиперссылки --------------------------------------
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primary,
+  urlcolor=secondary,
+  citecolor=accent,
+  pdftitle={Samurai Robot — Технический отчёт},
+  pdfauthor={Samurai Project},
+  bookmarksopen=true
+}
+
+%---------- Математические операторы -------------------------
+\DeclareMathOperator{\sgn}{sgn}
+\DeclareMathOperator{\clamp}{clamp}
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert}
+\newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\T}{\mathsf{T}}       % транспонирование
+
+%==============================================================
+\begin{document}
+\selectlanguage{russian}
+
+%==============================================================
+% ТИТУЛЬНАЯ СТРАНИЦА
+%==============================================================
+\begin{titlepage}
+\begin{center}
+\vspace*{1cm}
+
+{\color{primary}\rule{\linewidth}{2pt}}
+\vspace{0.5cm}
+
+{\Huge\bfseries\color{primary} SAMURAI ROBOT}\\[0.4cm]
+{\LARGE\bfseries Система автономного управления}\\[0.3cm]
+{\large\itshape\color{gray} Полный технический отчёт}
+
+\vspace{0.5cm}
+{\color{primary}\rule{\linewidth}{2pt}}
+
+\vspace{1.5cm}
+
+\begin{tcolorbox}[
+  enhanced, width=0.85\textwidth,
+  colback=lightblue, colframe=primary,
+  halign=center, valign=center
+]
+\large
+\textbf{Архитектура: от постановки задачи до движения моторов}\\[0.5cm]
+\normalsize
+\begin{tabular}{ll}
+  \textbf{Платформа:}  & Гусеничный робот (Raspberry Pi 4B) \\
+  \textbf{ОС Pi:}      & Debian 13 Trixie (pure Python) \\
+  \textbf{ОС лэптоп:}  & Ubuntu + ROS2 Humble (Docker) \\
+  \textbf{Связь:}      & MQTT (Pi) $\leftrightarrow$ ROS2 (лэптоп) \\
+  \textbf{Задача:}     & Автономная охота за мячом \\
+  \textbf{Детектор:}   & YOLOv11n + HSV-классификация \\
+  \textbf{Навигация:}  & Log-odds SLAM + A* + Bug0 \\
+\end{tabular}
+\end{tcolorbox}
+
+\vspace{2cm}
+
+\begin{tabular}{|p{3.5cm}|p{8cm}|}
+\hline
+\rowcolor{primary!20}
+\textbf{Уровень} & \textbf{Ключевые компоненты} \\ \hline
+1. Постановка задачи   & FSM (10 состояний), голос, жесты, миссии \\ \hline
+2. Навигация           & Nav2/ROS2, SLAM, A*, Bug0 \\ \hline
+3. Оценка состояния    & IMU EKF, Velocity EKF, Accel-fusion \\ \hline
+4. Локальное упр-е     & PI-контроллер курса + путевой регулятор \\ \hline
+5. Безопасность        & Collision Guard, fallback\_nav, ZUPT \\ \hline
+6. Исполнение          & MotorNode $\to$ PCA9685 $\to$ PWM \\ \hline
+\end{tabular}
+
+\vfill
+{\small\color{gray} Версия 1.0 \quad|\quad Апрель 2026 \quad|\quad Самурай Проект}
+\end{center}
+\end{titlepage}
+
+%==============================================================
+% ОГЛАВЛЕНИЕ
+%==============================================================
+\newpage
+\tableofcontents
+\newpage
+
+%==============================================================
+% ОБЗОР АРХИТЕКТУРЫ
+%==============================================================
+\section{Обзор системной архитектуры}
+\label{sec:overview}
+
+\subsection{Концепция трёхуровневого разделения}
+
+Система Samurai реализует \textbf{трёхуровневую гетерогенную архитектуру}, разделённую по вычислительным возможностям узлов:
+
+\begin{tcolorbox}[enhanced, colback=lightblue, colframe=primary, title=\textbf{Три уровня системы}]
+\begin{description}[leftmargin=2cm]
+  \item[\color{primary}Pi (робот)] Pure Python 3 + paho-mqtt. Нет ROS2, нет Docker.
+    Все задачи реального времени: моторы, датчики, FSM, SLAM, фильтрация.
+  \item[\color{secondary}Лэптоп] ROS2 Humble в Docker. YOLO-детекция, Nav2, FastAPI-дашборд.
+    Подключается по Wi-Fi к брокеру Mosquitto на Pi.
+  \item[\color{warning}Android] Kotlin+Compose. REST + SocketIO + MQTT.
+    Offline-распознавание речи (Vosk).
+\end{description}
+\end{tcolorbox}
+
+\subsection{Поток данных (сигнальный граф)}
+
+\begin{center}
+\begin{tikzpicture}[
+  block/.style={rectangle, draw=primary, fill=lightblue, rounded corners,
+                minimum width=2.2cm, minimum height=1.1cm,
+                align=center, font=\small},
+  sensor/.style={rectangle, draw=secondary, fill=lightgreen, rounded corners,
+                 minimum width=2.6cm, minimum height=0.9cm,
+                 align=center, font=\small},
+  arrow/.style={->, thick, color=primary}
+]
+% ---- верхний ряд: 6 блоков с шагом 2.6 см ----
+\node[block] (task) at (0,    0) {1. Постановка\\ задачи\\ \tiny FSM, voice};
+\node[block] (nav)  at (2.6,  0) {2. Навигация\\ \tiny Nav2, A*};
+\node[block] (ekf)  at (5.2,  0) {3. Оценка\\ состояния\\ \tiny EKF};
+\node[block] (ctrl) at (7.8,  0) {4. Управление\\ \tiny PI};
+\node[block] (safe) at (10.4, 0) {5. Безопас-\\ ность\\ \tiny ColGuard};
+\node[block] (exec) at (13.0, 0) {6. Исполнение\\ \tiny PCA9685};
+
+% горизонтальные стрелки
+\draw[arrow] (task) -- (nav);
+\draw[arrow] (nav)  -- (ekf);
+\draw[arrow] (ekf)  -- (ctrl);
+\draw[arrow] (ctrl) -- (safe);
+\draw[arrow] (safe) -- (exec);
+
+% ---- нижний ряд: 2 блока ----
+\node[sensor] (sens) at (3.9, -2.5) {Датчики\\ \tiny IMU, odom, sonar};
+\node[sensor] (mot)  at (13.0,-2.5) {Движение\\ \tiny колёса, повороты};
+
+% вертикальные стрелки
+\draw[arrow] (exec)      -- (mot);
+\draw[arrow] (sens)      -- (ekf);
+\draw[arrow] (sens.west) to[out=180,in=270] (nav.south);
+
+% обратная связь
+\draw[arrow] (mot) -- node[below, font=\tiny, color=gray]{обратная связь} (sens);
+
+% стрелка: датчики -> оценка состояния (вверх)
+\end{tikzpicture}
+\end{center}
+
+\subsection{Топология MQTT-тем}
+
+Все узлы обмениваются через брокер Mosquitto под единым пространством имён:
+\[
+  \texttt{samurai/\{robot\_id\}/\{subsystem\}/\{topic\}}
+\]
+Базовый класс \texttt{MqttNode} инкапсулирует подключение, автоподписку, QoS, retain-флаги и мониторинг производительности (warn $>20$\,мс на callback, error $>200$\,мс на таймер).
+
+\newpage
+%==============================================================
+% БЛОК 1 — ПОСТАНОВКА ЗАДАЧИ
+%==============================================================
+\section{Блок 1: Постановка задачи}
+\label{sec:task}
+
+\subsection{Конечный автомат (FSM)}
+\label{sec:fsm}
+
+Центральный управляющий элемент — \textbf{fsm\_node.py} — реализует детерминированный конечный автомат (Mealy-машина) с 10 состояниями.
+
+\subsubsection{Граф состояний}
+
+\begin{center}
+\begin{tikzpicture}[
+  state/.style={circle, draw=primary, fill=lightblue, minimum size=1.5cm,
+                font=\tiny\bfseries, align=center},
+  trans/.style={->, thick, color=primary, font=\tiny}
+]
+\node[state] (idle)     at (0,0)     {IDLE};
+\node[state] (search)   at (3,1.5)   {SEARCH-\\ING};
+\node[state] (target)   at (6,1.5)   {TARGET-\\ING};
+\node[state] (approach) at (9,0)     {APPRO-\\ACHING};
+\node[state] (grab)     at (9,-2.5)  {GRAB-\\BING};
+\node[state] (return)   at (5,-2.5)  {RETUR-\\NING};
+\node[state] (replay)   at (2,-2.5)  {PATH\\ REPLAY};
+\node[state] (call)     at (0,-2.5)  {CALL-\\ING};
+\node[state] (patrol)   at (3,-5)    {PATROLL-\\ING};
+\node[state] (follow)   at (7,-5)    {FOLLO-\\WING};
+
+\draw[trans] (idle)     -- node[above]{grab cmd} (search);
+\draw[trans] (search)   -- node[above]{ball seen} (target);
+\draw[trans] (target)   -- node[above]{centered} (approach);
+\draw[trans] (approach) -- node[right]{range<0.1m} (grab);
+\draw[trans] (grab)     -- node[below]{done} (return);
+\draw[trans] (return)   -- node[below]{path ready} (replay);
+\draw[trans] (replay)   -- node[below]{arrived} (call);
+\draw[trans] (call)     -- node[left]{sent} (idle);
+\draw[trans] (idle)     -- node[left]{patrol cmd} (patrol);
+\draw[trans] (idle)     -- node[right]{follow cmd} (follow);
+\draw[trans] (patrol)   to[bend right=15] node[below]{stop} (idle);
+\draw[trans] (follow)   to[bend left=15] node[below]{stop} (idle);
+\draw[trans, color=accent] (approach) to[bend left=20] node[above,color=accent]{lost ball} (search);
+\draw[trans, color=accent] (target)   to[bend right=20] node[right,color=accent]{lost ball} (search);
+\end{tikzpicture}
+\end{center}
+
+\subsubsection{Алгоритм захвата мяча (последовательность GRABBING)}
+
+\begin{mathbox}[Временная диаграмма GRABBING]
+\[
+t \in [0,\, 1\text{ с}]: \quad v_{lin} = 0.05\;\text{м/с},\quad \theta_{claw} = 0^\circ \;(\text{открыть})
+\]
+\[
+t \in [1,\, 2\text{ с}]: \quad v_{lin} = 0,\quad \theta_{claw} = 0^\circ
+\]
+\[
+t \in [2,\, 3\text{ с}]: \quad v_{lin} = 0,\quad \theta_{claw} = 90^\circ \;(\text{закрыть})
+\]
+\[
+t > 3\text{ с}: \quad \text{переход} \to \texttt{RETURNING}
+\]
+\end{mathbox}
+
+\subsubsection{Логика наведения на мяч}
+
+\paragraph{Фаза TARGETING (угловое выравнивание).}
+Ошибка по горизонтали нормируется относительно ширины кадра (640 пикс.):
+\begin{equation}
+  e_x = \frac{x_{ball} + w_{ball}/2 - x_{img,center}}{x_{img,center}}, \quad x_{img,center} = 320\;\text{пикс.}
+\end{equation}
+Угловая скорость с первичным LP-фильтром:
+\begin{equation}
+  \omega_{target} = -e_x \cdot K_{steer},\quad K_{steer} = 0.8\;\text{рад/с}
+\end{equation}
+\begin{equation}
+  \omega_{cmd}[k] = 0.4\,\omega_{cmd}[k-1] + 0.6\,\omega_{target}[k]
+\end{equation}
+Переход в APPROACHING: $|e_x| < 0.15$.
+
+\paragraph{Фаза APPROACHING (линейное сближение).}
+\begin{equation}
+  v_{lin} =
+  \begin{cases}
+    0.12\;\text{м/с} & |e_x| < 0.15 \\
+    0.06\;\text{м/с} & \text{иначе}
+  \end{cases}
+\end{equation}
+Переход в GRABBING: $r_{sonar} < 0.10$\,м.
+
+\subsection{Голосовое управление (русский язык)}
+\label{sec:voice}
+
+Команды распознаются regex-паттернами по топику \texttt{samurai/\{id\}/voice\_command}:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Паттерн (regex)} & \textbf{Действие} & \textbf{Переход FSM} \\
+\midrule
+\verb|получи|возьми|найди|    & Захват мяча  & IDLE $\to$ SEARCHING \\
+\verb|стоп|остановись|стой|   & Стоп         & $* \to$ IDLE \\
+\verb|домой|вернись|          & Домой        & $* \to$ RETURNING \\
+\verb|патрул|обход|           & Патрулирование & IDLE $\to$ PATROLLING \\
+\verb|следуй|за мной|         & Слежение     & IDLE $\to$ FOLLOWING \\
+\verb|запиши путь|            & Запись пути  & — \\
+\verb|воспроизведи путь|      & Воспроизведение & — \\
+\verb|вперёд|прямо|           & Движение вперёд & — \\
+\verb|назад|                  & Движение назад  & — \\
+\verb|налево|влево|           & Поворот влево   & — \\
+\verb|направо|вправо|         & Поворот вправо  & — \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Жестовое управление}
+Узел YOLO-детектора публикует результаты распознавания жестов в топик
+\texttt{samurai/\{id\}/gesture/command}. FSM подписывается и обрабатывает события аналогично голосовым командам.
+
+\subsection{Миссионное планирование (mission\_node)}
+Опциональный узел \texttt{mission\_node} реализует последовательное выполнение задач из YAML-конфига:
+\begin{enumerate}[noitemsep]
+  \item \texttt{goto} — перемещение в точку (через \texttt{goal\_pose})
+  \item \texttt{grab} — запуск FSM-захвата
+  \item \texttt{patrol} — патрулирование маршрута
+  \item \texttt{wait} — ожидание события
+\end{enumerate}
+
+\newpage
+%==============================================================
+% БЛОК 2 — НАВИГАЦИЯ И ПЛАНИРОВАНИЕ
+%==============================================================
+\section{Блок 2: Навигация и планирование}
+\label{sec:nav}
+
+\subsection{Запись и воспроизведение пути (path\_recorder\_node)}
+\label{sec:path_recorder}
+
+Простейший метод навигации — запись одометрических поз при движении и воспроизведение их в обратном порядке (возврат домой).
+
+\subsubsection{Критерий записи точки}
+Новая поза записывается при выполнении хотя бы одного из условий:
+\begin{equation}
+  \Delta s = \sqrt{(x-x_p)^2 + (y-y_p)^2} > d_{rec} = 0.025\;\text{м}
+\end{equation}
+\begin{equation}
+  \Delta\theta = |\theta - \theta_p| > \alpha_{rec} = 0.06\;\text{рад} \approx 3.4^\circ
+\end{equation}
+
+\subsubsection{Воспроизведение (Pure Pursuit)}
+Путь воспроизводится с методом \textit{Pure Pursuit} с переменной точкой упреждения:
+\begin{equation}
+  L_d = 0.08\;\text{м} \quad \text{(lookahead distance)}
+\end{equation}
+
+Алгоритм на каждом шаге:
+\begin{enumerate}[noitemsep]
+  \item Найти ближайшую точку пути $\mathbf{w}_i$.
+  \item Найти точку упреждения $\mathbf{w}_{ld}$ на расстоянии $\geq L_d$ от робота.
+  \item Вычислить угол до $\mathbf{w}_{ld}$ в системе робота:
+    \[
+      \alpha = \operatorname{atan2}(w_{ld,y} - y,\; w_{ld,x} - x) - \theta
+    \]
+  \item Команда:
+    \[
+      v_{cmd} = v_{replay} = 0.18\;\text{м/с}, \quad
+      \omega_{cmd} = \frac{2v_{cmd}\sin\alpha}{L_d}
+    \]
+\end{enumerate}
+
+\subsection{Nav2 / ROS2 Humble}
+На стороне лэптопа поднимается полный стек навигации ROS2:
+\begin{itemize}[noitemsep]
+  \item \textbf{slam\_toolbox} — онлайн SLAM с лазером (или симулированными scans)
+  \item \textbf{nav2\_bt\_navigator} — Behaviour Tree навигатор
+  \item \textbf{nav2\_dwb\_controller} — DWB локальный планировщик
+  \item \textbf{nav2\_navfn\_planner} — Navfn глобальный планировщик (Dijkstra/A*)
+\end{itemize}
+Команда цели публикуется из FSM: \texttt{samurai/\{id\}/goal\_pose} $\to$ \texttt{/goal\_pose (PoseStamped)} через MQTT-мост.
+
+\subsection{A* в симуляторе}
+\label{sec:astar}
+
+Симулятор (\texttt{simulator.py}) использует самостоятельную реализацию A* на сетке $200{\times}200$ (разрешение 0.05 м):
+
+\subsubsection{Эвристика (Octile distance)}
+\begin{equation}
+  h(n) = \max(\Delta r, \Delta c) + (\sqrt{2}-1)\cdot\min(\Delta r, \Delta c)
+  \approx \max(\Delta r, \Delta c) + 0.414\cdot\min(\Delta r, \Delta c)
+\end{equation}
+Это точная нижняя оценка для 8-связной сетки с диагональным шагом.
+
+\subsubsection{Стоимость перехода}
+\begin{equation}
+  g(n, n') =
+  \begin{cases}
+    1.0    & \text{ортогональный шаг} \\
+    \sqrt{2} \approx 1.414 & \text{диагональный шаг}
+  \end{cases}
+\end{equation}
+
+\subsubsection{Расширение препятствий (Configuration Space)}
+Перед поиском препятствия расширяются на марж $m$:
+\begin{equation}
+  m = r_{robot} + r_{safety} = 0.12 + 0.10 = 0.22\;\text{м} \quad \Rightarrow\quad 5\;\text{ячеек}
+\end{equation}
+Операция: \texttt{binary\_dilation(obstacle\_mask, iterations=5)}.
+
+\subsection{Bug0 (аварийный планировщик)}
+Алгоритм \textit{Bug0} используется как \textbf{fallback\_nav\_node} при недоступности Nav2:
+\begin{enumerate}[noitemsep]
+  \item Двигаться к цели по прямой.
+  \item При обнаружении препятствия ($r_{sonar} < r_{thresh}$): следовать вдоль его границы (поворот на 90°, движение вдоль стены).
+  \item Когда направление на цель совпадает с текущим курсом и путь свободен: перейти в шаг 1.
+\end{enumerate}
+
+\newpage
+%==============================================================
+% БЛОК 3 — ОЦЕНИВАНИЕ СОСТОЯНИЯ
+%==============================================================
+\section{Блок 3: Оценивание состояния}
+\label{sec:estimation}
+
+Состояние робота полностью описывается вектором:
+\begin{equation}
+  \mathbf{s} = \bigl[x,\; y,\; \theta,\; v,\; \omega\bigr]^\T
+\end{equation}
+где $(x,y)$ — положение (м), $\theta$ — курс (рад), $v$ — линейная скорость (м/с), $\omega$ — угловая скорость (рад/с).
+
+\subsection{IMU-EKF (ekf\_imu.py)}
+\label{sec:ekf_imu}
+
+\subsubsection{Вектор состояния}
+Фильтр работает в плоскости (ground robot), оценивая только курс и смещение гироскопа:
+\begin{equation}
+  \mathbf{x}_{imu} = \begin{bmatrix} \psi \\ b_z \end{bmatrix}
+\end{equation}
+где $\psi$ — рыскание (yaw, рад), $b_z$ — смещение гироскопа по оси Z (рад/с).
+
+\subsubsection{Модель движения (Prediction step)}
+\begin{equation}
+  \hat{\psi}_{k|k-1} = \psi_{k-1} + (\omega_z^{meas} - b_z)\cdot\Delta t
+\end{equation}
+\begin{equation}
+  \hat{b}_{z,k|k-1} = b_z \quad \text{(случайное блуждание)}
+\end{equation}
+
+Матрица перехода и ковариации процесса:
+\begin{equation}
+  F = \begin{bmatrix} 1 & -\Delta t \\ 0 & 1 \end{bmatrix}, \quad
+  Q = \begin{bmatrix} q_\psi \Delta t & 0 \\ 0 & q_b \Delta t \end{bmatrix}
+\end{equation}
+\begin{equation}
+  q_\psi = 0.001\;\text{рад}^2,\quad q_b = 0.0001\;(\text{рад/с})^2
+\end{equation}
+
+Предсказание ковариации:
+\begin{equation}
+  P_{k|k-1} = F\, P_{k-1}\, F^\T + Q
+\end{equation}
+
+\subsubsection{ZUPT — Zero-velocity Update (коррекция нуля)}
+При стационарном состоянии ($|\omega_z^{corrected}| < \varepsilon_{enter}$) применяется Kalman-коррекция, используя условие $\omega_z = b_z$ как измерение:
+
+\begin{mathbox}[ZUPT: условие и коррекция]
+\textbf{Гистерезис:}
+\[
+  \text{stationary} =
+  \begin{cases}
+    \texttt{True}  & |\omega_z - b_z| < \varepsilon_{enter} = 0.015\;\text{рад/с},\quad N \geq 5 \\
+    \texttt{False} & |\omega_z - b_z| > \varepsilon_{exit} = 0.04\;\text{рад/с}
+  \end{cases}
+\]
+
+\textbf{Измерение:} $z = \omega_z^{meas}$, $H = [0,\; 1]$ (измеряем смещение)
+
+\[
+  S = P_{bb} + r_{zupt}, \quad r_{zupt} = 10^{-4}
+\]
+\[
+  K_\psi = P_{\psi b}/S, \quad K_b = P_{bb}/S
+\]
+\[
+  \psi \mathrel{+}= K_\psi \cdot (\omega_z - b_z), \quad
+  b_z \mathrel{+}= K_b \cdot (\omega_z - b_z)
+\]
+\end{mathbox}
+
+\subsubsection{Крен и тангаж из акселерометра}
+\begin{equation}
+  \phi = \arctan\!\left(\frac{a_y}{a_z}\right) - \phi_0, \quad
+  \vartheta = \arctan\!\left(\frac{-a_x}{\sqrt{a_y^2 + a_z^2}}\right) - \vartheta_0
+\end{equation}
+Ворота акселерометра (gate): обновление пропускается, если:
+\begin{equation}
+  \bigl|\norm{\mathbf{a}} - g\bigr| > \gamma \cdot g, \quad \gamma = 0.30
+\end{equation}
+
+\subsection{Velocity EKF (velocity\_ekf.py)}
+\label{sec:vel_ekf}
+
+\subsubsection{Два параллельных 2D-фильтра}
+Для осей X и Y работают независимые фильтры с одинаковой структурой:
+\begin{equation}
+  \mathbf{x}_v = \begin{bmatrix} v_x \\ b_{ax} \end{bmatrix}, \quad
+  \mathbf{x}_{vy} = \begin{bmatrix} v_y \\ b_{ay} \end{bmatrix}
+\end{equation}
+где $b_{ax}$, $b_{ay}$ — смещения акселерометра.
+
+\subsubsection{Модель двигателя (Prediction step)}
+Динамика первого порядка (lag-модель):
+\begin{equation}
+  \tau =
+  \begin{cases}
+    \tau_{brake} = 0.08\;\text{с} & v_{cmd} \cdot v < 0 \;\;\text{(торможение)} \\
+    \tau_{motor} = 0.25\;\text{с} & \text{иначе}
+  \end{cases}
+\end{equation}
+\begin{equation}
+  \alpha = \min\!\left(\frac{\Delta t}{\tau},\; 1.0\right)
+\end{equation}
+\begin{equation}
+  \hat{v}_{k|k-1} = v_k + (v_{cmd} - v_k)\cdot\alpha
+\end{equation}
+
+Якобиан предсказания (линеаризация):
+\begin{equation}
+  f_{vv} = 1 - \alpha, \quad f_{vb} = 0, \quad f_{bv} = 0, \quad f_{bb} = 1
+\end{equation}
+\begin{equation}
+  P_{k|k-1} =
+  \begin{bmatrix} f_{vv}^2 P_{vv} + q_v\Delta t & f_{vv}P_{vb} \\
+                  f_{vv}P_{bv}                   & P_{bb} + q_b\Delta t \end{bmatrix}
+\end{equation}
+\begin{equation}
+  q_v = 0.20, \quad q_b = 0.003
+\end{equation}
+
+\subsubsection{Обновление по акселерометру}
+Модель измерения: акселерометр интегрирует скорость + смещение:
+\begin{equation}
+  z_{acc} = v + b + \eta_{acc}, \quad H = [1,\; 1]
+\end{equation}
+\begin{equation}
+  \nu = z_{acc} - \hat{v} - \hat{b}, \quad
+  S = P_{vv} + P_{vb} + P_{bv} + P_{bb} + r_{acc}
+\end{equation}
+\begin{equation}
+  K_v = \frac{P_{vv} + P_{vb}}{S}, \quad K_b = \frac{P_{bv} + P_{bb}}{S}
+\end{equation}
+\begin{equation}
+  v \mathrel{+}= K_v\nu, \quad b \mathrel{+}= K_b\nu, \quad r_{acc} = 0.06
+\end{equation}
+
+\subsubsection{ZUPT для скорости}
+\begin{equation}
+  H_{zupt} = [1,\; 0], \quad z_{zupt} = 0
+\end{equation}
+\begin{equation}
+  S_{zupt} = P_{vv} + r_{zupt},\quad r_{zupt} = 10^{-4}
+\end{equation}
+\begin{equation}
+  K_v = P_{vv}/S_{zupt}, \quad K_b = P_{bv}/S_{zupt}
+\end{equation}
+\begin{equation}
+  v \mathrel{+}= K_v\cdot(-v), \quad b \mathrel{+}= K_b\cdot(-v)
+\end{equation}
+
+\subsubsection{Неголономная связь}
+Гусеничный робот не может двигаться в боковом направлении:
+\begin{equation}
+  v_y[k] \leftarrow v_y[k] \cdot (1 - \lambda_{lat}), \quad \lambda_{lat} = 0.15
+\end{equation}
+
+\subsubsection{Переcentрирование смещения (Anti-drift)}
+Каждые 500 обновлений ($\approx 10$\,с при 50\,Гц):
+\begin{equation}
+  v_{acc,x} \mathrel{-}= b_x, \quad v_{acc,y} \mathrel{-}= b_y, \quad b_x = b_y = 0
+\end{equation}
+
+\subsection{Оценка положения из акселерометра (accel\_position.py)}
+\label{sec:accel_pos}
+
+\subsubsection{Каскад фильтрации}
+\begin{equation}
+  \mathbf{a}_{raw} \xrightarrow{\text{Median spike reject}}
+  \mathbf{a}_{med} \xrightarrow{\text{2nd-order IIR LPF}}
+  \mathbf{a}_{filt} \xrightarrow{\text{Noise gate}}
+  \mathbf{a}_{clean} \xrightarrow{\text{VelEKF}}
+  \hat{v} \xrightarrow{\int}
+  \hat{x}
+\end{equation}
+
+\subsubsection{Удаление гравитации (Body $\to$ World)}
+Матрица поворота через углы Эйлера $(\phi, \vartheta, \psi)$:
+\begin{equation}
+  R = R_z(\psi)\,R_y(\vartheta)\,R_x(\phi)
+\end{equation}
+\begin{equation}
+  \mathbf{a}_{world} = R\,\mathbf{a}_{body} - \mathbf{g}_0, \quad
+  \mathbf{g}_0 = R\,\mathbf{g}_{calibrated}
+\end{equation}
+
+\subsubsection{2-й порядок IIR (каскадный LPF)}
+Два последовательных звена первого порядка:
+\begin{equation}
+  s_1[k] = s_1[k-1] + \alpha\bigl(x[k] - s_1[k-1]\bigr)
+\end{equation}
+\begin{equation}
+  s_2[k] = s_2[k-1] + \alpha\bigl(s_1[k] - s_2[k-1]\bigr)
+\end{equation}
+Параметр $\alpha = 0.4$ соответствует частоте среза $\approx 2.2$\,Гц при 50\,Гц дискретизации.
+
+\subsubsection{Адаптивный масштаб колёс}
+Онлайн-калибровка коэффициента колёс через сравнение с акселерометром:
+\begin{equation}
+  s[k] = s[k-1] + \mu\left(\frac{\Delta x_{acc}}{\Delta x_{wheel}} - s[k-1]\right),
+  \quad s \in [0.5,\; 2.0]
+\end{equation}
+
+\subsection{Полная одометрия (motor\_node.py)}
+\label{sec:odom}
+
+\subsubsection{Интегрирование положения}
+\begin{align}
+  x[k]      &= x[k-1] + v_x \cdot \Delta t \\
+  y[k]      &= y[k-1] + v_y \cdot \Delta t \\
+  \theta[k] &= \psi_{imu} \quad \text{(из IMU-EKF, приоритет)}
+\end{align}
+
+\subsubsection{Слияние скоростей}
+\begin{equation}
+  v_{x,fused} = \hat{v}_{accel}\cos\theta + \hat{v}_{y,accel}\sin\theta
+\end{equation}
+Если акселерометрный оценщик недоступен — используются команды \texttt{cmd\_vel}.
+
+\subsubsection{Публикуемое состояние @ 20 Гц}
+\begin{equation}
+  \mathbf{s}_{odom} = \bigl[x,\; y,\; \theta,\; v_x,\; \omega_z,\; a_x,\; a_y,\;
+  \text{stationary},\; \text{wheel\_scale}\bigr]^\T
+\end{equation}
+
+\newpage
+%==============================================================
+% БЛОК 4 — ЛОКАЛЬНОЕ УПРАВЛЕНИЕ
+%==============================================================
+\section{Блок 4: Локальное управление}
+\label{sec:control}
+
+\subsection{Precision Drive (precision\_drive\_node.py)}
+\label{sec:precision_drive}
+
+Узел реализует высокоточное прямолинейное движение и развороты с комбинацией курсового PI-регулятора и бокового корректора.
+
+\subsubsection{Профиль скорости}
+
+Трапецеидальный профиль скорости в зависимости от остатка дистанции $d_{rem}$:
+\begin{equation}
+  v_{cmd} =
+  \begin{cases}
+    v_{drive} = 0.12\;\text{м/с}  & d_{rem} > d_{slow} = 0.08\;\text{м} \\
+    v_{slow}  = 0.06\;\text{м/с}  & 0.02 < d_{rem} \leq 0.08\;\text{м} \\
+    v_{crawl} = 0.04\;\text{м/с}  & d_{rem} \leq 0.02\;\text{м}
+  \end{cases}
+\end{equation}
+
+Критерий прибытия: $d_{rem} < 5$\,мм в течение 3 последовательных тиков.
+
+\subsubsection{PI-регулятор курса}
+\begin{equation}
+  e_\theta[k] = \theta_{target} - \theta[k]
+\end{equation}
+\begin{equation}
+  I_\theta[k] = \clamp\!\bigl(I_\theta[k-1] + e_\theta[k]\cdot\Delta t,\; -0.3,\; +0.3\bigr)
+\end{equation}
+\begin{equation}
+  u_\theta[k] = \clamp\!\bigl(K_P\,e_\theta + K_I\,I_\theta,\; -0.4,\; +0.4\bigr)\;\text{рад/с}
+\end{equation}
+\begin{equation}
+  K_P = 2.5,\quad K_I = 0.3
+\end{equation}
+
+\subsubsection{Боковой корректор (Lateral correction)}
+Боковое отклонение от линии движения:
+\begin{equation}
+  e_{lat} = -(x - x_0)\sin\theta_0 + (y - y_0)\cos\theta_0
+\end{equation}
+где $(x_0, y_0, \theta_0)$ — поза начала манёвра.
+\begin{equation}
+  u_{lat} = \clamp\!\bigl(-K_{lat}\,e_{lat},\; -0.3,\; +0.3\bigr)
+\end{equation}
+\begin{equation}
+  \omega_{cmd} = u_\theta + u_{lat}
+\end{equation}
+
+\subsubsection{Алгоритм точного поворота}
+\begin{equation}
+  e_\psi[k] = \psi_{target} - \psi[k]
+\end{equation}
+\begin{equation}
+  \omega_{cmd} =
+  \begin{cases}
+    \sgn(e_\psi)\cdot\omega_{slow} & |e_\psi| > \varepsilon_{turn,fast} \\
+    \sgn(e_\psi)\cdot\omega_{crawl} & |e_\psi| \leq \varepsilon_{turn,fast}
+  \end{cases}
+\end{equation}
+Критерий завершения: $|e_\psi| < 0.02$\,рад ($\approx 1.1^\circ$).
+
+\subsubsection{Сценарии испытаний}
+\begin{center}
+\begin{tabular}{lp{9cm}}
+\toprule
+\textbf{Сценарий} & \textbf{Последовательность} \\
+\midrule
+\texttt{cross}   & вперёд $d$, +90°, вперёд $d$, $-90°$, вперёд $d$ \\
+\texttt{square}  & [вперёд $d$, +90°] $\times$ 4 \\
+\texttt{line}    & вперёд $d$ с промежуточными коррекциями курса \\
+\texttt{zigzag}  & [вперёд 45°, поворот, назад 45°, поворот] $\times N$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Обнаружение и обработка помех}
+
+\paragraph{Удар/толчок (Push detection):}
+\begin{equation}
+  |a_y| > 3.0\;\text{м/с}^2 \;\Rightarrow\; \text{пауза, перестройка курса, продолжение}
+\end{equation}
+
+\paragraph{Подъём (Lift detection):}
+\begin{equation}
+  \norm{\mathbf{g}}_{body} < 6.0\;\text{м/с}^2 \;\text{за 5 отсчётов}
+  \;\Rightarrow\; \text{STOP (робот в воздухе)}
+\end{equation}
+\begin{equation}
+  \text{Возобновление:}\quad \norm{\mathbf{g}}_{body} > 8.5\;\text{м/с}^2
+\end{equation}
+
+\subsection{Дифференциальный привод (motor\_driver.py)}
+
+Базовый микшер для гусеничного шасси:
+\begin{equation}
+  \ell = v_{lin} + \omega_{ang}, \quad r = v_{lin} - \omega_{ang}
+\end{equation}
+\begin{equation}
+  \text{throttle}_{L,R} = \clamp\!\left(\frac{\ell, r}{\max(|\ell|, |r|, 1)},\; -1.0,\; +1.0\right)
+\end{equation}
+Мёртвые зоны: $|v_{lin}| < 0.01$\,м/с и $|\omega| < 0.05$\,рад/с обнуляются.
+
+\newpage
+%==============================================================
+% БЛОК 5 — БЕЗОПАСНОСТЬ
+%==============================================================
+\section{Блок 5: Безопасность}
+\label{sec:safety}
+
+\subsection{Collision Guard (motor\_node.py)}
+\label{sec:collision}
+
+\textit{Collision Guard} — встроенный в \texttt{motor\_node} аварийный ограничитель скорости на основе данных УЗ-дальномера.
+
+\subsubsection{Зоны защиты}
+
+\begin{mathbox}[Алгоритм Collision Guard]
+\textbf{Зона полной остановки} ($r < r_{stop} = 0.20$\,м):
+\[
+  v_{lin} = 0, \quad \omega_{cmd} = \sgn(\omega_{steer})\cdot 0.6\;\text{рад/с}
+\]
+Робот поворачивается, объезжая препятствие.
+
+\textbf{Зона замедления} ($r_{stop} \leq r < r_{warn} = 0.40$\,м):
+\[
+  \lambda(r) = \frac{r - r_{stop}}{r_{warn} - r_{stop}} \in [0,\; 1]
+\]
+\[
+  v_{lin,limited} = v_{lin,cmd} \cdot \lambda(r)
+\]
+Линейное замедление пропорционально близости препятствия.
+
+\textbf{Зона свободного движения} ($r \geq r_{warn}$):
+\[
+  v_{lin,limited} = v_{lin,cmd}
+\]
+\end{mathbox}
+
+\subsubsection{Приоритет команд}
+\begin{center}
+\begin{tabular}{clll}
+\toprule
+\textbf{Приоритет} & \textbf{Источник} & \textbf{Топик} & \textbf{Таймаут} \\
+\midrule
+1 (высший) & Ручной (джойстик/голос) & \texttt{cmd\_vel/manual}  & 0.5\,с \\
+2          & Collision override       & внутренний                & — \\
+3 (низший) & Автономный (FSM/Nav)    & \texttt{cmd\_vel}         & 0.5\,с \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Fallback Navigation (fallback\_nav\_node)}
+
+При потере связи с Nav2 или ROS2 активируется узел \texttt{fallback\_nav\_node}, реализующий Bug0 (см. \S\ref{sec:nav}).
+
+\textbf{Условия активации:}
+\begin{itemize}[noitemsep]
+  \item Отсутствие \texttt{cmd\_vel} от Nav2 более 2\,с
+  \item Потеря MQTT-связи с лэптопом
+  \item Явная команда от FSM
+\end{itemize}
+
+\subsection{Watchdog Node (watchdog\_node.py)}
+
+Сторожевой таймер мониторит:
+\begin{itemize}[noitemsep]
+  \item Heartbeat каждого узла (период 5\,с, таймаут 15\,с)
+  \item Напряжение батареи (порог $V_{warn} = 6.8$\,В, $V_{crit} = 6.2$\,В)
+  \item Температуру CPU (порог 80°C)
+  \item Значение УЗ-дальномера (stuck detection)
+\end{itemize}
+
+При критическом событии: аварийная остановка + публикация \texttt{log/events}.
+
+\subsection{ZUPT как функция безопасности}
+ZUPT (Zero-velocity Update, \S\ref{sec:ekf_imu}) выполняет двойную функцию:
+\begin{enumerate}[noitemsep]
+  \item Калибровка смещений гироскопа и акселерометра в покое.
+  \item Предотвращение дрейфа одометрии при длительных остановках.
+\end{enumerate}
+Без ZUPT накопленный дрейф за 60\,с покоя мог бы составить $>0.5$\,м по положению.
+
+\subsection{Обнаружение препятствий и обновление карты}
+
+Данные УЗ-дальномера используются одновременно для:
+\begin{itemize}[noitemsep]
+  \item Реактивного торможения (Collision Guard, \S\ref{sec:collision})
+  \item Обновления log-odds карты (slam\_map\_node, \S\ref{sec:slam})
+\end{itemize}
+
+\newpage
+%==============================================================
+% БЛОК 6 — ИСПОЛНИТЕЛЬНЫЙ УРОВЕНЬ
+%==============================================================
+\section{Блок 6: Исполнительный уровень}
+\label{sec:execution}
+
+\subsection{Архитектура исполнительного уровня}
+
+\begin{center}
+\begin{tikzpicture}[
+  % col-1: узлы (SW), col-2: драйверы, col-3: PCA9685 / конечное ж/о
+  % шаг по X = 3.8 cm, шаг по Y = -1.5 cm
+  sw/.style={rectangle, draw=primary, fill=lightblue, rounded corners,
+             minimum width=2.8cm, minimum height=0.85cm,
+             align=center, font=\small},
+  hw/.style={rectangle, draw=accent, fill=red!10, rounded corners,
+             minimum width=2.8cm, minimum height=0.85cm,
+             align=center, font=\small},
+  arrow/.style={->, thick, color=primary},
+  lbl/.style={font=\tiny, midway}
+]
+
+% ---- строка 1: Motor ----
+\node[sw] (mn)  at (0,    0)   {motor\_node};
+\node[sw] (md)  at (3.8,  0)   {motor\_driver};
+\node[hw] (pca) at (7.6,  0)   {PCA9685\\I2C 0x5F, 50\,Гц};
+\node[hw] (mot) at (11.4, 0)   {4$\times$ Мотор\\M1--M4};
+
+% ---- строка 2: Servo ----
+\node[sw] (sn)  at (0,   -1.7) {servo\_node};
+\node[sw] (sd)  at (3.8, -1.7) {servo\_driver};
+\node[hw] (sv)  at (11.4,-1.7) {Серво ch0--5\\500--2400\,мкс};
+
+% ---- строка 3: LED ----
+\node[sw] (ln)  at (0,   -3.4) {led\_node};
+\node[hw] (lh)  at (7.6, -3.4) {WS2812B\\GPIO10, 12 LED};
+
+% ---- стрелки строка 1 ----
+\draw[arrow] (mn) -- node[lbl,above]{throttle} (md);
+\draw[arrow] (md) -- node[lbl,above]{PWM ch8-15} (pca);
+\draw[arrow] (pca)-- (mot);
+
+% ---- стрелки строка 2 ----
+\draw[arrow] (sn) -- node[lbl,above]{angle\textdegree} (sd);
+\draw[arrow] (sd.east) -- node[lbl,above]{PWM ch0-5} (pca.west|-sd);
+\draw[arrow] (pca.south) -- ++(0,-0.4) -- ++(3.8,0) -- (sv.west);
+
+% ---- стрелки строка 3 ----
+\draw[arrow] (ln) -- node[lbl,above]{SPI MOSI} (lh);
+
+\end{tikzpicture}
+\end{center}
+
+\subsection{PCA9685 — ШИМ-контроллер (pca9685\_driver.py)}
+\label{sec:pca9685}
+
+PCA9685 — 16-канальный ШИМ-контроллер на шине I2C (адрес \texttt{0x5F}).
+
+\subsubsection{Параметры ШИМ}
+\begin{equation}
+  f_{PWM} = 50\;\text{Гц}, \quad T_{PWM} = 20\;\text{мс}
+\end{equation}
+\begin{equation}
+  \text{ON\_tick} = 0, \quad
+  \text{OFF\_tick} = \operatorname{round}\!\left(\frac{t_{pulse}}{T_{PWM}} \cdot 4096\right)
+\end{equation}
+Диапазон счётчика: 12 бит ($0 \ldots 4095$), разрешение $\approx 4.9\;\mu$с.
+
+\subsubsection{Преобразование дроссель $\to$ ШИМ}
+Для мотора с управлением SLOW\_DECAY:
+\begin{equation}
+  \text{throttle} \in [-1.0,\; +1.0]
+\end{equation}
+\begin{equation}
+  \text{duty}_{IN1} =
+  \begin{cases}
+    |\text{throttle}| & \text{throttle} > 0 \\
+    0 & \text{иначе}
+  \end{cases},\quad
+  \text{duty}_{IN2} =
+  \begin{cases}
+    0 & \text{throttle} > 0 \\
+    |\text{throttle}| & \text{иначе}
+  \end{cases}
+\end{equation}
+
+\subsubsection{Назначение каналов}
+\begin{center}
+\begin{tabular}{cclcc}
+\toprule
+\textbf{Канал} & \textbf{Мотор} & \textbf{Позиция} & \textbf{IN1} & \textbf{IN2} \\
+\midrule
+14, 15 & M1 & Правый перед  & ch15 & ch14 \\
+12, 13 & M2 & Левый перед   & ch12 & ch13 \\
+10, 11 & M3 & Левый зад     & ch11 & ch10 \\
+ 8,  9 & M4 & Правый зад    & ch8  & ch9  \\
+\midrule
+\multicolumn{5}{c}{\textit{Сервоприводы}} \\
+\midrule
+0 & — & Захват (claw)   & 0°–180° & 500–2400\,мкс \\
+4 & — & Голова (head)   & 90° центр & 500–2400\,мкс \\
+1–3 & — & Рука (arm)     & суставы 1–3 & 500–2400\,мкс \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Servo Driver (servo\_driver.py)}
+
+\subsubsection{Преобразование угол $\to$ длительность импульса}
+\begin{equation}
+  t_{pulse}(\varphi) = t_{min} + \frac{\varphi}{180^\circ}\,(t_{max} - t_{min})
+\end{equation}
+\begin{equation}
+  t_{min} = 500\;\mu\text{с},\quad t_{max} = 2400\;\mu\text{с}
+\end{equation}
+
+\subsubsection{Авто-отключение (Anti-buzz)}
+После исполнения команды через $t_{hold} = 0.5$\,с:
+\begin{equation}
+  \text{duty} \leftarrow 0 \quad \text{(отключить ШИМ)}
+\end{equation}
+Предотвращает постоянный гул при удержании позиции.
+
+\subsection{LED Driver (led\_driver.py)}
+
+WS2812B NeoPixel через SPI MOSI (GPIO 10, Board pin 19):
+\begin{itemize}[noitemsep]
+  \item 12 адресуемых RGB-светодиодов (4 панели × 3)
+  \item Цветовой порядок GRB
+\end{itemize}
+
+Эффекты: \texttt{blink}, \texttt{pulse} (плавное нарастание яркости), \texttt{rainbow\_cycle} (вращение оттенка).
+
+\newpage
+%==============================================================
+% ДАТЧИКИ
+%==============================================================
+\section{Датчики}
+\label{sec:sensors}
+
+\subsection{IMU — MPU6050 (imu\_node.py)}
+\label{sec:imu_hw}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Параметр} & \textbf{Значение} \\
+\midrule
+I2C адрес     & 0x68           & Частота дискретизации & 50\,Гц \\
+Диапазон гир. & ±250°/с        & Диапазон акс.         & ±4g \\
+EMA гир.      & $\alpha = 0.3$ & EMA акс.              & $\alpha = 0.2$ \\
+Калибровка    & 200 выборок    & Время калибровки      & $\approx 4$\,с \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Калибровка смещений}
+\begin{equation}
+  \mathbf{b}_{gyro} = \frac{1}{N}\sum_{i=1}^{N}\boldsymbol{\omega}^{(i)}, \quad N = 200
+\end{equation}
+\begin{equation}
+  \mathbf{g}_{body} = \frac{1}{N}\sum_{i=1}^{N}\mathbf{a}^{(i)}, \quad
+  \phi_0 = \arctan\!\left(\frac{\bar{a}_y}{\bar{a}_z}\right), \quad
+  \vartheta_0 = \arctan\!\left(\frac{-\bar{a}_x}{\sqrt{\bar{a}_y^2+\bar{a}_z^2}}\right)
+\end{equation}
+
+\subsubsection{EMA фильтрация}
+\begin{equation}
+  \tilde{x}[k] = (1-\alpha)\,\tilde{x}[k-1] + \alpha\,x[k]
+\end{equation}
+Частота среза: $f_c = \frac{\alpha \cdot f_s}{2\pi(1-\alpha)}$. Для $\alpha=0.2$, $f_s=50$\,Гц: $f_c \approx 2$\,Гц.
+
+\subsection{Ультразвуковой дальномер HC-SR04 (ultrasonic\_node)}
+
+\subsubsection{Принцип измерения}
+\begin{equation}
+  d = \frac{c_{sound} \cdot t_{echo}}{2}, \quad c_{sound} \approx 343\;\text{м/с}
+\end{equation}
+Диапазон: $d \in [0.02;\; 2.0]$\,м. Угол раскрытия: $\pm 7.5^\circ$ ($\approx 15^\circ$ полный конус).
+
+\subsection{Камера CSI (camera\_node)}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} \\
+\midrule
+Разрешение     & 640 × 480 пикс. \\
+Частота кадров & 20\,Гц \\
+Формат         & JPEG (бинарный MQTT) \\
+Фокусное расстояние & $f = 500$\,пикс. \\
+Поле зрения    & $\approx 60^\circ$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Моно-оценка дальности до объекта}
+По угловому размеру ограничивающего прямоугольника (small-angle approx.):
+\begin{equation}
+  \varphi_{obj} = 2\arctan\!\left(\frac{h_{px}}{2f}\right) \approx \frac{h_{px}}{f}
+\end{equation}
+\begin{equation}
+  d_{est} = \frac{H_{real}}{\varphi_{obj}} = \frac{H_{real} \cdot f}{h_{px}}
+\end{equation}
+Для мяча $H_{real} = 0.04$\,м: $d_{est} = \frac{0.04 \cdot 500}{h_{px}}\;\text{м}$.
+
+\newpage
+%==============================================================
+% SLAM И КАРТОГРАФИЯ
+%==============================================================
+\section{SLAM и картография (slam\_map\_node.py)}
+\label{sec:slam}
+
+\subsection{Log-odds occupancy grid}
+
+Карта представлена сеткой $200\times200$ ячеек с разрешением 0.05\,м (площадь $10\times10$\,м):
+
+\begin{equation}
+  L(m_i) = \log\frac{p(m_i = occ)}{p(m_i = free)}
+\end{equation}
+
+\subsubsection{Обновление ячеек}
+\begin{equation}
+  L_k(m_i) = L_{k-1}(m_i) + \Delta L(z, r, m_i)
+\end{equation}
+\begin{equation}
+  \Delta L =
+  \begin{cases}
+    l_{occ}  = +0.85  & \text{луч заканчивается в ячейке (препятствие)} \\
+    l_{free} = -0.40  & \text{луч проходит через ячейку (свободно)}
+  \end{cases}
+\end{equation}
+Ограничение: $L(m_i) \in [-2.0;\; +3.5]$.
+
+\subsubsection{Порог занятости}
+\begin{equation}
+  \hat{m}_i =
+  \begin{cases}
+    \text{занято}  & L(m_i) > 0.6 \\
+    \text{свободно} & L(m_i) < -0.5 \\
+    \text{неизвестно} & \text{иначе}
+  \end{cases}
+\end{equation}
+
+\subsection{Трассировка лучей (Ray casting, HC-SR04)}
+
+УЗ-конус моделируется $N_{beam}$ лучами с полуугловым шагом:
+\begin{equation}
+  \theta_j = \theta_{robot} + \frac{j\cdot\text{FOV}_{half}}{N_{beam}/2}, \quad
+  j \in \{-N/2, \ldots, N/2\}
+\end{equation}
+
+Для каждого луча: Bresenham line rasterization от позиции робота до точки $r\cdot(\cos\theta_j, \sin\theta_j)$.
+
+Координаты ячейки:
+\begin{equation}
+  c_i = \left\lfloor\frac{p_i - p_{origin}}{d_{cell}}\right\rfloor, \quad d_{cell} = 0.05\;\text{м}
+\end{equation}
+
+\subsection{Реестр объектов}
+
+Обнаруженные YOLO-объекты хранятся с мировыми координатами:
+\begin{itemize}[noitemsep]
+  \item Кластеризация: слияние наблюдений ближе 0.30\,м
+  \item Устаревание: удаление не виденных 120\,с
+  \item Минимальная уверенность: $\text{conf} \geq 0.35$
+\end{itemize}
+
+\newpage
+%==============================================================
+% ВОСПРИЯТИЕ (YOLO)
+%==============================================================
+\section{Система восприятия (yolo\_detector\_node.py)}
+\label{sec:yolo}
+
+\subsection{YOLOv11n — архитектура и параметры}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} \\
+\midrule
+Модель          & YOLOv11n (nano) / YOLOv8n \\
+Экспорт         & ONNX Runtime \\
+Входной размер  & $416\times416$ пикс. \\
+Порог уверенности & $conf_{thresh} = 0.40$ \\
+NMS IoU         & $iou_{thresh} = 0.45$ \\
+Ускорение       & CUDA (если доступно) / CPU \\
+Потоки CPU      & $\lfloor N_{cpu}/2\rfloor$ (intra-op) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Конвейер инференса}
+
+\begin{equation}
+  I_{JPEG} \xrightarrow{\text{cv2.imdecode}} I_{BGR}
+  \xrightarrow{\text{resize}} I_{416}
+  \xrightarrow{/255} I_{norm}
+  \xrightarrow{\text{CHW}} \mathbf{x}_{onnx}
+  \xrightarrow{\text{ONNX}} \mathbf{y}
+  \xrightarrow{\text{NMS}} \{bbox_i\}
+\end{equation}
+
+\subsection{HSV-классификация цвета мяча}
+
+Для каждого ограничивающего прямоугольника:
+\begin{equation}
+  I_{HSV} = \texttt{cvtColor}(I_{ROI},\; \texttt{BGR2HSV})
+\end{equation}
+\begin{equation}
+  M_{colour} = \sum_i \texttt{inRange}(I_{HSV},\; lo_i,\; hi_i)
+\end{equation}
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Цвет} & \textbf{H} & \textbf{S} & \textbf{V} \\
+\midrule
+Красный   & [0–10] ∪ [160–180] & 70–255 & 70–255 \\
+Синий     & [85–135]  & 60–255 & 60–255 \\
+Зелёный   & [35–85]   & 60–255 & 60–255 \\
+Жёлтый    & [22–38]   & 80–255 & 80–255 \\
+Оранжевый & [10–25]   & 80–255 & 80–255 \\
+Белый     & [0–180]   & 0–40   & 180–255 \\
+Чёрный    & [0–180]   & 0–255  & 0–60 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Победитель — цвет с максимальной долей маски $M_{colour}$ (минимум 15\% пикселей ROI).
+
+\newpage
+%==============================================================
+% СВОДНАЯ ТАБЛИЦА ПАРАМЕТРОВ
+%==============================================================
+\section{Сводная таблица параметров системы}
+\label{sec:params}
+
+\begin{longtable}{p{4.5cm} p{3.5cm} p{2.5cm} p{3cm}}
+\toprule
+\textbf{Параметр} & \textbf{Символ} & \textbf{Значение} & \textbf{Источник} \\
+\midrule
+\endfirsthead
+\multicolumn{4}{c}{\small\itshape Продолжение таблицы параметров} \\
+\toprule
+\textbf{Параметр} & \textbf{Символ} & \textbf{Значение} & \textbf{Источник} \\
+\midrule
+\endhead
+\bottomrule
+\endlastfoot
+
+\multicolumn{4}{l}{\textbf{Геометрия робота}} \\
+База колёс & $L$ & 0.17\,м & config.yaml \\
+Радиус робота & $r_{robot}$ & 0.12\,м & config.yaml \\
+Ширина арены & $W_a$ & 3.0\,м & config.yaml \\
+\midrule
+\multicolumn{4}{l}{\textbf{Кинематика}} \\
+Макс. линейная скорость & $v_{max}$ & 0.30\,м/с & config.yaml \\
+Макс. угловая скорость & $\omega_{max}$ & 2.0\,рад/с & config.yaml \\
+Скорость патрулирования & $v_{patrol}$ & 0.20\,м/с & config.yaml \\
+\midrule
+\multicolumn{4}{l}{\textbf{IMU EKF}} \\
+Шум процесса (угол) & $q_\psi$ & 0.001 & ekf\_imu.py \\
+Шум процесса (смещение) & $q_b$ & 0.0001 & ekf\_imu.py \\
+Шум измерения (акс.) & $r_{acc}$ & 0.5 & ekf\_imu.py \\
+Порог ZUPT (вход) & $\varepsilon_{enter}$ & 0.015\,рад/с & ekf\_imu.py \\
+Порог ZUPT (выход) & $\varepsilon_{exit}$ & 0.040\,рад/с & ekf\_imu.py \\
+Шум ZUPT & $r_{zupt}$ & $10^{-4}$ & ekf\_imu.py \\
+\midrule
+\multicolumn{4}{l}{\textbf{Velocity EKF}} \\
+Постоянная времени мотора & $\tau_{motor}$ & 0.25\,с & config.yaml \\
+Постоянная времени торм. & $\tau_{brake}$ & 0.08\,с & config.yaml \\
+Шум скорости & $q_v$ & 0.20 & velocity\_ekf.py \\
+Шум смещения акс. & $q_{ba}$ & 0.003 & velocity\_ekf.py \\
+Шум акселерометра & $r_{acc}$ & 0.06 & velocity\_ekf.py \\
+\midrule
+\multicolumn{4}{l}{\textbf{Precision Drive}} \\
+Скорость движения & $v_{drive}$ & 0.12\,м/с & config.yaml \\
+Медленная зона & $v_{slow}$ & 0.06\,м/с & config.yaml \\
+Ползучая зона & $v_{crawl}$ & 0.04\,м/с & config.yaml \\
+Точность прибытия & $\varepsilon_{pos}$ & 5\,мм & config.yaml \\
+Точность курса & $\varepsilon_\theta$ & 0.02\,рад & config.yaml \\
+$K_P$ (курс) & $K_P$ & 2.5 & config.yaml \\
+$K_I$ (курс) & $K_I$ & 0.3 & config.yaml \\
+\midrule
+\multicolumn{4}{l}{\textbf{Collision Guard}} \\
+Дистанция полной остановки & $r_{stop}$ & 0.20\,м & motor\_node.py \\
+Дистанция начала торм. & $r_{warn}$ & 0.40\,м & motor\_node.py \\
+\midrule
+\multicolumn{4}{l}{\textbf{SLAM}} \\
+Разрешение карты & $d_{cell}$ & 0.05\,м & config.yaml \\
+Размер карты & — & $200\times200$ & config.yaml \\
+Log-odds занято & $l_{occ}$ & +0.85 & config.yaml \\
+Log-odds свободно & $l_{free}$ & $-0.40$ & config.yaml \\
+Клиппинг & $L_{clip}$ & $[-2.0;\;+3.5]$ & slam\_map\_node.py \\
+\midrule
+\multicolumn{4}{l}{\textbf{YOLO}} \\
+Входной размер & — & $416\times416$ & yolo\_detector.py \\
+Порог уверенности & $conf_{th}$ & 0.40 & config.yaml \\
+NMS IoU & $iou_{th}$ & 0.45 & yolo\_detector.py \\
+\end{longtable}
+
+\newpage
+%==============================================================
+% ТОПОЛОГИЯ MQTT
+%==============================================================
+\section{Топология MQTT-топиков}
+\label{sec:mqtt}
+
+\begin{center}
+\begin{tabular}{p{6cm} p{3cm} p{4.5cm}}
+\toprule
+\textbf{Топик} & \textbf{Откуда} & \textbf{Куда / Назначение} \\
+\midrule
+\texttt{.../odom}             & motor\_node    & EKF, SLAM, dashboard \\
+\texttt{.../imu}              & imu\_node      & motor\_node, EKF \\
+\texttt{.../camera}           & camera\_node   & YOLO, dashboard \\
+\texttt{.../range}            & ultrasonic     & Collision Guard, SLAM \\
+\texttt{.../battery}          & battery\_node  & watchdog, dashboard \\
+\texttt{.../temperature}      & temp\_node     & watchdog, dashboard \\
+\texttt{.../status}           & fsm\_node      & dashboard (retained) \\
+\texttt{.../cmd\_vel}         & fsm/Nav2       & motor\_node (auton.) \\
+\texttt{.../cmd\_vel/manual}  & dashboard/app  & motor\_node (ручной) \\
+\texttt{.../voice\_command}   & Android/Vosk   & fsm\_node \\
+\texttt{.../ball\_detection}  & YOLO/laptop    & fsm\_node \\
+\texttt{.../slam\_map}        & slam\_map\_node & dashboard, Nav2-bridge \\
+\texttt{.../goal\_pose}       & fsm\_node      & Nav2 (через мост) \\
+\texttt{.../claw/command}     & fsm\_node      & servo\_node \\
+\texttt{.../head/command}     & dashboard/fsm  & head\_node \\
+\texttt{.../arm/command}      & dashboard/fsm  & arm\_node \\
+\texttt{.../led/command}      & fsm\_node      & led\_node \\
+\texttt{.../precision\_drive/command} & dashboard & precision\_drive\_node \\
+\texttt{.../path\_recorder/command}   & fsm/dashboard & path\_recorder\_node \\
+\texttt{.../patrol/command}   & fsm/dashboard  & patrol\_node \\
+\texttt{.../follow\_me/command} & dashboard/fsm & follow\_me\_node \\
+\texttt{.../log/events}       & все узлы       & dashboard (лог) \\
+\texttt{.../perf/\{node\}}    & все узлы       & мониторинг задержек \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\newpage
+%==============================================================
+% ВЗАИМОДЕЙСТВИЕ УРОВНЕЙ
+%==============================================================
+\section{Взаимодействие уровней: полный цикл управления}
+\label{sec:integration}
+
+Рассмотрим полный цикл от команды «найди мяч» до физического движения:
+
+\begin{enumerate}
+  \item \textbf{Android/Dashboard}: Пользователь произносит «найди мяч».
+    Vosk offline-распознаёт текст и публикует в\\
+    \texttt{samurai/robot1/voice\_command: "найди мяч"}.
+
+  \item \textbf{FSM (Блок 1)}: Regex-паттерн \verb|получи|найди| срабатывает.
+    FSM переходит в состояние \texttt{SEARCHING}.
+    Публикуется \texttt{cmd\_vel: \{linear: 0, angular: 0.5\}} (поиск вращением).
+
+  \item \textbf{YOLO (Блок 2/лэптоп)}: Кадры камеры анализируются YOLOv11n.
+    При обнаружении мяча публикуется \texttt{ball\_detection: \{x:180, y:240, w:40, h:42, colour:"red"\}}.
+
+  \item \textbf{FSM}: Переход \texttt{SEARCHING → TARGETING}.
+    Вычисляется $e_x = -0.44$. Команда $\omega = +0.35$\,рад/с.
+
+  \item \textbf{Precision Drive / Motor Node (Блок 4)}: PI-регулятор курса
+    поддерживает $e_\theta \to 0$.
+    \texttt{cmd\_vel: \{linear: 0.12, angular: 0.35\}} $\to$ motor\_driver.
+
+  \item \textbf{Collision Guard (Блок 5)}: УЗ-дальномер = 0.85\,м.
+    $\lambda(0.85) = 1.0$ — ограничений нет.
+
+  \item \textbf{PCA9685 (Блок 6)}: Дроссель L=0.175, R=0.065 $\to$ ШИМ ch8–15.
+
+  \item \textbf{Датчики (обратная связь)}: IMU @ 50 Гц возвращает новый $\psi$.
+    Odometry @ 20 Гц обновляет $(x, y, \theta)$.
+    EKF корректирует оценку состояния.
+
+  \item \textbf{Цикл повторяется}: до выполнения захвата и возврата.
+\end{enumerate}
+
+\newpage
+%==============================================================
+% ЗАКЛЮЧЕНИЕ
+%==============================================================
+\section{Заключение}
+
+В настоящем отчёте описана полная архитектура системы управления автономного
+гусеничного робота \textbf{Samurai}, реализующая шестиуровневую иерархию
+от постановки задачи до физического движения двигателей.
+
+\textbf{Ключевые архитектурные решения:}
+\begin{enumerate}[noitemsep]
+  \item \textit{MQTT без ROS2 на Pi} — устраняет overhead DDS, уменьшает RAM
+        с $\approx00\,МБ до $\approx0\,МБ.
+  \item \textit{Гибридный EKF} — раздельные фильтры для угла (2 состояния)
+        и скорости (2$\times состояния) проще единого 6-DOF при сопоставимой
+        точности для плоского движения.
+  \item \textit{Log-odds SLAM на борту Pi} — лёгкая реализация без зависимостей
+        от ROS2 SLAM Toolbox.
+  \item \textit{PI + боковой корректор} вместо полного MPC — достаточно для
+        достижения точности 5\,мм в сценариях precision\_drive.
+  \item \textit{ZUPT} в обоих EKF — критично для предотвращения дрейфа при
+        паузах FSM и длительных остановках.
+  \item \textit{Fallback Bug0} — гарантирует базовую навигацию без лэптопа.
+  \item \textit{Трёхуровневый Collision Guard} — мгновенная реакция на
+        препятствия без участия FSM или Nav2.
+\end{enumerate}
+
+\vspace{0.5cm}
+\begin{center}
+{\color{primary}\rule{0.6\linewidth}{1pt}}\[0.3cm]
+{\small\color{gray}Samurai Robot Project \quad|\quad Документ создан: апрель 2026}\[0.1cm]
+{\small\color{gray}Все исходные коды: \texttt{pi\_nodes/}, \texttt{compute\_node/}, \texttt{config.yaml}}\[0.3cm]
+{\color{primary}\rule{0.6\linewidth}{1pt}}
+\end{center}
+
+\end{document}
