@@ -71,6 +71,8 @@ STOP_THRESHOLD_M = 0.005    # м — порог остановки по одом
 BRAKE_SETTLE_S   = 0.25     # с — пауза после stop() (механическая дотяжка)
 PAUSE_BETWEEN_S  = 1.5      # с — пауза между прогонами в полном тесте
 
+WHEEL_BASE       = 0.17     # м — колёсная база (из motor_node.py)
+
 LOOP_HZ          = 200      # Гц — частота управляющего цикла
 DT_LOOP          = 1.0 / LOOP_HZ
 DT_MAX           = 0.05     # с — кэп на dt (защита первой итерации)
@@ -203,9 +205,70 @@ def _print_calibration_hint(dist_cm: float,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def calibrate_mode():
+    """
+    Интерактивный расчёт всех трёх коэффициентов по замерам рулеткой.
+
+    Формулы:
+      WHEEL_SCALE_FWD = реальное_вперёд / N
+      WHEEL_SCALE_BWD = WHEEL_SCALE_FWD × (реальное_назад / N)
+      MOTOR_TRIM      = CRUISE_SPEED_PCT × WHEEL_BASE × X_м / D_м²
+                      ≈ 0.021 × X_см  (при D=2 м, CRUISE=50%)
+    """
+    print('\n' + '═' * 54)
+    print('  КАЛЬКУЛЯТОР КОЭФФИЦИЕНТОВ')
+    print('═' * 54)
+
+    # ── WHEEL_SCALE_FWD ──────────────────────────────────────────
+    print('\n[1] WHEEL_SCALE_FWD')
+    print(f'    Запустить режим f, N см, измерить рулеткой.')
+    n_fwd   = float(input('    Командованное расстояние N_вперёд (см): '))
+    real_fwd = float(input('    Реальное расстояние вперёд (см):        '))
+    ws_fwd  = real_fwd / n_fwd
+    print(f'    → WHEEL_SCALE_FWD = {real_fwd:.1f} / {n_fwd:.1f} = {ws_fwd:.4f}')
+
+    # ── WHEEL_SCALE_BWD ──────────────────────────────────────────
+    print('\n[2] WHEEL_SCALE_BWD')
+    print(f'    Запустить режим b с тем же N, измерить рулеткой.')
+    n_bwd    = float(input('    Командованное расстояние N_назад (см):  ') or n_fwd)
+    real_bwd = float(input('    Реальное расстояние назад (см):         '))
+    bwd_ratio = real_bwd / n_bwd
+    ws_bwd    = ws_fwd * bwd_ratio
+    print(f'    → BWD/FWD коэф. = {real_bwd:.1f} / {n_bwd:.1f} = {bwd_ratio:.4f}')
+    print(f'    → WHEEL_SCALE_BWD = {ws_fwd:.4f} × {bwd_ratio:.4f} = {ws_bwd:.4f}')
+
+    # ── MOTOR_TRIM ───────────────────────────────────────────────
+    print('\n[3] MOTOR_TRIM  (прямолинейность)')
+    print('    Запустить режим f, N ≥ 200 см.')
+    print('    Положить рулетку от старта до финиша прямо.')
+    print('    Измерить боковое отклонение X:')
+    print('      + X если уехал ВПРАВО,  − X если уехал ВЛЕВО')
+    d_m = float(input('    Тестовое расстояние D (см): ')) / 100.0
+    x_cm = float(input('    Боковое смещение X (см, знак!): '))
+    x_m  = x_cm / 100.0
+    # MOTOR_TRIM = CRUISE_SPEED_PCT × WHEEL_BASE × X_м / D_м²
+    trim = CRUISE_SPEED_PCT * WHEEL_BASE * x_m / (d_m ** 2)
+    print(f'    Формула: {CRUISE_SPEED_PCT} × {WHEEL_BASE} × {x_m:.3f} / {d_m:.2f}²'
+          f' = {trim:.3f}')
+    print(f'    → MOTOR_TRIM = {trim:.3f}')
+
+    # ── Итог ─────────────────────────────────────────────────────
+    print('\n' + '═' * 54)
+    print('  Вставьте в скрипт (строки в секции КАЛИБРОВОЧНЫЕ КОНСТАНТЫ):')
+    print('═' * 54)
+    print(f'  MOTOR_TRIM      = {trim:.3f}')
+    print(f'  WHEEL_SCALE_FWD = {ws_fwd:.4f}')
+    print(f'  WHEEL_SCALE_BWD = {ws_fwd:.4f} * {bwd_ratio:.4f}  # = {ws_bwd:.4f}')
+    print('═' * 54)
+
+
 def main():
-    print('Режимы: f = только вперёд | b = только назад | t = полный тест')
-    mode     = input('Режим [f/b/t]: ').strip().lower() or 't'
+    print('Режимы: f = только вперёд | b = только назад | t = полный тест | c = расчёт коэффициентов')
+    mode     = input('Режим [f/b/t/c]: ').strip().lower() or 't'
+
+    if mode == 'c':
+        calibrate_mode()
+        return
     dist_cm  = float(input('Расстояние N (см): ').strip())
     target_m = dist_cm / 100.0
 
