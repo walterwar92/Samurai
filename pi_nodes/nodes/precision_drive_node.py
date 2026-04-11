@@ -53,15 +53,16 @@ except ImportError:
 
 
 # ── Tuning constants (from config.yaml or defaults) ──────────────────
+# Speed profile matches test_precision_drive.py:
+#   CRUISE_SPEED_PCT=50%, MIN_SPEED_PCT=18%, MAX_SPEED_M_S=0.30
 
 # Driving
-DRIVE_SPEED       = cfg('precision_drive.drive_speed', 0.12)       # m/s
-DRIVE_SPEED_SLOW  = cfg('precision_drive.drive_speed_slow', 0.06)  # m/s near target
-DRIVE_SPEED_CRAWL = cfg('precision_drive.drive_speed_crawl', 0.04) # m/s final approach
-SLOW_DIST_M       = cfg('precision_drive.slow_distance_m', 0.08)   # start slowing at 8cm
-CRAWL_DIST_M      = cfg('precision_drive.crawl_distance_m', 0.02)  # crawl at 2cm
-ARRIVE_TOL_M      = cfg('precision_drive.arrive_tolerance_m', 0.005) # 5mm arrival
-OVERSHOOT_TOL_M   = cfg('precision_drive.overshoot_tolerance_m', 0.015)
+DRIVE_SPEED     = cfg('precision_drive.drive_speed', 0.15)      # m/s cruise (50% × 0.30)
+DRIVE_SPEED_MIN = cfg('precision_drive.drive_speed_min', 0.054) # m/s min    (18% × 0.30)
+ACCEL_ZONE_M    = cfg('precision_drive.accel_distance_m', 0.06) # m ramp-up zone (6 cm)
+SLOW_DIST_M     = cfg('precision_drive.slow_distance_m', 0.10)  # m decel zone  (10 cm)
+ARRIVE_TOL_M    = cfg('precision_drive.arrive_tolerance_m', 0.005)  # 5mm arrival
+OVERSHOOT_TOL_M = cfg('precision_drive.overshoot_tolerance_m', 0.010)
 
 # Turning
 TURN_SPEED        = cfg('precision_drive.turn_speed', 0.5)         # rad/s
@@ -98,8 +99,8 @@ MAX_LEG_TIMEOUT_S = cfg('precision_drive.max_leg_timeout_s', 30.0)
 _MAX_ANGULAR_RAD_S = 2.0   # fast profile max (rad/s)
 MOTOR_TRIM_RAD_S = cfg('wheel_calibration.motor_trim_pct', -12.003) / 100.0 * _MAX_ANGULAR_RAD_S
 
-# Scenario transition — shorter pause between legs
-SCENARIO_SETTLE_S = cfg('precision_drive.scenario_settle_s', 0.15)
+# Settle pause after each stop — matches BRAKE_SETTLE_S in test_precision_drive.py
+SCENARIO_SETTLE_S = cfg('precision_drive.scenario_settle_s', 0.25)
 
 # Odom smoothing — average last N readings for stable position
 ODOM_SMOOTH_N = 3
@@ -152,9 +153,9 @@ class PrecisionDriveNode(MqttNode):
         self._heading_integral = 0.0
         self._heading_integral_max = 0.3  # anti-windup
 
-        # ── Position confirmation — require stable arrival ───────
+        # ── Position confirmation — stop immediately on arrival (1 tick)
         self._arrive_count = 0
-        self._ARRIVE_CONFIRM = 3  # consecutive ticks within tolerance
+        self._ARRIVE_CONFIRM = 1  # matches test_precision_drive.py immediate stop
 
         # ── Scenario queue ───────────────────────────────────────
         self._scenario_legs = []
@@ -415,11 +416,12 @@ class PrecisionDriveNode(MqttNode):
     # ── Main control loop (20 Hz) ────────────────────────────────
 
     def _control_loop(self):
-        if not self._odom_ready or not self._imu_calibrated:
+        # IMU not required — wheel odometry is sufficient (matches test_precision_drive.py)
+        if not self._odom_ready:
             return
 
-        # Check for disturbances (in any active state)
-        if self._state in ('driving', 'aligning', 'turning'):
+        # Disturbance detection only when IMU is calibrated (optional safety feature)
+        if self._imu_calibrated and self._state in ('driving', 'aligning', 'turning'):
             disturbance = self._check_disturbances()
             if disturbance:
                 return
@@ -504,13 +506,14 @@ class PrecisionDriveNode(MqttNode):
             self._finish_leg(True, 'overshoot %.1f mm' % (-remaining * 1000))
             return
 
-        # Speed profile: 3-zone ramp (full -> slow -> crawl)
-        if remaining < CRAWL_DIST_M:
-            speed = DRIVE_SPEED_CRAWL
+        # Speed profile: trapezoidal ramp — matches test_precision_drive.py exactly.
+        # Ramp up over first ACCEL_ZONE_M, ramp down over last SLOW_DIST_M.
+        if dist_signed < ACCEL_ZONE_M:
+            t = max(0.0, dist_signed) / ACCEL_ZONE_M
+            speed = DRIVE_SPEED_MIN + t * (DRIVE_SPEED - DRIVE_SPEED_MIN)
         elif remaining < SLOW_DIST_M:
-            # Linear ramp from crawl to full speed
-            t = (remaining - CRAWL_DIST_M) / (SLOW_DIST_M - CRAWL_DIST_M)
-            speed = DRIVE_SPEED_CRAWL + (DRIVE_SPEED - DRIVE_SPEED_CRAWL) * t
+            t = max(0.0, remaining / SLOW_DIST_M)
+            speed = DRIVE_SPEED_MIN + t * (DRIVE_SPEED - DRIVE_SPEED_MIN)
         else:
             speed = DRIVE_SPEED
 

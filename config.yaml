@@ -159,14 +159,15 @@ path_recorder:
   obstacle_slow_dist: 0.35     # м — замедление при препятствии
 
 # Точное движение с коррекцией (precision_drive_node)
+# Профиль скорости совпадает с tests/test_precision_drive.py:
+#   CRUISE_SPEED_PCT=50%, MIN_SPEED_PCT=18%, MAX_SPEED_M_S=0.30
 precision_drive:
-  drive_speed: 0.12              # м/с — основная скорость
-  drive_speed_slow: 0.06         # м/с — вблизи цели
-  drive_speed_crawl: 0.04        # м/с — финальный подход (последние 2 см)
-  slow_distance_m: 0.08          # м — начать замедление за 8 см (было 5)
-  crawl_distance_m: 0.02         # м — ползти за 2 см до цели
-  arrive_tolerance_m: 0.005      # м — допуск прибытия (5 мм, было 10)
-  overshoot_tolerance_m: 0.015   # м — допустимый перелёт (15 мм)
+  drive_speed: 0.15              # м/с — крейсерская скорость (50% × 0.30)
+  drive_speed_min: 0.054         # м/с — минимальная скорость (18% × 0.30)
+  accel_distance_m: 0.06         # м — зона разгона (6 см)
+  slow_distance_m: 0.10          # м — зона торможения (10 см)
+  arrive_tolerance_m: 0.005      # м — допуск прибытия (5 мм)
+  overshoot_tolerance_m: 0.010   # м — допустимый перелёт (10 мм)
 
   turn_speed: 0.5                # рад/с — скорость поворота
   turn_speed_slow: 0.15          # рад/с — минимальная скорость поворота
@@ -186,7 +187,7 @@ precision_drive:
   lift_gravity_ok: 8.5           # м/с² — выше = робот на земле (>0.87g)
   lift_samples: 5                # подряд сэмплов для детекции подъёма
   settle_time_s: 0.3             # с — пауза после возмущения (было 0.5)
-  scenario_settle_s: 0.15        # с — короткая пауза между ногами сценария
+  scenario_settle_s: 0.25        # с — пауза после остановки (= BRAKE_SETTLE_S в тесте)
 
   timeout_per_cm_s: 0.5          # с/см — таймаут на 1 см пути
   max_leg_timeout_s: 30.0        # с — макс таймаут одного отрезка
