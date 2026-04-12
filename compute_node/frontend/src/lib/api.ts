@@ -113,4 +113,20 @@ export const api = {
   // LED
   setLed: (mode: string) =>
     post('/api/led/command', { mode }),
+
+  // Calibration coefficients & profiles
+  setCalibration: (scale_fwd: number, scale_bwd: number, motor_trim: number) =>
+    post('/api/calibration/set', { scale_fwd, scale_bwd, motor_trim }),
+
+  loadCalibrationProfile: (name: string) =>
+    post('/api/calibration/profile/load', { name }),
+
+  saveCalibrationProfile: (name: string, description?: string) =>
+    post('/api/calibration/profile/save', { name, description: description ?? '' }),
+
+  deleteCalibrationProfile: (name: string) =>
+    post('/api/calibration/profile/delete', { name }),
+
+  listCalibrationProfiles: () =>
+    get('/api/calibration/profile/list'),
 }

@@ -73,9 +73,9 @@ export function DashboardPage() {
                       <span>{ACTION_RU[status?.target_action || ''] || '—'}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Позиция</span>
+                      <span className="text-muted-foreground">Позиция (см)</span>
                       <span className="font-mono">
-                        {pose ? `${pose.x.toFixed(3)}, ${pose.y.toFixed(3)}` : '—'}
+                        {pose ? `${pose.x.toFixed(1)}, ${pose.y.toFixed(1)}` : '—'}
                       </span>
                     </div>
                     <div className="flex justify-between">

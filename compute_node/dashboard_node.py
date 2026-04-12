@@ -165,6 +165,8 @@ class DashboardNode(Node):
         self._collision_guard_enabled = False      # collision guard for manual control
         self._calibration_status = {}   # calibration node status
         self._calibration_result = {}   # calibration result
+        self._calibration_active = {}   # active calibration profile + coefficients
+        self._calibration_profiles_list = {}  # all profiles from motor_node
         self._explorer_status = {}      # explorer node status
         self._mission_status = {}       # mission node status
         self._precision_drive_status = {}  # precision drive status
@@ -242,6 +244,8 @@ class DashboardNode(Node):
                       'watchdog', 'voice_command', 'speed_profile/active',
                       'slam_map', 'path_recorder/status', 'path_recorder/path',
                       'calibration/status', 'calibration/result',
+                      'calibration/active', 'calibration/profile/all',
+                      'calibration/profile/saved', 'calibration/profile/error',
                       'explorer/status', 'mission/status',
                       'precision_drive/status', 'precision_drive/result',
                       'collision_guard/state',
@@ -299,6 +303,12 @@ class DashboardNode(Node):
                 self._mqtt_json_field(msg.payload, '_calibration_status')
             elif suffix == 'calibration/result':
                 self._mqtt_json_field(msg.payload, '_calibration_result')
+            elif suffix == 'calibration/active':
+                self._mqtt_json_field(msg.payload, '_calibration_active')
+            elif suffix == 'calibration/profile/all':
+                self._mqtt_json_field(msg.payload, '_calibration_profiles_list')
+            elif suffix in ('calibration/profile/saved', 'calibration/profile/error'):
+                pass  # consumed by frontend via state push
             elif suffix == 'explorer/status':
                 self._mqtt_json_field(msg.payload, '_explorer_status')
             elif suffix == 'mission/status':
@@ -864,6 +874,8 @@ class DashboardNode(Node):
                 'collision_guard_enabled': self._collision_guard_enabled,
                 'calibration':        dict(self._calibration_status) if self._calibration_status else None,
                 'calibration_result': dict(self._calibration_result) if self._calibration_result else None,
+                'calibration_coeffs': dict(self._calibration_active) if self._calibration_active else None,
+                'calibration_profiles': dict(self._calibration_profiles_list) if self._calibration_profiles_list else None,
                 'explorer':           dict(self._explorer_status) if self._explorer_status else None,
                 'mission':            dict(self._mission_status) if self._mission_status else None,
                 'tts_enabled':        self._tts_enabled,
@@ -1507,6 +1519,45 @@ def create_app(ros_node: DashboardNode):
         command = body.get('command', '').strip().lower()
         ros_node._mqtt_pub('calibration/command', command, qos=1)
         return _ok(calibration=command)
+
+    @app.post('/api/calibration/set')
+    async def api_calibration_set(req: Request):
+        body = await req.json()
+        ros_node._mqtt_pub('calibration/set', json.dumps(body), qos=1)
+        return _ok(sent=True)
+
+    @app.post('/api/calibration/profile/load')
+    async def api_calibration_profile_load(req: Request):
+        body = await req.json()
+        name = body.get('name', '')
+        ros_node._mqtt_pub('calibration/profile/load',
+                           json.dumps({'name': name}), qos=1)
+        return _ok(profile=name)
+
+    @app.post('/api/calibration/profile/save')
+    async def api_calibration_profile_save(req: Request):
+        body = await req.json()
+        ros_node._mqtt_pub('calibration/profile/save',
+                           json.dumps(body), qos=1)
+        return _ok(saved=body.get('name', ''))
+
+    @app.post('/api/calibration/profile/delete')
+    async def api_calibration_profile_delete(req: Request):
+        body = await req.json()
+        name = body.get('name', '')
+        ros_node._mqtt_pub('calibration/profile/delete',
+                           json.dumps({'name': name}), qos=1)
+        return _ok(deleted=name)
+
+    @app.get('/api/calibration/profile/list')
+    async def api_calibration_profile_list():
+        ros_node._mqtt_pub('calibration/profile/list', '{}', qos=1)
+        # Return cached list immediately (will update via MQTT push)
+        return _ok(profiles=ros_node._calibration_profiles_list)
+
+    @app.get('/api/calibration/coefficients')
+    async def api_calibration_coefficients():
+        return _ok(coefficients=ros_node._calibration_active)
 
     # ── Explorer ───────────────────────────────────────────────────
     @app.post('/api/explorer/command')

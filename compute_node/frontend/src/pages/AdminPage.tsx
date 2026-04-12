@@ -10,6 +10,7 @@ import { ServoControlPanel } from '@/components/actuators/ServoControlPanel'
 import { JoystickControl } from '@/components/joystick/JoystickControl'
 import { EmergencyStop } from '@/components/controls/EmergencyStop'
 import { PrecisionDrivePanel } from '@/components/controls/PrecisionDrivePanel'
+import { CalibrationPanel } from '@/components/controls/CalibrationPanel'
 import { DetectionTable } from '@/components/detection/DetectionTable'
 import { BallsTable } from '@/components/detection/BallsTable'
 import { CommandInput } from '@/components/controls/CommandInput'
@@ -69,9 +70,9 @@ export function AdminPage() {
                       <span>{ACTION_RU[status?.target_action || ''] || '—'}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Позиция</span>
+                      <span className="text-muted-foreground">Позиция (см)</span>
                       <span className="font-mono">
-                        {pose ? `${pose.x.toFixed(3)}, ${pose.y.toFixed(3)}` : '—'}
+                        {pose ? `${pose.x.toFixed(1)}, ${pose.y.toFixed(1)}` : '—'}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -167,6 +168,12 @@ export function AdminPage() {
               <PrecisionDrivePanel
                 status={state?.precision_drive ?? null}
                 result={state?.precision_drive_result ?? null}
+              />
+
+              {/* ── Калибровка колёс ── */}
+              <CalibrationPanel
+                coeffs={state?.calibration_coeffs ?? null}
+                profiles={state?.calibration_profiles ?? null}
               />
 
               {/* ── Emergency Stop ── */}
