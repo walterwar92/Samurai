@@ -122,8 +122,8 @@ class PathRecorderNode(MqttNode):
     def _odom_cb(self, topic, data):
         if not isinstance(data, dict):
             return
-        self._x = data.get('x', 0.0)
-        self._y = data.get('y', 0.0)
+        self._x = data.get('x', 0.0) / 100.0      # cm → m
+        self._y = data.get('y', 0.0) / 100.0      # cm → m
         self._theta = data.get('theta', 0.0)
         stationary = data.get('stationary', True)
         self._pose_valid = True

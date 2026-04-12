@@ -231,8 +231,9 @@ class MqttBridgeCompute(Node):
         odom.header.stamp = self.get_clock().now().to_msg()
         odom.header.frame_id = 'odom'
         odom.child_frame_id = 'base_link'
-        odom.pose.pose.position.x = d['x']
-        odom.pose.pose.position.y = d['y']
+        # odom x,y arrive in centimetres — ROS2 uses metres
+        odom.pose.pose.position.x = d['x'] / 100.0
+        odom.pose.pose.position.y = d['y'] / 100.0
         theta = d['theta']
         odom.pose.pose.orientation.z = math.sin(theta / 2.0)
         odom.pose.pose.orientation.w = math.cos(theta / 2.0)
@@ -264,8 +265,8 @@ class MqttBridgeCompute(Node):
         t = TransformStamped()
         t.header = odom.header
         t.child_frame_id = 'base_link'
-        t.transform.translation.x = d['x']
-        t.transform.translation.y = d['y']
+        t.transform.translation.x = d['x'] / 100.0
+        t.transform.translation.y = d['y'] / 100.0
         t.transform.rotation.z = math.sin(theta / 2.0)
         t.transform.rotation.w = math.cos(theta / 2.0)
         self._tf_broadcaster.sendTransform(t)

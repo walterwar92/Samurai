@@ -108,8 +108,8 @@ class CalibrationNode(MqttNode):
         """Получаем актуальные данные одометрии."""
         if not isinstance(data, dict):
             return
-        self._odom_x = float(data.get('x', 0.0))
-        self._odom_y = float(data.get('y', 0.0))
+        self._odom_x = float(data.get('x', 0.0)) / 100.0   # cm → m
+        self._odom_y = float(data.get('y', 0.0)) / 100.0   # cm → m
         self._odom_theta = float(data.get('theta', 0.0))
         self._odom_received = True
 

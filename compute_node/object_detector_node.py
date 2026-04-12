@@ -164,8 +164,8 @@ class ObjectDetectorNode(MqttNode):
     # ── MQTT callbacks ──────────────────────────────────────────────────────
     def _odom_cb(self, topic, data):
         if isinstance(data, dict):
-            self._robot_x     = float(data.get('x', 0.0))
-            self._robot_y     = float(data.get('y', 0.0))
+            self._robot_x     = float(data.get('x', 0.0)) / 100.0   # cm → m
+            self._robot_y     = float(data.get('y', 0.0)) / 100.0   # cm → m
             self._robot_theta = float(data.get('theta', 0.0))
             self._pose_valid  = True
 

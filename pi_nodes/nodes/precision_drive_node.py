@@ -92,12 +92,10 @@ TIMEOUT_PER_CM_S  = cfg('precision_drive.timeout_per_cm_s', 0.5)
 MAX_LEG_TIMEOUT_S = cfg('precision_drive.max_leg_timeout_s', 30.0)
 
 # Motor trim — feedforward angular correction for physical motor imbalance.
-# Compensates the weaker motor so the robot goes straight without relying
-# solely on the reactive PI heading controller.
-# Formula: motor_trim_pct / 100 * MAX_ANGULAR (2.0 rad/s)
-# Sign:  forward → +trim,  backward → −trim  (same physical fix, mirrored direction)
+# Now dynamically updated from motor_node via calibration/active topic.
+# Fallback: read from config.yaml at startup.
 _MAX_ANGULAR_RAD_S = 2.0   # fast profile max (rad/s)
-MOTOR_TRIM_RAD_S = cfg('wheel_calibration.motor_trim_pct', -12.003) / 100.0 * _MAX_ANGULAR_RAD_S
+_DEFAULT_MOTOR_TRIM_PCT = cfg('wheel_calibration.motor_trim_pct', -12.003)
 
 # Settle pause after each stop — matches BRAKE_SETTLE_S in test_precision_drive.py
 SCENARIO_SETTLE_S = cfg('precision_drive.scenario_settle_s', 0.25)
@@ -182,10 +180,14 @@ class PrecisionDriveNode(MqttNode):
             'disturbance': 'none',
         }
 
+        # ── Dynamic motor trim (updated from calibration/active) ──
+        self._motor_trim_rad_s = _DEFAULT_MOTOR_TRIM_PCT / 100.0 * _MAX_ANGULAR_RAD_S
+
         # ── Subscriptions ────────────────────────────────────────
         self.subscribe('odom', self._odom_cb, qos=0)
         self.subscribe('imu', self._imu_cb, qos=0)
         self.subscribe('precision_drive/command', self._command_cb, qos=1)
+        self.subscribe('calibration/active', self._calibration_cb, qos=1)
 
         # ── Timers ───────────────────────────────────────────────
         self.create_timer(1.0 / CONTROL_HZ, self._control_loop)
@@ -202,8 +204,9 @@ class PrecisionDriveNode(MqttNode):
         if not isinstance(data, dict):
             return
         with self._odom_lock:
-            x = data.get('x', 0.0)
-            y = data.get('y', 0.0)
+            # odom x,y are in centimetres — convert to metres for calculations
+            x = data.get('x', 0.0) / 100.0
+            y = data.get('y', 0.0) / 100.0
 
             # Smooth odom with ring buffer
             self._odom_buf_x.append(x)
@@ -217,6 +220,16 @@ class PrecisionDriveNode(MqttNode):
             self._odom_theta = data.get('theta', 0.0)
             self._odom_stationary = data.get('stationary', False)
             self._odom_ready = True
+
+    def _calibration_cb(self, topic, data):
+        """Update motor trim from motor_node's calibration broadcast."""
+        if not isinstance(data, dict):
+            return
+        trim_pct = data.get('motor_trim')
+        if trim_pct is not None:
+            self._motor_trim_rad_s = float(trim_pct) / 100.0 * _MAX_ANGULAR_RAD_S
+            self.log_info('Motor trim updated: %.3f%% (%.4f rad/s)',
+                          trim_pct, self._motor_trim_rad_s)
 
     def _imu_cb(self, topic, data):
         if not isinstance(data, dict):
@@ -550,7 +563,7 @@ class PrecisionDriveNode(MqttNode):
         # Feedforward motor trim: adds a constant bias to compensate the
         # weaker motor. Sign mirrors direction so the same physical
         # asymmetry is corrected whether driving forward or backward.
-        trim = MOTOR_TRIM_RAD_S if speed >= 0 else -MOTOR_TRIM_RAD_S
+        trim = self._motor_trim_rad_s if speed >= 0 else -self._motor_trim_rad_s
         self._send_cmd(speed, angular + trim)
 
     def _do_align(self):

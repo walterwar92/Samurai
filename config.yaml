@@ -194,6 +194,8 @@ precision_drive:
 
 # Калибровка колёсной одометрии
 # Получено через tests/test_precision_drive.py (режим c)
+# Профили хранятся в calibration_profiles.yaml (зависят от поверхности/места)
+# Активный профиль загружается motor_node при старте
 wheel_calibration:
   scale_linear_fwd: 1.235      # вперёд: реальное / одометрическое (робот едет дальше нормы)
   scale_linear_bwd: 0.988      # назад:  FWD × 0.80 (мотор менее эффективен назад)
