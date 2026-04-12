@@ -2,15 +2,28 @@
 """
 head_node — Camera head servo control (PCA9685 channel 4).
 
-Single servo for horizontal pan. Centers on startup (looks forward).
-Supports smooth movement and absolute angle commands.
-Future: object tracking mode.
+Single servo for horizontal pan. Locked on startup (no movement).
+Supports smooth movement, freeze (hold position), and presets.
 
 Subscribes:
-    samurai/{robot_id}/head/command — JSON {"angle": 0-180}
-                                     or "center" to reset to home
+    samurai/{robot_id}/head/command — JSON or string:
+        {"angle": 0-180}              — absolute position
+        {"command": "center"}         — reset to home
+        {"command": "unlock"}         — unlock from locked state
+        {"command": "lock"}           — lock at current position
+        {"command": "freeze"}         — freeze (hold PWM, resist movement)
+        {"command": "unfreeze"}       — unfreeze
+
+        {"command": "save_preset", "name": "look_left"}  — save preset
+        {"command": "load_preset", "name": "look_left"}  — load preset
+        {"command": "delete_preset", "name": "look_left"} — delete preset
+        {"command": "list_presets"}                       — list presets
+
+        "center" / "unlock" / "lock" / "freeze" / "unfreeze" — shorthands
+
 Publishes:
-    samurai/{robot_id}/head/state  — JSON {"angle": float} @ 10 Hz
+    samurai/{robot_id}/head/state — JSON @ 10 Hz:
+        {"angle": float, "frozen": bool, "locked": bool}
 """
 
 import json
@@ -20,6 +33,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 from pi_nodes.hardware.servo_driver import ServoDriver
+from pi_nodes.hardware.servo_presets import ServoPresets
 
 try:
     from config_loader import cfg
@@ -54,14 +68,13 @@ class HeadNode(MqttNode):
         self._angle = self._home
 
         if self._locked:
-            # НЕ отправляем команду серво — оставляем в том положении,
-            # в котором голова физически находится при включении.
-            # PCA9685 не будет генерировать PWM пока мы не вызовем set_angle.
             self._servo_initialized = False
         else:
-            # Разблокирована — ставим в home при старте
             self._servo.set_angle(self._home)
             self._servo_initialized = True
+
+        # Preset manager
+        self._presets = ServoPresets()
 
         # MQTT
         self.subscribe('head/command', self._cmd_cb)
@@ -76,8 +89,6 @@ class HeadNode(MqttNode):
                           self._channel, self._home, self._locked)
 
     def _cmd_cb(self, topic, data):
-        # MqttNode with parse_json=True already decodes JSON → dict.
-        # But "center" string stays as str.
         if isinstance(data, str):
             cmd_lower = data.strip().lower()
             if cmd_lower == 'center':
@@ -93,6 +104,15 @@ class HeadNode(MqttNode):
                 self._locked = True
                 self.log_info('Head locked at %.1f°', self._angle)
                 return
+            if cmd_lower == 'freeze':
+                self._unlock_if_needed()
+                self._servo.freeze()
+                self.log_info('Head FROZEN at %.1f°', self._angle)
+                return
+            if cmd_lower == 'unfreeze':
+                self._servo.unfreeze()
+                self.log_info('Head UNFROZEN')
+                return
             try:
                 data = json.loads(data)
             except (json.JSONDecodeError, ValueError):
@@ -104,21 +124,73 @@ class HeadNode(MqttNode):
             return
 
         d = data
+        cmd = d.get('command', '')
 
-        if d.get('command') == 'center':
+        if cmd == 'center':
             self._unlock_if_needed()
             self._target = self._home
             self.log_info('Head → CENTER')
             return
 
-        if d.get('command') == 'unlock':
+        if cmd == 'unlock':
             self._unlock_if_needed()
             self.log_info('Head unlocked')
             return
 
-        if d.get('command') == 'lock':
+        if cmd == 'lock':
             self._locked = True
             self.log_info('Head locked at %.1f°', self._angle)
+            return
+
+        if cmd == 'freeze':
+            self._unlock_if_needed()
+            self._servo.freeze()
+            self.log_info('Head FROZEN at %.1f°', self._angle)
+            return
+
+        if cmd == 'unfreeze':
+            self._servo.unfreeze()
+            self.log_info('Head UNFROZEN')
+            return
+
+        if cmd == 'save_preset':
+            name = d.get('name', '').strip()
+            if not name:
+                self.log_warn('save_preset: name required')
+                return
+            self._presets.save_preset('head', name, self._angle)
+            self.log_info('Preset saved: head/%s = %.1f°', name, self._angle)
+            return
+
+        if cmd == 'load_preset':
+            name = d.get('name', '').strip()
+            if not name:
+                self.log_warn('load_preset: name required')
+                return
+            angle = self._presets.load_preset('head', name)
+            if angle is None:
+                self.log_warn('Preset not found: head/%s', name)
+                return
+            self._unlock_if_needed()
+            self._target = max(self._min, min(self._max, float(angle)))
+            self.log_info('Preset loaded: head/%s → %.1f°', name, self._target)
+            return
+
+        if cmd == 'delete_preset':
+            name = d.get('name', '').strip()
+            if not name:
+                self.log_warn('delete_preset: name required')
+                return
+            if self._presets.delete_preset('head', name):
+                self.log_info('Preset deleted: head/%s', name)
+            else:
+                self.log_warn('Preset not found: head/%s', name)
+            return
+
+        if cmd == 'list_presets':
+            names = self._presets.list_presets('head')
+            self.publish('head/presets', json.dumps(names))
+            self.log_info('Head presets: %s', names)
             return
 
         if 'angle' in d:
@@ -131,12 +203,12 @@ class HeadNode(MqttNode):
         """Unlock head and initialize servo if first move."""
         self._locked = False
         if not self._servo_initialized:
-            self._servo.set_angle(self._angle)
+            self._servo.set_angle(self._angle, force=True)
             self._servo_initialized = True
 
     def _smooth_move(self):
         """Move servo towards target by _speed degrees per tick."""
-        if self._locked:
+        if self._locked or self._servo.frozen:
             return
         self._angle = self._step(self._angle, self._target)
         self._servo.set_angle(self._angle)
@@ -151,6 +223,8 @@ class HeadNode(MqttNode):
     def _publish_state(self):
         self.publish('head/state', json.dumps({
             'angle': round(self._angle, 1),
+            'frozen': self._servo.frozen,
+            'locked': self._locked,
         }))
 
 

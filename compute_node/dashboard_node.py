@@ -1322,23 +1322,54 @@ def create_app(ros_node: DashboardNode):
     @app.post('/api/actuators/head')
     async def api_head(req: Request):
         body = await req.json()
-        # Accept: {"angle": 0-180} or {"command": "center"}
-        if body.get('command') == 'center':
-            ros_node._mqtt_pub('head/command', 'center', qos=1)
-            return _ok(head='center')
+        cmd = body.get('command', '')
+        # Commands: center, unlock, lock, freeze, unfreeze,
+        #           save_preset, load_preset, delete_preset, list_presets
+        if cmd in ('center', 'unlock', 'lock', 'freeze', 'unfreeze'):
+            ros_node._mqtt_pub('head/command', body, qos=1)
+            return _ok(head=cmd)
+        if cmd == 'save_preset':
+            ros_node._mqtt_pub('head/command', body, qos=1)
+            return _ok(head='save_preset', name=body.get('name'))
+        if cmd == 'load_preset':
+            ros_node._mqtt_pub('head/command', body, qos=1)
+            return _ok(head='load_preset', name=body.get('name'))
+        if cmd == 'delete_preset':
+            ros_node._mqtt_pub('head/command', body, qos=1)
+            return _ok(head='delete_preset', name=body.get('name'))
+        if cmd == 'list_presets':
+            ros_node._mqtt_pub('head/command', body, qos=1)
+            return _ok(head='list_presets')
         if 'angle' in body:
             angle = max(0, min(180, float(body['angle'])))
             ros_node.set_head({'angle': angle})
             return _ok(angle=angle)
-        return _err('body must contain "angle" or "command":"center"')
+        return _err('body must contain "angle" or "command"')
 
     @app.post('/api/actuators/arm')
     async def api_arm(req: Request):
         body = await req.json()
-        # Accept: {"joint": 1, "angle": 90} or {"joints": [90,90,90,90]} or {"command":"home"}
-        if body.get('command') == 'home':
-            ros_node._mqtt_pub('arm/command', 'home', qos=1)
-            return _ok(arm='home')
+        cmd = body.get('command', '')
+        # Commands: home, unlock, freeze, unfreeze,
+        #           save_preset, load_preset, delete_preset, list_presets
+        if cmd in ('home', 'unlock'):
+            ros_node._mqtt_pub('arm/command', body, qos=1)
+            return _ok(arm=cmd)
+        if cmd in ('freeze', 'unfreeze'):
+            ros_node._mqtt_pub('arm/command', body, qos=1)
+            return _ok(arm=cmd, joint=body.get('joint'))
+        if cmd == 'save_preset':
+            ros_node._mqtt_pub('arm/command', body, qos=1)
+            return _ok(arm='save_preset', name=body.get('name'))
+        if cmd == 'load_preset':
+            ros_node._mqtt_pub('arm/command', body, qos=1)
+            return _ok(arm='load_preset', name=body.get('name'))
+        if cmd == 'delete_preset':
+            ros_node._mqtt_pub('arm/command', body, qos=1)
+            return _ok(arm='delete_preset', name=body.get('name'))
+        if cmd == 'list_presets':
+            ros_node._mqtt_pub('arm/command', body, qos=1)
+            return _ok(arm='list_presets')
         if 'joint' in body and 'angle' in body:
             joint = int(body['joint'])
             angle = max(0, min(180, float(body['angle'])))
@@ -1348,7 +1379,7 @@ def create_app(ros_node: DashboardNode):
             joints = [max(0, min(180, float(a))) for a in body['joints'][:4]]
             ros_node.set_arm({'joints': joints})
             return _ok(joints=joints)
-        return _err('body must contain "joint"+"angle", "joints", or "command":"home"')
+        return _err('body must contain "joint"+"angle", "joints", or "command"')
 
     @app.get('/api/actuators/head')
     async def api_head_get():

@@ -140,6 +140,8 @@ servos:
     min_angles:  [0, 0, 0, 0]
     max_angles:  [120, 145, 180, 180]
     labels: ["Основание", "Сустав 1", "Сустав 2", "Клешня"]
+    locked: true          # при запуске рука НЕ двигается (остаётся как есть)
+                          # разблокировать: arm/command → "unlock" или {"command":"unlock"}
 
 # Path recorder (запись пути для возврата домой)
 path_recorder:

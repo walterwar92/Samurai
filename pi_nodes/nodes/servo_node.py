@@ -20,8 +20,7 @@ class ServoNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('servo_node', **kwargs)
 
-        self._servo = ServoDriver(channel=0)
-        self._servo.init_position()
+        self._servo = ServoDriver(channel=0, start_disabled=True)
 
         self.subscribe('claw/command', self._cmd_cb)
         self.create_timer(0.1, self._publish_state)  # 10 Hz
