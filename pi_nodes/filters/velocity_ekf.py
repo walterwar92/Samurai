@@ -1,22 +1,23 @@
 """
 2D Velocity EKF with accelerometer bias estimation.
 
-Properly fuses wheel-command odometry with accelerometer data for
-accurate position estimation on a tracked robot without encoders.
+IMU-only position estimation for a tracked robot without encoders.
+Motor commands are NOT used for position estimation — only physical
+sensors (accelerometer, gyroscope) determine actual motion.
 
 Architecture: two parallel 2-state Kalman filters:
   X-axis: [vx, bias_x]  in world frame
   Y-axis: [vy, bias_y]  in world frame
 
-Key improvements over naive approaches:
-  - Motor dynamics model (first-order lag) instead of instant response
+Key features:
+  - Friction decay model: velocity naturally decelerates (no motor commands)
+  - Accelerometer updates: only source of actual velocity information
   - Bias state absorbs accelerometer integration drift
-  - Trapezoidal position integration (O(dt^3) error vs O(dt^2))
   - Proper Kalman gain adapts automatically to noise levels
-  - No artificial velocity decay — bias estimation handles drift
+  - ZUPT: zero velocity when stationary (sensor-based detection)
   - Position integrated at every call for maximum rate
 
-Prediction: motor command with first-order response model.
+Prediction: friction-based velocity decay (velocity → 0).
 Update: accelerometer-integrated velocity (bias-compensated).
 ZUPT: zero-velocity update when stationary.
 
@@ -29,11 +30,14 @@ from math import cos, sin, sqrt, exp
 class VelocityEKF:
     """2D velocity Kalman filter with bias estimation and position integration.
 
+    IMU-only: velocity is estimated from accelerometer data with friction
+    decay prediction. Motor commands have NO influence on position.
+
     Usage:
         ekf = VelocityEKF()
 
-        # Prediction from wheel commands (20 Hz)
-        ekf.predict_wheel(vx_cmd, theta, dt)
+        # Prediction: friction decay (20 Hz)
+        ekf.predict_friction(dt)
 
         # Update from accelerometer (50 Hz)
         ekf.update_accel(la_wx, la_wy, dt)
@@ -47,23 +51,22 @@ class VelocityEKF:
     """
 
     def __init__(self,
-                 motor_tau: float = 0.25,
-                 braking_tau: float = 0.08,
+                 friction_tau: float = 0.15,
                  q_velocity: float = 0.08,
                  q_bias: float = 0.003,
                  r_accel: float = 0.12,
-                 r_zupt: float = 0.0001):
+                 r_zupt: float = 0.0001,
+                 # Deprecated — kept for backward config compatibility, ignored
+                 motor_tau: float = 0.25,
+                 braking_tau: float = 0.08):
         """
         Args:
-            motor_tau: Motor time constant (seconds). How fast the robot
-                       actually reaches commanded speed. Smaller = faster
-                       response. 0.2-0.4s typical for tracked robots.
-            braking_tau: Braking time constant (seconds). How fast the
-                         robot stops when command is zero. Tracked robots
-                         stop much faster than they accelerate due to
-                         track friction. 0.05-0.1s typical.
+            friction_tau: Friction time constant (seconds). How fast
+                         velocity decays without external force. Smaller =
+                         more friction (faster stop). 0.1-0.3s typical
+                         for tracked robots.
             q_velocity: Velocity process noise (m/s)^2/s. How much we
-                        distrust the motor model (slip, friction changes).
+                        distrust the friction decay model.
             q_bias: Bias random walk noise (m/s)^2/s. How fast the accel
                     bias drifts. Small = bias changes slowly.
             r_accel: Accel velocity measurement noise (m/s)^2. Higher =
@@ -71,8 +74,7 @@ class VelocityEKF:
             r_zupt: ZUPT measurement noise (m/s)^2. Very small = high
                     trust that stationary means zero velocity.
         """
-        self.motor_tau = max(motor_tau, 0.05)
-        self.braking_tau = max(braking_tau, 0.02)
+        self.friction_tau = max(friction_tau, 0.02)
         self.q_velocity = q_velocity
         self.q_bias = q_bias
         self.r_accel = r_accel
@@ -105,61 +107,50 @@ class VelocityEKF:
         self._update_count = 0
         self._RECENTER_INTERVAL = 500  # every ~10s at 50 Hz
 
-    def predict_wheel(self, v_cmd: float, theta: float, dt: float):
-        """Prediction step using wheel odometry command with motor dynamics.
+    def predict_friction(self, dt: float):
+        """Prediction step: friction-based velocity decay (NO motor commands).
 
-        Models the motor as a first-order system: the robot doesn't
-        instantly reach commanded speed, but converges exponentially
-        with time constant motor_tau.
+        Velocity decays toward zero due to track friction. Only the
+        accelerometer (via update_accel) provides real velocity data.
+
+        This ensures position estimation is based solely on physical
+        sensors. If the robot is lifted while tracks spin, velocity
+        correctly stays zero because accelerometer sees no motion.
 
         NOTE: Position is NOT integrated here. Call integrate_position()
         after all predict+update steps are done, so that position uses
-        the fully-fused velocity (not pre-correction motor prediction).
+        the fully-fused velocity.
 
         Args:
-            v_cmd: Commanded forward velocity (m/s), already scaled.
-            theta: Current heading from IMU (radians).
             dt: Time step (seconds).
         """
         if dt <= 0 or dt > 1.0:
             return
 
-        ct, st = cos(theta), sin(theta)
-        vcx = v_cmd * ct
-        vcy = v_cmd * st
+        # Exponential friction decay: velocity → 0
+        decay = exp(-dt / self.friction_tau)
 
-        # Motor response: alpha = fraction of gap closed in dt
-        # Use braking_tau (faster) when decelerating to zero,
-        # motor_tau (slower) when accelerating. Tracked robots stop
-        # nearly instantly due to track friction.
-        is_braking = abs(v_cmd) < 0.005 and (abs(self.vx) > 0.005 or abs(self.vy) > 0.005)
-        tau = self.braking_tau if is_braking else self.motor_tau
-        alpha = min(dt / tau, 1.0)
-
-        # Predicted velocity (motor dynamics model)
-        self.vx += (vcx - self.vx) * alpha
-        self.vy += (vcy - self.vy) * alpha
+        self.vx *= decay
+        self.vy *= decay
 
         # Bias unchanged in prediction (random walk)
 
         # -- Covariance prediction: P = F*P*F' + Q --
-        f_vv = 1.0 - alpha  # d(v_new)/d(v_old) = 1 - alpha
-        # f_vb = 0, f_bv = 0, f_bb = 1
-
+        # F = [[decay, 0], [0, 1]] (velocity decays, bias unchanged)
+        d2 = decay * decay
         qv = self.q_velocity * dt
         qb = self.q_bias * dt
 
-        f2 = f_vv * f_vv
         p = self._px
-        p[0] = f2 * p[0] + qv
-        p[1] = f_vv * p[1]
-        p[2] = f_vv * p[2]
+        p[0] = d2 * p[0] + qv
+        p[1] = decay * p[1]
+        p[2] = decay * p[2]
         p[3] += qb
 
         p = self._py
-        p[0] = f2 * p[0] + qv
-        p[1] = f_vv * p[1]
-        p[2] = f_vv * p[2]
+        p[0] = d2 * p[0] + qv
+        p[1] = decay * p[1]
+        p[2] = decay * p[2]
         p[3] += qb
 
     def integrate_position(self, dt: float):

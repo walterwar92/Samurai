@@ -1,5 +1,9 @@
 """
-Accelerometer-based position estimator for 2D ground robot.
+IMU-only position estimator for 2D ground robot.
+
+Position estimation is based EXCLUSIVELY on IMU sensor data
+(accelerometer + gyroscope). Motor commands are NOT used — this
+prevents false motion when e.g. tracks spin while robot is lifted.
 
 Extracts linear acceleration from IMU by removing:
     1. Gravity vector — direct subtraction of calibrated gravity_body,
@@ -7,13 +11,12 @@ Extracts linear acceleration from IMU by removing:
     2. Earth rotation effects (Coriolis)
     3. Vibration noise — cascaded IIR low-pass + median spike rejection
 
-Then fuses with wheel odometry via Velocity EKF:
-    - Prediction: from wheel commands with motor dynamics model
-    - Update: from accelerometer (captures slip, short-term accurate)
+Velocity estimation via EKF:
+    - Prediction: friction decay model (velocity → 0, no motor commands)
+    - Update: from accelerometer (only source of real motion data)
     - Bias estimation: absorbs accelerometer drift automatically
-    - ZUPT: zero velocity when stationary (hysteresis-based)
+    - ZUPT: zero velocity when stationary (sensor-based, no cmd dependency)
     - Non-holonomic constraint: tracked robot can't strafe
-    - Adaptive wheel scale: learns actual speed vs commanded
 
 Coordinate frames:
     Body:  x=forward, y=left, z=up (as mounted on chassis)
@@ -88,78 +91,23 @@ class _LowPass2:
         self._s2 = val
 
 
-class _AdaptiveWheelScale:
-    """Online estimator for wheel odometry scale factor.
-
-    Compares accelerometer-measured displacement segments with
-    wheel-predicted displacement to learn the actual scale.
-    Uses exponential moving average for smooth adaptation.
-
-    Only updates when:
-    - Robot moves in a relatively straight line (low angular velocity)
-    - Segment is long enough to be reliable (>5cm)
-    - Accelerometer signal is clean (low noise)
-    """
-    __slots__ = ('scale', '_wheel_dist', '_accel_dist',
-                 '_segment_start', '_min_segment', '_ema_alpha',
-                 '_min_scale', '_max_scale')
-
-    def __init__(self, initial_scale: float = 1.0,
-                 ema_alpha: float = 0.02,
-                 min_segment_m: float = 0.05):
-        self.scale = initial_scale
-        self._wheel_dist = 0.0
-        self._accel_dist = 0.0
-        self._segment_start = True
-        self._min_segment = min_segment_m
-        self._ema_alpha = ema_alpha
-        self._min_scale = 0.5   # never scale below 50%
-        self._max_scale = 2.0   # never scale above 200%
-
-    def accumulate_wheel(self, v_cmd: float, dt: float):
-        """Add wheel-predicted distance for this segment."""
-        self._wheel_dist += abs(v_cmd) * dt
-
-    def accumulate_accel(self, v_fwd: float, dt: float):
-        """Add accelerometer-fused forward velocity distance."""
-        self._accel_dist += abs(v_fwd) * dt
-
-    def finish_segment(self) -> float:
-        """Called when robot stops. Returns updated scale factor."""
-        if (self._wheel_dist > self._min_segment and
-                self._accel_dist > self._min_segment * 0.3):
-            # Compute ratio: how much wheel over/under-estimates
-            ratio = self._accel_dist / self._wheel_dist
-            # Clamp to reasonable range
-            ratio = max(self._min_scale, min(self._max_scale, ratio))
-            # EMA update
-            self.scale += self._ema_alpha * (ratio - self.scale)
-            self.scale = max(self._min_scale, min(self._max_scale, self.scale))
-
-        self._wheel_dist = 0.0
-        self._accel_dist = 0.0
-        return self.scale
-
-    def reset_segment(self):
-        """Reset segment accumulators without updating scale."""
-        self._wheel_dist = 0.0
-        self._accel_dist = 0.0
-
-
 class AccelPositionEstimator:
-    """Fuses accelerometer with wheel odometry for accurate 2D position.
+    """IMU-only position estimator for 2D ground robot.
 
-    Uses VelocityEKF with bias estimation for optimal fusion.
-    Falls back to complementary filter if EKF not available.
+    Position estimation based EXCLUSIVELY on IMU sensor data.
+    Motor commands are NOT used — prevents false motion detection
+    (e.g. tracks spinning while robot is lifted off the ground).
 
-    Key improvements:
+    Uses VelocityEKF with bias estimation and friction decay model.
+    Falls back to pure accelerometer integration if EKF not available.
+
+    Key features:
     - 2nd-order IIR low-pass filter removes vibration noise
     - Median filter rejects impulse spikes
     - Actual timestamp-based dt (no hardcoded values)
     - Bias estimation in EKF absorbs accelerometer drift
-    - Motor dynamics model for realistic velocity prediction
-    - Adaptive wheel scale factor learns actual speed calibration
-    - Trapezoidal integration in EKF for position accuracy
+    - Friction decay model (velocity → 0 without acceleration)
+    - Sensor-only ZUPT (no motor command dependency)
 
     Usage:
         estimator = AccelPositionEstimator()
@@ -169,8 +117,8 @@ class AccelPositionEstimator:
         estimator.update_imu(ax, ay, az, gx, gy, gz,
                              roll, pitch, yaw, dt, timestamp)
 
-        # Each odom tick (20 Hz):
-        estimator.update_wheel_odom(vx_wheel, theta, dt)
+        # Each prediction tick (20 Hz):
+        estimator.update_prediction(theta, dt)
 
         # Finalize:
         estimator.blend()
@@ -189,7 +137,7 @@ class AccelPositionEstimator:
             complementary_alpha: Fallback blend ratio (without EKF).
             lpf_alpha: IIR low-pass filter alpha.
             vekf_params: Dict of VelocityEKF parameters:
-                motor_tau, q_velocity, q_bias, r_accel, r_zupt.
+                friction_tau, q_velocity, q_bias, r_accel, r_zupt.
                 If None, uses defaults from config or hardcoded.
         """
         self._lat_rad = latitude_deg * DEG2RAD
@@ -216,10 +164,6 @@ class AccelPositionEstimator:
         if _VEKF_AVAILABLE:
             kw = vekf_params or {}
             self._vekf = VelocityEKF(**kw)
-
-        # Wheel odometry position (fallback)
-        self._wheel_x = 0.0
-        self._wheel_y = 0.0
 
         # Accel-only position (fallback)
         self._accel_x = 0.0
@@ -257,32 +201,13 @@ class AccelPositionEstimator:
         self._cy = 1.0
         self._sy = 0.0
 
-        # Command-based motion detection
-        self._cmd_moving = False
-        self._cmd_moving_count = 0  # consecutive IMU samples with cmd_moving
-
         # Gyro magnitude for ZUPT (stored from latest IMU)
         self._last_gyro_mag = 0.0
-
-        # Command-only ZUPT exit: if motor commands active for this many
-        # consecutive IMU samples without sensor evidence, force-exit ZUPT.
-        # At 50 Hz, 8 samples = 160ms — enough for motor to physically start.
-        self._CMD_EXIT_COUNT = 8
-
-        # Command-timeout ZUPT: if no commands for this many IMU samples
-        # AND velocity is small, force enter stationary even if accel
-        # is noisy (vibrations after impulse).
-        # At 50 Hz, 8 samples = 160ms — tracked robot stops almost instantly.
-        self._CMD_STOP_TIMEOUT = 8
-        self._no_cmd_count = 0
-
-        # -- Adaptive wheel scale --
-        self._wheel_scale = _AdaptiveWheelScale()
 
         # -- IMU timestamp tracking --
         self._last_imu_ts = None
 
-        # -- Blend dt: last dt from update_wheel_odom for position integration --
+        # -- Blend dt: last dt from update_prediction for position integration --
         self._last_blend_dt = 0.0
 
     def set_calibration(self, gravity_body: tuple,
@@ -293,15 +218,6 @@ class AccelPositionEstimator:
                            gravity_body[2]**2)
         self._home_roll = home_roll
         self._home_pitch = home_pitch
-
-    def set_cmd_moving(self, is_moving: bool):
-        """Hint from motor_node: whether motor commands are non-zero."""
-        self._cmd_moving = is_moving
-
-    @property
-    def wheel_scale(self) -> float:
-        """Current adaptive wheel scale factor."""
-        return self._wheel_scale.scale
 
     def update_imu(self, ax: float, ay: float, az: float,
                    gx: float, gy: float, gz: float,
@@ -393,23 +309,14 @@ class AccelPositionEstimator:
         gyro_mag = sqrt(gx * gx + gy * gy + gz * gz)
         self._last_gyro_mag = gyro_mag
 
-        # Track consecutive cmd_moving samples for command-based ZUPT exit
-        if self._cmd_moving:
-            self._cmd_moving_count += 1
-            self._no_cmd_count = 0
-        else:
-            self._cmd_moving_count = 0
-            self._no_cmd_count += 1
-
         if self._stationary:
-            # Currently stationary — need evidence to exit.
-            # Primary: sensor evidence (gyro or accel above thresholds)
-            # Fallback: motor commands active long enough (robot MUST be moving)
+            # Currently stationary — need SENSOR evidence to exit.
+            # Pure IMU-based: only gyro or accel above thresholds.
+            # Motor commands have NO influence on this decision.
             sensor_evidence = (gyro_mag > ZUPT_GYRO_EXIT or
                                accel_mag > ZUPT_ACCEL_EXIT)
-            cmd_evidence = self._cmd_moving_count >= self._CMD_EXIT_COUNT
 
-            if self._cmd_moving and (sensor_evidence or cmd_evidence):
+            if sensor_evidence:
                 self._exit_count += 1
                 self._enter_count = 0
             else:
@@ -418,49 +325,35 @@ class AccelPositionEstimator:
             if self._exit_count >= ZUPT_EXIT_COUNT:
                 self._stationary = False
                 self._exit_count = 0
-                self._no_cmd_count = 0
                 self._frozen_x = self.x
                 self._frozen_y = self.y
-                # Reset adaptive scale segment
-                self._wheel_scale.reset_segment()
         else:
             # Currently moving — check if robot has stopped.
+            # Pure sensor-based: gyro + accel below thresholds.
             sensors_quiet = (gyro_mag < ZUPT_GYRO_ENTER and
                              accel_mag < ZUPT_ACCEL_ENTER)
 
-            if not self._cmd_moving and sensors_quiet:
+            if sensors_quiet:
                 self._enter_count += 1
                 self._exit_count = 0
-            elif not self._cmd_moving:
-                # Commands stopped but sensors still noisy (vibrations).
-                # Soft decrement instead of hard reset — forgive occasional
-                # vibration spikes that would delay ZUPT indefinitely.
+            else:
+                # Sensors noisy (vibrations after stop). Soft decrement
+                # instead of hard reset — forgive occasional spikes.
                 self._enter_count = max(0, self._enter_count - 1)
                 self._exit_count = 0
-            else:
-                self._enter_count = 0
 
-            # Command-timeout ZUPT: no commands for 160ms → force stationary
-            # even if vibrations keep accel above threshold.
-            # This handles the "impulse push" case where robot is physically
-            # stopped but accelerometer rings from the mechanical shock.
-            # BUT: if EKF still sees significant velocity, don't force ZUPT —
-            # this prevents false stops during slow precision driving where
-            # cmd_vel updates arrive at 20Hz (50ms gaps between commands).
-            ekf_has_velocity = False
+            # Safety: if EKF velocity is negligible and gyro quiet,
+            # force ZUPT even if accel has residual vibration noise.
+            ekf_nearly_stopped = False
             if self._vekf is not None:
-                ekf_has_velocity = self._vekf.velocity_magnitude > 0.02
-            cmd_timeout = (self._no_cmd_count >= self._CMD_STOP_TIMEOUT and
-                           gyro_mag < ZUPT_GYRO_EXIT and
-                           not ekf_has_velocity)
+                ekf_nearly_stopped = (self._vekf.velocity_magnitude < 0.01
+                                      and gyro_mag < ZUPT_GYRO_ENTER)
 
-            if self._enter_count >= ZUPT_ENTER_COUNT or cmd_timeout:
+            if self._enter_count >= ZUPT_ENTER_COUNT or ekf_nearly_stopped:
                 self._stationary = True
                 self._enter_count = ZUPT_ENTER_COUNT
                 self._frozen_x = self.x
                 self._frozen_y = self.y
-                # Finish adaptive scale segment
-                self._wheel_scale.finish_segment()
 
         if self._stationary:
             # Hard zero — no velocity, position frozen
@@ -472,8 +365,6 @@ class AccelPositionEstimator:
             self.y = self._frozen_y
             self._accel_x = self._frozen_x
             self._accel_y = self._frozen_y
-            self._wheel_x = self._frozen_x
-            self._wheel_y = self._frozen_y
             # ZUPT in velocity EKF
             if self._vekf is not None:
                 self._vekf.update_zupt()
@@ -496,9 +387,6 @@ class AccelPositionEstimator:
                 self._vekf.reanchor_accel()
             # Apply non-holonomic constraint
             self._vekf.apply_nonholonomic(yaw)
-            # Accumulate accel distance for adaptive scale
-            v_fwd = self._vekf.vx * cy + self._vekf.vy * sy
-            self._wheel_scale.accumulate_accel(v_fwd, dt)
         else:
             # Fallback: trapezoidal integration + decay
             self.vx += 0.5 * (la_wx + self._prev_la_x) * dt
@@ -522,11 +410,14 @@ class AccelPositionEstimator:
             self._accel_x += self.vx * dt
             self._accel_y += self.vy * dt
 
-    def update_wheel_odom(self, vx_wheel: float, theta: float, dt: float):
-        """Integrate wheel odometry.
+    def update_prediction(self, theta: float, dt: float):
+        """Run EKF prediction step (friction model, no motor commands).
+
+        Position estimation is based solely on IMU sensor data.
+        Motor commands are NOT used — this prevents false motion
+        detection when e.g. tracks spin while robot is lifted.
 
         Args:
-            vx_wheel: Forward velocity from motor commands (m/s).
             theta: Current heading from IMU yaw (radians).
             dt: Time step (seconds).
         """
@@ -536,25 +427,15 @@ class AccelPositionEstimator:
         # Store dt for blend() position integration
         self._last_blend_dt = dt
 
-        # Update command-based motion hint
-        self.set_cmd_moving(abs(vx_wheel) > 0.005)
-
-        # Apply adaptive wheel scale
-        vx_scaled = vx_wheel * self._wheel_scale.scale
-
         if self._vekf is not None:
-            # Velocity EKF: wheel command as velocity prediction source.
+            # Velocity EKF: friction-based prediction.
             # Position is NOT integrated here — it's done in blend()
-            # after all Kalman updates, using the fused velocity.
-            self._vekf.predict_wheel(vx_scaled, theta, dt)
-            # Accumulate wheel distance for adaptive scale
-            self._wheel_scale.accumulate_wheel(vx_wheel, dt)
+            # after all updates, using the fused velocity.
+            self._vekf.predict_friction(dt)
         else:
-            # Fallback: simple integration
-            if abs(vx_wheel) >= 0.001:
-                ct, st = cos(theta), sin(theta)
-                self._wheel_x += vx_scaled * ct * dt
-                self._wheel_y += vx_scaled * st * dt
+            # Fallback: simple velocity decay (friction)
+            self.vx *= VELOCITY_DECAY
+            self.vy *= VELOCITY_DECAY
 
     def blend(self):
         """Finalize position estimate for this cycle.
@@ -562,7 +443,7 @@ class AccelPositionEstimator:
         With VelocityEKF: integrates position from fused velocity AFTER
         all predict+update steps. This ensures position uses the fully
         corrected velocity (IMU-corrected, not just motor prediction).
-        Without: complementary filter merge of wheel + accel position.
+        Without: pure accelerometer position integration.
         """
         if self._stationary:
             self._alpha = 1.0
@@ -581,15 +462,9 @@ class AccelPositionEstimator:
             self.vx = self._vekf.vx
             self.vy = self._vekf.vy
         else:
-            # Fallback: complementary filter
-            self._alpha = 0.95 * self._alpha + 0.05 * self._alpha_moving
-
-            a = self._alpha
-            self.x = a * self._wheel_x + (1.0 - a) * self._accel_x
-            self.y = a * self._wheel_y + (1.0 - a) * self._accel_y
-
-            self._accel_x = 0.995 * self._accel_x + 0.005 * self._wheel_x
-            self._accel_y = 0.995 * self._accel_y + 0.005 * self._wheel_y
+            # Fallback: pure accelerometer position (no wheel odom)
+            self.x = self._accel_x
+            self.y = self._accel_y
 
     def reset(self):
         """Reset position to (0, 0) — accept current pose as new home."""
@@ -597,8 +472,6 @@ class AccelPositionEstimator:
         self.y = 0.0
         self.vx = 0.0
         self.vy = 0.0
-        self._wheel_x = 0.0
-        self._wheel_y = 0.0
         self._accel_x = 0.0
         self._accel_y = 0.0
         self._frozen_x = 0.0
@@ -610,9 +483,6 @@ class AccelPositionEstimator:
         self._stationary = True
         self._enter_count = ZUPT_ENTER_COUNT
         self._exit_count = 0
-        self._cmd_moving = False
-        self._cmd_moving_count = 0
-        self._no_cmd_count = 0
         self._alpha = 1.0
         self._buf_ax.clear()
         self._buf_ay.clear()
@@ -620,7 +490,6 @@ class AccelPositionEstimator:
         self._lpf_y.reset(0.0)
         self._last_imu_ts = None
         self._last_blend_dt = 0.0
-        self._wheel_scale.reset_segment()
         if self._vekf is not None:
             self._vekf.reset()
 
