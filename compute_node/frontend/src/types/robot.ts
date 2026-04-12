@@ -179,6 +179,22 @@ export interface RobotState {
     actual_distance?: number
     odom_angle_deg?: number
   } | null
+  // Calibration coefficients & profiles
+  calibration_coeffs: {
+    profile: string
+    scale_fwd: number
+    scale_bwd: number
+    motor_trim: number
+  } | null
+  calibration_profiles: {
+    profiles: Record<string, {
+      scale_fwd: number
+      scale_bwd: number
+      motor_trim: number
+      description: string
+    }>
+    active: string
+  } | null
   // Explorer
   explorer: { state?: string; strategy?: string; progress?: number; covered_cells?: number } | null
   // Mission

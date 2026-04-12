@@ -227,9 +227,11 @@ class PrecisionDriveNode(MqttNode):
             return
         trim_pct = data.get('motor_trim')
         if trim_pct is not None:
-            self._motor_trim_rad_s = float(trim_pct) / 100.0 * _MAX_ANGULAR_RAD_S
-            self.log_info('Motor trim updated: %.3f%% (%.4f rad/s)',
-                          trim_pct, self._motor_trim_rad_s)
+            new_val = float(trim_pct) / 100.0 * _MAX_ANGULAR_RAD_S
+            if abs(new_val - self._motor_trim_rad_s) > 1e-6:
+                self._motor_trim_rad_s = new_val
+                self.log_info('Motor trim updated: %.3f%% (%.4f rad/s)',
+                              trim_pct, self._motor_trim_rad_s)
 
     def _imu_cb(self, topic, data):
         if not isinstance(data, dict):
