@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-motor_node — 4-motor tracked chassis control + accel-fused odometry.
+motor_node — 4-motor tracked chassis control + IMU-only odometry.
 
 Priority command mux (higher overrides lower, resumes after timeout):
   1. MANUAL   — cmd_vel/manual (user joystick/voice direct, highest priority)
@@ -25,13 +25,12 @@ Calibration MQTT interface:
     samurai/{robot_id}/calibration/profile/delete — "name"
     samurai/{robot_id}/calibration/profile/list  — any (triggers response)
 
-Position estimation:
-    Complementary filter fusing:
-    - Wheel odometry (cmd_vel integration, long-term stable)
-    - Accelerometer double-integration (gravity-free, short-term accurate)
+Position estimation (IMU-only, no motor command influence):
+    - Accelerometer-based velocity via EKF (friction decay model)
     - IMU yaw for heading
-    - ZUPT for zero-velocity detection
+    - ZUPT for zero-velocity detection (sensor-based, no cmd dependency)
     - Earth rotation compensation (Coriolis)
+    - If robot is lifted while tracks spin — position does NOT change
 """
 
 import math
@@ -158,12 +157,11 @@ class MotorNode(MqttNode):
         self._pos_estimator_ready = False
         if _ACCEL_POS_AVAILABLE:
             vekf_params = {
-                'motor_tau':   cfg('velocity_ekf.motor_tau', 0.25),
-                'braking_tau': cfg('velocity_ekf.braking_tau', 0.08),
-                'q_velocity':  cfg('velocity_ekf.q_velocity', 0.20),
-                'q_bias':      cfg('velocity_ekf.q_bias', 0.003),
-                'r_accel':     cfg('velocity_ekf.r_accel', 0.06),
-                'r_zupt':      cfg('velocity_ekf.r_zupt', 0.0001),
+                'friction_tau': cfg('velocity_ekf.friction_tau', 0.15),
+                'q_velocity':   cfg('velocity_ekf.q_velocity', 0.20),
+                'q_bias':       cfg('velocity_ekf.q_bias', 0.003),
+                'r_accel':      cfg('velocity_ekf.r_accel', 0.06),
+                'r_zupt':       cfg('velocity_ekf.r_zupt', 0.0001),
             }
             self._pos_estimator = AccelPositionEstimator(
                 vekf_params=vekf_params,
@@ -511,16 +509,9 @@ class MotorNode(MqttNode):
         cy = math.cos(self._theta)
         sy = math.sin(self._theta)
 
-        # ── Position ──────────────────────────────────────────────
-        cmd_is_moving = (abs(lin_cmd) >= DEADZONE_LINEAR or
-                         abs(ang_cmd) >= DEADZONE_ANGULAR)
-
-        # Apply direction-dependent wheel scale (fwd/bwd differ by ~20%)
-        lin_scaled = lin_cmd * (self._scale_fwd if lin_cmd >= 0.0 else self._scale_bwd)
-
+        # ── Position (IMU-only: no motor command influence) ─────
         if self._pos_estimator_ready:
-            self._pos_estimator.set_cmd_moving(cmd_is_moving)
-            self._pos_estimator.update_wheel_odom(lin_scaled, self._theta, dt)
+            self._pos_estimator.update_prediction(self._theta, dt)
             self._pos_estimator.blend()
 
             is_stationary = self._pos_estimator.is_stationary
@@ -540,18 +531,11 @@ class MotorNode(MqttNode):
 
             la_x, la_y = self._pos_estimator.linear_accel_world
         else:
-            is_stationary = not cmd_is_moving
-            if cmd_is_moving:
-                new_vx = lin_scaled
-                avg_vx = 0.5 * (self._vx + new_vx) if abs(self._vx) > 0 else new_vx
-                self._x += avg_vx * cy * dt
-                self._y += avg_vx * sy * dt
-            self._vx = 0.0 if is_stationary else lin_scaled
-            self._speed = abs(self._vx)
-            if self._imu_yaw_rad is not None:
-                self._vz = 0.0 if is_stationary else self._imu_gz
-            else:
-                self._vz = 0.0 if is_stationary else ang_cmd
+            # No IMU — position stays frozen (cannot estimate without sensors)
+            is_stationary = True
+            self._vx = 0.0
+            self._vz = 0.0
+            self._speed = 0.0
             la_x, la_y = 0.0, 0.0
 
         # Update pre-allocated odom dict (avoid allocation every 50ms)
@@ -567,8 +551,6 @@ class MotorNode(MqttNode):
         m['accel_y'] = round(la_y, 4)
         m['stationary'] = is_stationary
         m['ts'] = self.timestamp()
-        if self._pos_estimator_ready:
-            m['wheel_scale'] = round(self._pos_estimator.wheel_scale, 3)
 
         self.publish('odom', m)
 
