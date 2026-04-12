@@ -13,9 +13,17 @@ Subscribes:
     samurai/{robot_id}/speed_profile  — "slow" / "normal" / "fast"
     samurai/{robot_id}/imu            — IMU data with EKF + accel for position
 Publishes:
-    samurai/{robot_id}/odom                 — {x, y, theta, vx, vz, ...} @ 20 Hz
+    samurai/{robot_id}/odom                 — {x(cm), y(cm), theta, vx, vz, ...} @ 20 Hz
     samurai/{robot_id}/speed_profile/active — profile name @ 1 Hz
     samurai/{robot_id}/cmd_vel/active_source — "manual"/"collision"/"autonomous"/"none"
+    samurai/{robot_id}/calibration/active   — {profile, scale_fwd, scale_bwd, motor_trim}
+
+Calibration MQTT interface:
+    samurai/{robot_id}/calibration/set           — {scale_fwd, scale_bwd, motor_trim}
+    samurai/{robot_id}/calibration/profile/load  — "name" or {name: "..."}
+    samurai/{robot_id}/calibration/profile/save  — {name: "...", description: "..."}
+    samurai/{robot_id}/calibration/profile/delete — "name"
+    samurai/{robot_id}/calibration/profile/list  — any (triggers response)
 
 Position estimation:
     Complementary filter fusing:
@@ -41,6 +49,15 @@ except ImportError:
     _ACCEL_POS_AVAILABLE = False
 
 try:
+    from pi_nodes.calibration_profiles import (
+        get_active, get_profile, save_profile, set_active,
+        list_profiles, delete_profile,
+    )
+    _PROFILES_AVAILABLE = True
+except ImportError:
+    _PROFILES_AVAILABLE = False
+
+try:
     from config_loader import cfg
 except ImportError:
     cfg = lambda k, d=None: d
@@ -51,11 +68,10 @@ WHEEL_BASE = 0.17
 COLLISION_GUARD_STOP_M  = 0.20   # full stop distance
 COLLISION_GUARD_SLOW_M  = 0.40   # start slowing down
 
-# Wheel odometry scale correction (from config.yaml → wheel_calibration).
-# Forward and backward have different efficiencies due to motor/gearbox asymmetry.
-# >1.0 means the robot travels further than the commanded distance implies.
-WHEEL_SCALE_FWD     = cfg('wheel_calibration.scale_linear_fwd', 1.235)
-WHEEL_SCALE_BWD     = cfg('wheel_calibration.scale_linear_bwd', 0.988)
+# Wheel odometry scale correction — defaults (overridden by active profile).
+_DEFAULT_SCALE_FWD  = cfg('wheel_calibration.scale_linear_fwd', 1.235)
+_DEFAULT_SCALE_BWD  = cfg('wheel_calibration.scale_linear_bwd', 0.988)
+_DEFAULT_MOTOR_TRIM = cfg('wheel_calibration.motor_trim_pct', -12.003)
 WHEEL_SCALE_ANGULAR = cfg('wheel_calibration.scale_angular', 1.0)
 
 SPEED_PROFILES = {
@@ -97,7 +113,14 @@ class MotorNode(MqttNode):
         self._profile = DEFAULT_PROFILE
         self._max_lin, self._max_ang = SPEED_PROFILES[DEFAULT_PROFILE]
 
-        # Odometry state
+        # ── Calibration coefficients (mutable, updated via MQTT) ─────
+        self._scale_fwd = _DEFAULT_SCALE_FWD
+        self._scale_bwd = _DEFAULT_SCALE_BWD
+        self._motor_trim = _DEFAULT_MOTOR_TRIM   # % of max_angular
+        self._cal_profile_name = 'default'
+        self._load_active_profile()
+
+        # Odometry state (internal: metres; published: centimetres)
         self._x = 0.0
         self._y = 0.0
         self._theta = 0.0
@@ -157,7 +180,16 @@ class MotorNode(MqttNode):
         self.subscribe('reset_position', self._reset_position_cb, qos=1)
         self.subscribe('range', self._range_cb, qos=0)
         self.subscribe('collision_guard/enable', self._collision_guard_cb, qos=1)
+
+        # ── Calibration MQTT interface ───────────────────────────────
+        self.subscribe('calibration/set', self._cal_set_cb, qos=1)
+        self.subscribe('calibration/profile/load', self._cal_profile_load_cb, qos=1)
+        self.subscribe('calibration/profile/save', self._cal_profile_save_cb, qos=1)
+        self.subscribe('calibration/profile/delete', self._cal_profile_delete_cb, qos=1)
+        self.subscribe('calibration/profile/list', self._cal_profile_list_cb, qos=1)
+
         # Pre-allocate odom message template (avoid dict creation every 50ms)
+        # x, y — centimetres; vx — m/s; speed — m/s
         self._odom_msg = {
             'x': 0.0, 'y': 0.0, 'theta': 0.0, 'vx': 0.0, 'vz': 0.0,
             'speed': 0.0,
@@ -165,6 +197,119 @@ class MotorNode(MqttNode):
         }
         self.create_timer(0.05, self._control_loop)    # 20 Hz
         self.create_timer(1.0, self._publish_profile)   # 1 Hz
+
+    # ── Calibration profile helpers ──────────────────────────────
+
+    def _load_active_profile(self):
+        """Load the active calibration profile from calibration_profiles.yaml."""
+        if not _PROFILES_AVAILABLE:
+            return
+        name, coeffs = get_active()
+        if coeffs:
+            self._scale_fwd = coeffs.get('scale_fwd', self._scale_fwd)
+            self._scale_bwd = coeffs.get('scale_bwd', self._scale_bwd)
+            self._motor_trim = coeffs.get('motor_trim', self._motor_trim)
+            self._cal_profile_name = name
+            self.log_info('Calibration profile "%s": fwd=%.4f bwd=%.4f trim=%.3f%%',
+                          name, self._scale_fwd, self._scale_bwd, self._motor_trim)
+        else:
+            self.log_info('No active profile — using config.yaml defaults')
+
+    def _publish_calibration(self):
+        """Publish current calibration state (retained)."""
+        self.publish('calibration/active', {
+            'profile': self._cal_profile_name,
+            'scale_fwd': self._scale_fwd,
+            'scale_bwd': self._scale_bwd,
+            'motor_trim': self._motor_trim,
+        }, retain=True)
+
+    # ── Calibration MQTT callbacks ───────────────────────────────
+
+    def _cal_set_cb(self, topic, data):
+        """Set calibration coefficients directly: {scale_fwd, scale_bwd, motor_trim}."""
+        if not isinstance(data, dict):
+            return
+        changed = False
+        if 'scale_fwd' in data:
+            self._scale_fwd = float(data['scale_fwd'])
+            changed = True
+        if 'scale_bwd' in data:
+            self._scale_bwd = float(data['scale_bwd'])
+            changed = True
+        if 'motor_trim' in data:
+            self._motor_trim = float(data['motor_trim'])
+            changed = True
+        if changed:
+            self._cal_profile_name = 'custom'
+            self.log_info('Calibration set: fwd=%.4f bwd=%.4f trim=%.3f%%',
+                          self._scale_fwd, self._scale_bwd, self._motor_trim)
+            self._publish_calibration()
+
+    def _cal_profile_load_cb(self, topic, data):
+        """Load a named profile: "profile_name" or {name: "profile_name"}."""
+        if not _PROFILES_AVAILABLE:
+            self.log_warn('calibration_profiles module not available')
+            return
+        name = data.get('name', data) if isinstance(data, dict) else str(data).strip()
+        coeffs = get_profile(name)
+        if coeffs is None:
+            self.log_warn('Profile "%s" not found', name)
+            self.publish('calibration/profile/error',
+                         {'error': 'not_found', 'name': name})
+            return
+        self._scale_fwd = coeffs['scale_fwd']
+        self._scale_bwd = coeffs['scale_bwd']
+        self._motor_trim = coeffs['motor_trim']
+        self._cal_profile_name = name
+        set_active(name)
+        self.log_info('Profile "%s" loaded: fwd=%.4f bwd=%.4f trim=%.3f%%',
+                      name, self._scale_fwd, self._scale_bwd, self._motor_trim)
+        self._publish_calibration()
+
+    def _cal_profile_save_cb(self, topic, data):
+        """Save current coefficients as profile: {name, description?}."""
+        if not _PROFILES_AVAILABLE:
+            return
+        if not isinstance(data, dict):
+            data = {'name': str(data).strip()}
+        name = data.get('name', '').strip()
+        if not name:
+            return
+        desc = data.get('description', '')
+        save_profile(name, self._scale_fwd, self._scale_bwd,
+                     self._motor_trim, desc)
+        set_active(name)
+        self._cal_profile_name = name
+        self.log_info('Profile "%s" saved (fwd=%.4f bwd=%.4f trim=%.3f%%)',
+                      name, self._scale_fwd, self._scale_bwd, self._motor_trim)
+        self._publish_calibration()
+        self.publish('calibration/profile/saved', {'name': name})
+
+    def _cal_profile_delete_cb(self, topic, data):
+        """Delete a profile: "name" or {name: "name"}."""
+        if not _PROFILES_AVAILABLE:
+            return
+        name = data.get('name', data) if isinstance(data, dict) else str(data).strip()
+        if delete_profile(name):
+            self.log_info('Profile "%s" deleted', name)
+            if self._cal_profile_name == name:
+                self._load_active_profile()
+                self._publish_calibration()
+        else:
+            self.publish('calibration/profile/error',
+                         {'error': 'not_found', 'name': name})
+
+    def _cal_profile_list_cb(self, topic, data):
+        """Publish list of all profiles."""
+        if not _PROFILES_AVAILABLE:
+            self.publish('calibration/profile/all', {'profiles': {}, 'active': ''})
+            return
+        profiles = list_profiles()
+        self.publish('calibration/profile/all', {
+            'profiles': profiles,
+            'active': self._cal_profile_name,
+        })
 
     def _cmd_vel_cb(self, topic, data):
         """Autonomous cmd_vel (from FSM, path_recorder, explorer)."""
@@ -342,11 +487,18 @@ class MotorNode(MqttNode):
                     self._collision_avoid_dir *= -1.0
                     self.log_info('Collision avoidance: clear')
 
-        # Drive motors
+        # Drive motors — apply motor_trim for straight-line correction
         lin = max(-self._max_lin, min(self._max_lin, lin_cmd))
         ang = max(-self._max_ang, min(self._max_ang, ang_cmd))
         lin_pct = lin / _PHYS_MAX_LIN * 100.0
         ang_pct = ang / _PHYS_MAX_ANG * 100.0
+
+        # Motor trim: compensate motor asymmetry (from test_precision_drive.py).
+        # Forward → +trim, backward → −trim (same physical fix, mirrored).
+        if abs(lin_pct) > 1.0:
+            trim = self._motor_trim if lin_pct >= 0 else -self._motor_trim
+            ang_pct += trim
+
         self._driver.move(lin_pct, ang_pct)
 
         # ── Heading ───────────────────────────────────────────────
@@ -364,7 +516,7 @@ class MotorNode(MqttNode):
                          abs(ang_cmd) >= DEADZONE_ANGULAR)
 
         # Apply direction-dependent wheel scale (fwd/bwd differ by ~20%)
-        lin_scaled = lin_cmd * (WHEEL_SCALE_FWD if lin_cmd >= 0.0 else WHEEL_SCALE_BWD)
+        lin_scaled = lin_cmd * (self._scale_fwd if lin_cmd >= 0.0 else self._scale_bwd)
 
         if self._pos_estimator_ready:
             self._pos_estimator.set_cmd_moving(cmd_is_moving)
@@ -403,9 +555,10 @@ class MotorNode(MqttNode):
             la_x, la_y = 0.0, 0.0
 
         # Update pre-allocated odom dict (avoid allocation every 50ms)
+        # x, y — centimetres for precision; vx, speed — m/s
         m = self._odom_msg
-        m['x'] = round(self._x, 4)
-        m['y'] = round(self._y, 4)
+        m['x'] = round(self._x * 100.0, 2)    # cm
+        m['y'] = round(self._y * 100.0, 2)    # cm
         m['theta'] = round(self._theta, 4)
         m['vx'] = round(self._vx, 3)
         m['vz'] = round(self._vz, 3)
@@ -425,6 +578,8 @@ class MotorNode(MqttNode):
         if self._active_source != self._prev_active_source:
             self.publish('cmd_vel/active_source', self._active_source, retain=True)
             self._prev_active_source = self._active_source
+        # Publish calibration state periodically
+        self._publish_calibration()
 
     def on_shutdown(self):
         self._driver.shutdown()

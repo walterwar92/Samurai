@@ -1,0 +1,19 @@
+# Calibration profiles — wheel odometry coefficients per surface/location.
+#
+# Коэффициенты зависят от поверхности (плитка, ковёр, асфальт и т.д.).
+# Активный профиль загружается при старте motor_node.
+# Переключение через MQTT: samurai/{robot_id}/calibration/profile/load
+#
+# Как откалибровать:
+#   1. MOTOR_TRIM  — прямолинейность (режим 'f', N>=200 см)
+#   2. SCALE_FWD   — масштаб вперёд  (режим 'f', N=50 см, измерить рулеткой)
+#   3. SCALE_BWD   — масштаб назад   (режим 'b', N=50 см, измерить рулеткой)
+
+active: default
+
+profiles:
+  default:
+    scale_fwd: 1.235
+    scale_bwd: 0.988
+    motor_trim: -12.003
+    description: "Калибровка по умолчанию (из config.yaml)"
