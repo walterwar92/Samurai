@@ -58,6 +58,8 @@ export interface Actuators {
 
 export interface HeadState {
   angle: number
+  frozen: boolean
+  locked: boolean
 }
 
 export interface ArmState {
@@ -65,6 +67,8 @@ export interface ArmState {
   j2: number
   j3: number
   j4: number
+  frozen: boolean[]
+  locked: boolean
 }
 
 export interface LogEntry {
@@ -164,6 +168,8 @@ export interface RobotState {
   speed_profile: string
   head: HeadState | null
   arm: ArmState | null
+  arm_presets: string[]
+  head_presets: string[]
   // SLAM map data from Pi ultrasonic
   slam_map: SlamMapData | null
   detection_enabled: boolean

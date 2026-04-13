@@ -48,6 +48,21 @@ export const api = {
   centerHead: () =>
     post('/api/actuators/head', { command: 'center' }),
 
+  headCommand: (command: string) =>
+    post('/api/actuators/head', { command }),
+
+  headSavePreset: (name: string) =>
+    post('/api/actuators/head', { command: 'save_preset', name }),
+
+  headLoadPreset: (name: string) =>
+    post('/api/actuators/head', { command: 'load_preset', name }),
+
+  headDeletePreset: (name: string) =>
+    post('/api/actuators/head', { command: 'delete_preset', name }),
+
+  headListPresets: () =>
+    get('/api/actuators/head/presets'),
+
   // Arm (4 joints)
   setArmJoint: (joint: number, angle: number) =>
     post('/api/actuators/arm', { joint, angle }),
@@ -57,6 +72,27 @@ export const api = {
 
   homeArm: () =>
     post('/api/actuators/arm', { command: 'home' }),
+
+  armCommand: (command: string, extra?: object) =>
+    post('/api/actuators/arm', { command, ...extra }),
+
+  armFreezeJoint: (joint: number) =>
+    post('/api/actuators/arm', { command: 'freeze', joint }),
+
+  armUnfreezeJoint: (joint: number) =>
+    post('/api/actuators/arm', { command: 'unfreeze', joint }),
+
+  armSavePreset: (name: string) =>
+    post('/api/actuators/arm', { command: 'save_preset', name }),
+
+  armLoadPreset: (name: string) =>
+    post('/api/actuators/arm', { command: 'load_preset', name }),
+
+  armDeletePreset: (name: string) =>
+    post('/api/actuators/arm', { command: 'delete_preset', name }),
+
+  armListPresets: () =>
+    get('/api/actuators/arm/presets'),
 
   // Speed profiles
   setSpeedProfile: (profile: string) =>

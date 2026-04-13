@@ -40,16 +40,18 @@ DEG2RAD = pi / 180.0
 
 # ── Filter constants ─────────────────────────────────────────────
 MEDIAN_WINDOW = 5
-ACCEL_NOISE_THRESHOLD = 0.12   # m/s² — below = noise
+ACCEL_NOISE_THRESHOLD = 0.04   # m/s² — noise gate when MOVING (lowered for hand motion)
+ACCEL_NOISE_STATIONARY = 0.15  # m/s² — stricter gate when STATIONARY (drift prevention)
 COMPLEMENTARY_ALPHA = 0.98
 
 # ── ZUPT with hysteresis ─────────────────────────────────────────
 ZUPT_GYRO_ENTER = 0.015
 ZUPT_ACCEL_ENTER = 0.10
-ZUPT_GYRO_EXIT = 0.04
-ZUPT_ACCEL_EXIT = 0.25
-ZUPT_ENTER_COUNT = 3
-ZUPT_EXIT_COUNT = 3
+ZUPT_GYRO_EXIT = 0.05          # raised: harder to leave stationary (vibration immunity)
+ZUPT_ACCEL_EXIT = 0.30         # raised: harder to leave stationary (vibration immunity)
+ZUPT_ENTER_COUNT = 5           # ~100ms @ 50Hz — match config
+ZUPT_EXIT_COUNT = 8            # ~160ms — require sustained signal (was 3)
+ZUPT_MIN_MOVING = 15           # ~300ms — brief "moving" periods are position-reverted
 
 # ── Velocity / lateral decay ─────────────────────────────────────
 VELOCITY_DECAY = 0.95
@@ -195,6 +197,11 @@ class AccelPositionEstimator:
         self._enter_count = ZUPT_ENTER_COUNT
         self._exit_count = 0
 
+        # Position safety net — reverts brief false exits from stationary
+        self._safe_x = 0.0
+        self._safe_y = 0.0
+        self._moving_samples = 0
+
         # Current yaw + cached trig (avoid cos/sin at 50 Hz when yaw changes slowly)
         self._current_yaw = 0.0
         self._cached_yaw = -999.0  # force first computation
@@ -294,9 +301,13 @@ class AccelPositionEstimator:
         la_wx = self._lpf_x.update(la_wx)
         la_wy = self._lpf_y.update(la_wy)
 
-        # ── 6. Noise gate — zero out sub-threshold signals ────────
+        # ── 6. Noise gate — adaptive threshold ───────────────────
+        #   Stationary: strict gate (0.15) prevents drift from noise
+        #   Moving: soft gate (0.04) allows detection of gentle motion
         accel_mag = sqrt(la_wx * la_wx + la_wy * la_wy)
-        if accel_mag < ACCEL_NOISE_THRESHOLD:
+        accel_mag_raw = accel_mag  # pre-gate copy for ZUPT decisions
+        noise_thr = ACCEL_NOISE_STATIONARY if self._stationary else ACCEL_NOISE_THRESHOLD
+        if accel_mag < noise_thr:
             la_wx = 0.0
             la_wy = 0.0
             accel_mag = 0.0
@@ -310,11 +321,10 @@ class AccelPositionEstimator:
         self._last_gyro_mag = gyro_mag
 
         if self._stationary:
-            # Currently stationary — need SENSOR evidence to exit.
-            # Pure IMU-based: only gyro or accel above thresholds.
-            # Motor commands have NO influence on this decision.
+            # Use raw (pre-gate) accel for exit decision — noise gate
+            # must not prevent ZUPT transition detection
             sensor_evidence = (gyro_mag > ZUPT_GYRO_EXIT or
-                               accel_mag > ZUPT_ACCEL_EXIT)
+                               accel_mag_raw > ZUPT_ACCEL_EXIT)
 
             if sensor_evidence:
                 self._exit_count += 1
@@ -325,13 +335,20 @@ class AccelPositionEstimator:
             if self._exit_count >= ZUPT_EXIT_COUNT:
                 self._stationary = False
                 self._exit_count = 0
+                # Save safe position — if this exit was caused by noise,
+                # position will be reverted when re-entering stationary
+                self._safe_x = self.x
+                self._safe_y = self.y
+                self._moving_samples = 0
                 self._frozen_x = self.x
                 self._frozen_y = self.y
         else:
-            # Currently moving — check if robot has stopped.
-            # Pure sensor-based: gyro + accel below thresholds.
+            # Track how long we've been moving
+            self._moving_samples += 1
+
+            # Use raw accel for enter decision (consistent with exit)
             sensors_quiet = (gyro_mag < ZUPT_GYRO_ENTER and
-                             accel_mag < ZUPT_ACCEL_ENTER)
+                             accel_mag_raw < ZUPT_ACCEL_ENTER)
 
             if sensors_quiet:
                 self._enter_count += 1
@@ -352,8 +369,14 @@ class AccelPositionEstimator:
             if self._enter_count >= ZUPT_ENTER_COUNT or ekf_nearly_stopped:
                 self._stationary = True
                 self._enter_count = ZUPT_ENTER_COUNT
-                self._frozen_x = self.x
-                self._frozen_y = self.y
+                # Position reversion: if "moving" period was too brief,
+                # the motion was likely sensor noise — revert to safe pos
+                if self._moving_samples < ZUPT_MIN_MOVING:
+                    self._frozen_x = self._safe_x
+                    self._frozen_y = self._safe_y
+                else:
+                    self._frozen_x = self.x
+                    self._frozen_y = self.y
 
         if self._stationary:
             # Hard zero — no velocity, position frozen
@@ -483,6 +506,9 @@ class AccelPositionEstimator:
         self._stationary = True
         self._enter_count = ZUPT_ENTER_COUNT
         self._exit_count = 0
+        self._safe_x = 0.0
+        self._safe_y = 0.0
+        self._moving_samples = 0
         self._alpha = 1.0
         self._buf_ax.clear()
         self._buf_ay.clear()
