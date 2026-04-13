@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-motor_node — 4-motor tracked chassis control + IMU-only odometry.
+motor_node — 4-motor tracked chassis control + dead-reckoning odometry.
 
 Priority command mux (higher overrides lower, resumes after timeout):
   1. MANUAL   — cmd_vel/manual (user joystick/voice direct, highest priority)
@@ -11,7 +11,7 @@ Subscribes:
     samurai/{robot_id}/cmd_vel        — {linear_x, angular_z}  (autonomous)
     samurai/{robot_id}/cmd_vel/manual — {linear_x, angular_z}  (manual override)
     samurai/{robot_id}/speed_profile  — "slow" / "normal" / "fast"
-    samurai/{robot_id}/imu            — IMU data with EKF + accel for position
+    samurai/{robot_id}/imu            — IMU data for heading (yaw)
 Publishes:
     samurai/{robot_id}/odom                 — {x(cm), y(cm), theta, vx, vz, ...} @ 20 Hz
     samurai/{robot_id}/speed_profile/active — profile name @ 1 Hz
@@ -25,12 +25,11 @@ Calibration MQTT interface:
     samurai/{robot_id}/calibration/profile/delete — "name"
     samurai/{robot_id}/calibration/profile/list  — any (triggers response)
 
-Position estimation (IMU-only, no motor command influence):
-    - Accelerometer-based velocity via EKF (friction decay model)
-    - IMU yaw for heading
-    - ZUPT for zero-velocity detection (sensor-based, no cmd dependency)
-    - Earth rotation compensation (Coriolis)
-    - If robot is lifted while tracks spin — position does NOT change
+Position estimation (dead-reckoning from motor commands):
+    - Position: integrated from commanded velocity × calibration scale
+    - Heading: IMU yaw (accurate, drift-free via EKF)
+    - AccelPositionEstimator runs in background for diagnostics only
+    - No ZUPT oscillation — position changes only when motors are commanded
 """
 
 import math
@@ -509,34 +508,32 @@ class MotorNode(MqttNode):
         cy = math.cos(self._theta)
         sy = math.sin(self._theta)
 
-        # ── Position (IMU-only: no motor command influence) ─────
+        # ── Position (dead-reckoning: motor commands + IMU heading) ──
+        # Apply calibration scale to commanded velocity for odometry
+        if abs(lin) > DEADZONE_LINEAR:
+            scale = self._scale_fwd if lin >= 0 else self._scale_bwd
+            v_actual = lin * scale
+        else:
+            v_actual = 0.0
+
+        # Integrate position from commanded velocity + IMU heading
+        self._x += v_actual * dt * cy
+        self._y += v_actual * dt * sy
+
+        # Published velocity / state
+        self._vx = v_actual
+        self._vz = self._imu_gz if self._imu_calibrated else ang
+        self._speed = abs(v_actual)
+        is_stationary = (abs(v_actual) < 0.001
+                         and abs(ang) < DEADZONE_ANGULAR)
+
+        # AccelPositionEstimator — background diagnostics only
+        # (provides linear_accel_world for dashboard graphs)
         if self._pos_estimator_ready:
             self._pos_estimator.update_prediction(self._theta, dt)
             self._pos_estimator.blend()
-
-            is_stationary = self._pos_estimator.is_stationary
-            self._x = self._pos_estimator.x
-            self._y = self._pos_estimator.y
-
-            if is_stationary:
-                self._vx = 0.0
-                self._vz = 0.0
-                self._speed = 0.0
-            else:
-                fused_vx = self._pos_estimator.vx
-                fused_vy = self._pos_estimator.vy
-                self._vx = fused_vx * cy + fused_vy * sy
-                self._vz = self._imu_gz
-                self._speed = math.sqrt(fused_vx * fused_vx + fused_vy * fused_vy)
-
-            la_x, la_y = self._pos_estimator.linear_accel_world
-        else:
-            # No IMU — position stays frozen (cannot estimate without sensors)
-            is_stationary = True
-            self._vx = 0.0
-            self._vz = 0.0
-            self._speed = 0.0
-            la_x, la_y = 0.0, 0.0
+        la_x, la_y = (self._pos_estimator.linear_accel_world
+                       if self._pos_estimator_ready else (0.0, 0.0))
 
         # Update pre-allocated odom dict (avoid allocation every 50ms)
         # x, y — centimetres for precision; vx, speed — m/s
