@@ -145,6 +145,7 @@ class DashboardNode(Node):
         self._robot_pose     = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
         self._robot_velocity = {'linear_x': 0.0, 'linear_y': 0.0, 'angular_z': 0.0}
         self._robot_stationary = True
+        self._mqtt_odom_ts   = 0.0   # timestamp of last MQTT odom (Pi primary source)
         self._cmd_velocity   = {'linear_x': 0.0, 'angular_z': 0.0}
         self._scan_points    = []
         self._voice_log      = deque(maxlen=20)
@@ -457,6 +458,7 @@ class DashboardNode(Node):
                                     'angular_z': round(vz, 3),
                                     'speed': round(speed, 3)}
             self._robot_stationary = stationary
+            self._mqtt_odom_ts = time.time()
 
     def _mqtt_claw_state(self, payload):
         try:
@@ -656,14 +658,26 @@ class DashboardNode(Node):
             }
 
     def _odom_cb(self, msg: Odometry):
-        """Filtered odometry from EKF (SLAM-fused) — overrides raw MQTT odom."""
+        """Filtered odometry from EKF (SLAM-fused).
+
+        Only used when MQTT odom is NOT available (>2s stale).
+        MQTT odom from Pi is the primary source (centimetres);
+        ROS2 /odometry/filtered is in metres — mixing them causes
+        oscillation on the dashboard graph.
+        """
+        with self._lock:
+            # Skip if MQTT odom is active — it is the primary source
+            if time.time() - self._mqtt_odom_ts < 2.0:
+                return
         pos = msg.pose.pose.position
         q   = msg.pose.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw = math.atan2(siny_cosp, cosy_cosp)
         with self._lock:
-            self._robot_pose = {'x': round(pos.x, 3), 'y': round(pos.y, 3),
+            # Convert metres → centimetres to match MQTT odom units
+            self._robot_pose = {'x': round(pos.x * 100.0, 3),
+                                'y': round(pos.y * 100.0, 3),
                                 'yaw': round(yaw, 3)}
             self._robot_velocity = {
                 'linear_x':  round(msg.twist.twist.linear.x,  3),
