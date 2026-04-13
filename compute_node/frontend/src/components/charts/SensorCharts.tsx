@@ -61,10 +61,10 @@ export function SensorCharts({ data }: SensorChartsProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="p-3 space-y-3">
-        {/* Speed Chart — Odometry + Accelerometer-integrated */}
+        {/* Linear Speed Chart */}
         <div>
           <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
-            Скорость (м/с)
+            Линейная скорость (м/с)
           </span>
           <ResponsiveContainer width="100%" height={chartHeight}>
             <LineChart data={data}>
@@ -93,11 +93,29 @@ export function SensorCharts({ data }: SensorChartsProps) {
                 name="Лин. (vx)"
                 strokeDasharray="4 2"
               />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Angular Speed Chart */}
+        <div>
+          <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
+            Угловая скорость (рад/с)
+          </span>
+          <ResponsiveContainer width="100%" height={chartHeight}>
+            <LineChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <TimeXAxis />
+              <YAxis {...axisProps} />
+              <Tooltip
+                {...tooltipStyle}
+                labelFormatter={(v: number) => `${v.toFixed(1)}с`}
+              />
               <Line
                 type="monotone"
                 dataKey="angularSpeed"
                 stroke="#a855f7"
-                strokeWidth={1}
+                strokeWidth={1.5}
                 dot={false}
                 name="Угловая (рад/с)"
               />

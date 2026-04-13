@@ -91,16 +91,18 @@ odometry:
 accel_position:
   latitude: 55.75            # широта для компенсации вращения Земли (Москва)
   complementary_alpha: 0.98  # fallback: 98% колёсная, 2% акселерометр
-  accel_noise_threshold: 0.12  # m/s² — ниже = шум (снижено с 0.15 для лучшей чувствительности)
+  accel_noise_threshold: 0.04  # m/s² — порог шума при ДВИЖЕНИИ (снижен для ручного перемещения)
+  accel_noise_stationary: 0.15 # m/s² — порог шума при СТОЯНКЕ (жёстче, предотвращает дрифт)
   median_window: 5             # сэмплов для медианного фильтра (spike rejection)
   lpf_alpha: 0.4               # IIR low-pass alpha (0.4 при 50Hz → ~2.2Hz cutoff, убирает вибрации)
   # ZUPT с гистерезисом — два порога: вход в стоянку (мягкий) и выход (жёсткий)
   zupt_gyro_enter: 0.015     # rad/s — ниже = входим в стоянку
   zupt_accel_enter: 0.10     # m/s² — ниже = входим в стоянку
-  zupt_gyro_exit: 0.04       # rad/s — выше = выходим из стоянки
-  zupt_accel_exit: 0.25      # m/s² — выше = выходим из стоянки
+  zupt_gyro_exit: 0.05       # rad/s — выше = выходим (повышен с 0.04 для защиты от вибраций)
+  zupt_accel_exit: 0.30      # m/s² — выше = выходим (повышен с 0.25 для защиты от вибраций)
   zupt_enter_count: 5        # сэмплов (100мс @ 50Hz)
-  zupt_exit_count: 3         # сэмплов (60мс @ 50Hz)
+  zupt_exit_count: 8         # сэмплов (160мс @ 50Hz) — повышен с 3, требует стабильного сигнала
+  zupt_min_moving: 15        # сэмплов (300мс) — минимум для доверия движению (иначе реверт)
   velocity_decay: 0.95       # fallback: затухание скорости (без EKF)
   lateral_decay: 0.5         # fallback: non-holonomic constraint
 

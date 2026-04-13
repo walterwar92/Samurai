@@ -162,7 +162,12 @@ export function AdminPage() {
               </Card>
 
               {/* ── Сервоприводы ── */}
-              <ServoControlPanel head={state?.head} arm={state?.arm} />
+              <ServoControlPanel
+                head={state?.head}
+                arm={state?.arm}
+                armPresets={state?.arm_presets ?? []}
+                headPresets={state?.head_presets ?? []}
+              />
 
               {/* ── Точное движение ── */}
               <PrecisionDrivePanel

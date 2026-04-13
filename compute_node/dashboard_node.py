@@ -155,8 +155,11 @@ class DashboardNode(Node):
         self._speed_profile  = 'normal'
         self._claw_open      = False
         self._led_state      = {'mode': 'off', 'color': 'off'}
-        self._head_state     = {'angle': 0.0}
-        self._arm_state      = {'j1': 0.0, 'j2': 120.0, 'j3': 0.0, 'j4': 0.0}
+        self._head_state     = {'angle': 0.0, 'frozen': False, 'locked': True}
+        self._arm_state      = {'j1': 0.0, 'j2': 120.0, 'j3': 0.0, 'j4': 0.0,
+                                'frozen': [False, False, False, False], 'locked': True}
+        self._arm_presets: list[str] = []
+        self._head_presets: list[str] = []
         self._slam_map       = {}     # Pi-side ultrasonic SLAM map
         self._path_recorder  = {}     # path recorder status
         self._recorded_path  = []     # recorded path waypoints
@@ -246,6 +249,7 @@ class DashboardNode(Node):
                       'calibration/status', 'calibration/result',
                       'calibration/active', 'calibration/profile/all',
                       'calibration/profile/saved', 'calibration/profile/error',
+                      'arm/presets', 'head/presets',
                       'explorer/status', 'mission/status',
                       'precision_drive/status', 'precision_drive/result',
                       'collision_guard/state',
@@ -309,6 +313,16 @@ class DashboardNode(Node):
                 self._mqtt_json_field(msg.payload, '_calibration_profiles_list')
             elif suffix in ('calibration/profile/saved', 'calibration/profile/error'):
                 pass  # consumed by frontend via state push
+            elif suffix == 'arm/presets':
+                try:
+                    self._arm_presets = json.loads(msg.payload)
+                except Exception:
+                    pass
+            elif suffix == 'head/presets':
+                try:
+                    self._head_presets = json.loads(msg.payload)
+                except Exception:
+                    pass
             elif suffix == 'explorer/status':
                 self._mqtt_json_field(msg.payload, '_explorer_status')
             elif suffix == 'mission/status':
@@ -866,6 +880,8 @@ class DashboardNode(Node):
                 },
                 'head': dict(self._head_state),
                 'arm':  dict(self._arm_state),
+                'arm_presets': list(self._arm_presets),
+                'head_presets': list(self._head_presets),
                 'slam_map':       dict(self._slam_map) if self._slam_map else None,
                 'path_recorder':  dict(self._path_recorder) if self._path_recorder else None,
                 'recorded_path':  list(self._recorded_path) if self._recorded_path else None,
@@ -1390,6 +1406,16 @@ def create_app(ros_node: DashboardNode):
     async def api_arm_get():
         with ros_node._lock:
             return _ok(**ros_node._arm_state)
+
+    @app.get('/api/actuators/arm/presets')
+    async def api_arm_presets_get():
+        ros_node._mqtt_pub('arm/command', json.dumps({'command': 'list_presets'}), qos=1)
+        return _ok(presets=ros_node._arm_presets)
+
+    @app.get('/api/actuators/head/presets')
+    async def api_head_presets_get():
+        ros_node._mqtt_pub('head/command', json.dumps({'command': 'list_presets'}), qos=1)
+        return _ok(presets=ros_node._head_presets)
 
     @app.post('/api/speed_profile')
     async def api_speed_profile_set(req: Request):
