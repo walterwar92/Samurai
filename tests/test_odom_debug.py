@@ -38,16 +38,27 @@ CMD_VEL_TIMEOUT = 0.5    # с
 MANUAL_OVERRIDE_TIMEOUT = 0.5  # с
 
 # ── IMU passive mode (моторы выключены) ─────────────────────
-# Порог акселерометра для детекции реального движения (м/с²).
-# Без моторов шум акселерометра ~0.03-0.05, поэтому 0.12 безопасно.
-IMU_ACCEL_THRESHOLD = 0.12
+# Bias tracker: EMA alpha — как быстро учим «фон» акселерометра.
+# 0.02 @ 20 Hz → постоянная ~2.5с. Медленно адаптируется к фону,
+# но быстро видит отклонение = реальное движение.
+IMU_BIAS_ALPHA = 0.02
+
+# Порог ОТКЛОНЕНИЯ от bias (м/с²). Стоя шум ~0.02-0.05,
+# реальный толчок > 0.3. Ставим 0.15 — баланс чувствительности.
+IMU_DEVIATION_THRESHOLD = 0.15
+
+# Когда обнаружено движение, bias замораживается (не учит шум движения).
+# После остановки — опять начинает адаптироваться.
 
 # Затухание скорости при отсутствии ускорения (per tick @ 20 Hz).
 # 0.85 → скорость падает вдвое за ~0.2с — быстрая остановка.
 IMU_VELOCITY_DECAY = 0.85
 
 # Порог ZUPT для IMU скорости (м/с) — ниже = полный стоп.
-IMU_ZUPT_VELOCITY = 0.008
+IMU_ZUPT_VELOCITY = 0.005
+
+# Время «уверенности» (сэмплы): нужно N подряд отклонений для IMU+ режима
+IMU_CONFIRM_SAMPLES = 3
 
 # Speed profiles
 SPEED_PROFILES = {
@@ -63,10 +74,18 @@ class HybridOdometry:
     Принцип:
       - Моторы ON:  позиция = integral(cmd_vel × scale)
                     → IMU не используется для позиции (вибрация!)
-      - Моторы OFF: позиция = integral(integral(accel))
-                    → нет моторов = нет вибрации = чистый сигнал
+      - Моторы OFF: позиция = integral(integral(accel - bias))
+                    → динамический bias трекинг убирает постоянное
+                      смещение акселерометра (~0.3-0.4 м/с² остаток
+                      от неполного удаления гравитации)
 
     Heading (theta) всегда из IMU EKF yaw.
+
+    Ключевая идея bias трекинга:
+      1. EMA (slow) учит «фон» акселерометра когда стоим
+      2. Реальное движение = ОТКЛОНЕНИЕ от этого фона
+      3. Во время движения bias замораживается (не учит шум движения)
+      4. После остановки — снова адаптируется
     """
 
     def __init__(self):
@@ -79,12 +98,23 @@ class HybridOdometry:
         self._imu_vx = 0.0
         self._imu_vy = 0.0
 
+        # ── Динамический bias (EMA фона акселерометра) ──
+        self._bias_x = 0.0
+        self._bias_y = 0.0
+        self._bias_ready = False  # True после первых ~50 сэмплов
+        self._bias_samples = 0
+        self._BIAS_WARMUP = 40   # ~2с @ 20 Hz — учим начальный фон
+
+        # ── Подтверждение движения ──
+        self._deviation_count = 0  # сколько подряд сэмплов > threshold
+
         # Текущий режим
         self.motors_active = False
         self._mode_label = 'IDLE'
 
-        # Статистика
+        # Диагностика
         self.imu_moves_detected = 0
+        self.last_deviation = 0.0  # для вывода
 
     def update(self, lin_cmd: float, ang_cmd: float,
                imu_yaw: float, accel_x: float, accel_y: float,
@@ -103,63 +133,97 @@ class HybridOdometry:
             return
 
         self.theta = imu_yaw
-        cy = math.cos(self.theta)
-        sy = math.sin(self.theta)
-
         self.motors_active = abs(lin_cmd) > DEADZONE_LINEAR
 
         if self.motors_active:
             # ── РЕЖИМ 1: Dead-reckoning по командам моторов ──
-            # Вибрация не влияет — используем только cmd_vel
             scale = SCALE_FWD if lin_cmd >= 0 else SCALE_BWD
             v = lin_cmd * scale
+            cy = math.cos(self.theta)
+            sy = math.sin(self.theta)
 
             self.x += v * dt * cy
             self.y += v * dt * sy
 
-            # Сброс IMU скорости при переходе к командам
+            # Сброс IMU скорости
             self._imu_vx = 0.0
             self._imu_vy = 0.0
+            self._deviation_count = 0
             self._mode_label = 'CMD'
+            # Не обновляем bias когда моторы работают (вибрация!)
+            return
 
+        # ── РЕЖИМ 2: IMU пассивная детекция (моторы OFF) ──
+
+        # Шаг 1: Вычислить отклонение от bias
+        dev_x = accel_x - self._bias_x
+        dev_y = accel_y - self._bias_y
+        deviation = math.sqrt(dev_x * dev_x + dev_y * dev_y)
+        self.last_deviation = deviation
+
+        is_moving = False
+
+        if deviation > IMU_DEVIATION_THRESHOLD:
+            self._deviation_count += 1
+            if self._deviation_count >= IMU_CONFIRM_SAMPLES:
+                is_moving = True
         else:
-            # ── РЕЖИМ 2: IMU пассивная детекция (моторы OFF) ──
-            # Нет моторов → нет вибрации → акселерометр чистый
-            accel_mag = math.sqrt(accel_x * accel_x + accel_y * accel_y)
+            self._deviation_count = 0
 
-            if accel_mag > IMU_ACCEL_THRESHOLD:
-                # Реальное ускорение → интегрируем скорость
-                self._imu_vx += accel_x * dt
-                self._imu_vy += accel_y * dt
-                self.imu_moves_detected += 1
-                self._mode_label = 'IMU+'
+        if is_moving:
+            # ── Движение подтверждено: интегрируем ОТКЛОНЕНИЕ ──
+            self._imu_vx += dev_x * dt
+            self._imu_vy += dev_y * dt
+            self.imu_moves_detected += 1
+            self._mode_label = 'IMU+'
+            # Bias заморожен — не учим шум движения!
+        else:
+            # ── Нет движения: затухание + обновление bias ──
+            self._imu_vx *= IMU_VELOCITY_DECAY
+            self._imu_vy *= IMU_VELOCITY_DECAY
+
+            # Обновляем bias (медленная EMA)
+            if self._bias_samples < self._BIAS_WARMUP:
+                # Быстрая инициализация bias (первые ~2с)
+                alpha = 0.1
+                self._bias_samples += 1
+                if self._bias_samples >= self._BIAS_WARMUP:
+                    self._bias_ready = True
             else:
-                # Нет ускорения → затухание скорости (трение)
-                self._imu_vx *= IMU_VELOCITY_DECAY
-                self._imu_vy *= IMU_VELOCITY_DECAY
-                self._mode_label = 'IDLE'
+                alpha = IMU_BIAS_ALPHA
 
-            # ZUPT: если скорость мизерная — полный стоп
-            vel_mag = math.sqrt(self._imu_vx**2 + self._imu_vy**2)
-            if vel_mag < IMU_ZUPT_VELOCITY:
-                self._imu_vx = 0.0
-                self._imu_vy = 0.0
-                self._mode_label = 'IDLE'
+            self._bias_x += alpha * (accel_x - self._bias_x)
+            self._bias_y += alpha * (accel_y - self._bias_y)
 
-            # Интегрируем позицию из IMU скорости
-            self.x += self._imu_vx * dt
-            self.y += self._imu_vy * dt
+            self._mode_label = 'BIAS' if not self._bias_ready else 'IDLE'
+
+        # ZUPT: если скорость мизерная — полный стоп
+        vel_mag = math.sqrt(self._imu_vx**2 + self._imu_vy**2)
+        if vel_mag < IMU_ZUPT_VELOCITY:
+            self._imu_vx = 0.0
+            self._imu_vy = 0.0
+            if not is_moving:
+                self._mode_label = 'BIAS' if not self._bias_ready else 'IDLE'
+
+        # Интегрируем позицию из IMU скорости
+        self.x += self._imu_vx * dt
+        self.y += self._imu_vy * dt
 
     def reset(self):
         self.x = 0.0
         self.y = 0.0
         self._imu_vx = 0.0
         self._imu_vy = 0.0
+        self._bias_x = 0.0
+        self._bias_y = 0.0
+        self._bias_ready = False
+        self._bias_samples = 0
+        self._deviation_count = 0
 
     @property
     def velocity_magnitude(self):
         if self.motors_active:
-            return 0.0  # reported separately from cmd
+            return 0.0
         return math.sqrt(self._imu_vx**2 + self._imu_vy**2)
 
 
@@ -363,15 +427,17 @@ class OdomDebugger:
         yaw_deg = math.degrees(self._odom.theta) if self._imu_yaw is not None else -999
         mode = self._odom._mode_label
         accel_mag = math.sqrt(self._accel_x**2 + self._accel_y**2)
+        dev = self._odom.last_deviation
+        bias_mag = math.sqrt(self._odom._bias_x**2 + self._odom._bias_y**2)
         imu_vel = self._odom.velocity_magnitude * 100.0  # cm/s
 
         print(f'  [{now - self._start_time:6.1f}s]'
               f'  [{mode:4s}]'
               f'  OUR: x={ox:+8.2f} y={oy:+8.2f}'
               f'  |  MN: x={mx:+8.2f} y={my:+8.2f}'
-              f'  |  yaw={yaw_deg:+6.1f}'
-              f'  |  acc={accel_mag:.3f} vel={imu_vel:5.1f}cm/s'
-              f'  |  imu_det={self._odom.imu_moves_detected}')
+              f'  |  acc={accel_mag:.3f} bias={bias_mag:.3f} dev={dev:.3f}'
+              f'  |  vel={imu_vel:5.1f}cm/s'
+              f'  |  det={self._odom.imu_moves_detected}')
 
     # ── Inject ──────────────────────────────────────────────────
 
@@ -461,7 +527,8 @@ class OdomDebugger:
         print()
         print('  Режимы:  CMD  = позиция по cmd_vel (моторы ON)')
         print('           IMU+ = движение по акселерометру (моторы OFF)')
-        print('           IDLE = стоим (моторы OFF, нет ускорения)')
+        print('           IDLE = стоим (bias выучен, отклонений нет)')
+        print('           BIAS = начальная калибровка bias (~2с)')
         print()
 
         if self._mode == 'inject':
