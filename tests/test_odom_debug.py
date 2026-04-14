@@ -39,23 +39,21 @@ MANUAL_OVERRIDE_TIMEOUT = 0.5  # с
 
 # ── IMU passive mode (моторы выключены) ─────────────────────
 # Bias tracker: EMA alpha — как быстро учим «фон» акселерометра.
-# 0.02 @ 20 Hz → постоянная ~2.5с. Медленно адаптируется к фону,
-# но быстро видит отклонение = реальное движение.
-IMU_BIAS_ALPHA = 0.02
+IMU_BIAS_ALPHA_SLOW = 0.02    # нормальный режим (~2.5с постоянная)
+IMU_BIAS_ALPHA_FAST = 0.15    # быстрая адаптация после толчка (~0.3с)
+IMU_FAST_ADAPT_TICKS = 20     # ~1с быстрой адаптации после остановки
 
-# Порог ОТКЛОНЕНИЯ от bias (м/с²). Стоя шум ~0.02-0.05,
-# реальный толчок > 0.3. Ставим 0.15 — баланс чувствительности.
-IMU_DEVIATION_THRESHOLD = 0.15
+# Порог ОТКЛОНЕНИЯ от bias (м/с²).
+# Реальный толчок = 0.5-5+ м/с², изменение gravity residual = 0.1-0.3.
+# Ставим 0.35 — отсекаем gravity drift, ловим только настоящие толчки.
+IMU_DEVIATION_THRESHOLD = 0.35
 
-# Когда обнаружено движение, bias замораживается (не учит шум движения).
-# После остановки — опять начинает адаптироваться.
+# Макс. скорость при ручном толчке (м/с).
+# Гусеничный робот ~3кг, рукой не разогнать быстрее 0.3 м/с.
+IMU_VELOCITY_CAP = 0.25
 
-# Затухание скорости при отсутствии ускорения (per tick @ 20 Hz).
-# 0.85 → скорость падает вдвое за ~0.2с — быстрая остановка.
-IMU_VELOCITY_DECAY = 0.85
-
-# Порог ZUPT для IMU скорости (м/с) — ниже = полный стоп.
-IMU_ZUPT_VELOCITY = 0.005
+# Hard ZUPT: как только deviation < threshold → скорость = 0 мгновенно.
+# Нет постепенного затухания — если робот стоит, скорость нулевая.
 
 # Время «уверенности» (сэмплы): нужно N подряд отклонений для IMU+ режима
 IMU_CONFIRM_SAMPLES = 3
@@ -107,6 +105,7 @@ class HybridOdometry:
 
         # ── Подтверждение движения ──
         self._deviation_count = 0  # сколько подряд сэмплов > threshold
+        self._fast_adapt_remaining = 0  # тиков быстрой bias-адаптации
 
         # Текущий режим
         self.motors_active = False
@@ -174,38 +173,47 @@ class HybridOdometry:
             # ── Движение подтверждено: интегрируем ОТКЛОНЕНИЕ ──
             self._imu_vx += dev_x * dt
             self._imu_vy += dev_y * dt
+
+            # Velocity capping — рукой робот не разогнать быстрее 0.25 м/с
+            self._imu_vx = max(-IMU_VELOCITY_CAP, min(IMU_VELOCITY_CAP, self._imu_vx))
+            self._imu_vy = max(-IMU_VELOCITY_CAP, min(IMU_VELOCITY_CAP, self._imu_vy))
+
             self.imu_moves_detected += 1
             self._mode_label = 'IMU+'
             # Bias заморожен — не учим шум движения!
+            # Запланировать быструю адаптацию на момент остановки
+            self._fast_adapt_remaining = IMU_FAST_ADAPT_TICKS
         else:
-            # ── Нет движения: затухание + обновление bias ──
-            self._imu_vx *= IMU_VELOCITY_DECAY
-            self._imu_vy *= IMU_VELOCITY_DECAY
+            # ── Нет движения: HARD ZUPT + обновление bias ──
+            # Жёсткий стоп: deviation < threshold → робот УЖЕ стоит.
+            # Никакого постепенного затухания — сразу ноль.
+            self._imu_vx = 0.0
+            self._imu_vy = 0.0
 
-            # Обновляем bias (медленная EMA)
+            # Обновляем bias:
+            #   - warmup: быстрая инициализация (~2с при старте)
+            #   - fast adapt: быстрая EMA после толчка (0.15, ~1с)
+            #   - slow: медленная EMA для тонкой подстройки (0.02)
             if self._bias_samples < self._BIAS_WARMUP:
-                # Быстрая инициализация bias (первые ~2с)
                 alpha = 0.1
                 self._bias_samples += 1
                 if self._bias_samples >= self._BIAS_WARMUP:
                     self._bias_ready = True
+            elif self._fast_adapt_remaining > 0:
+                # После толчка гравитационный остаток меняется —
+                # быстро учим новый «фон» за ~20 тиков (1с)
+                alpha = IMU_BIAS_ALPHA_FAST
+                self._fast_adapt_remaining -= 1
             else:
-                alpha = IMU_BIAS_ALPHA
+                alpha = IMU_BIAS_ALPHA_SLOW
 
             self._bias_x += alpha * (accel_x - self._bias_x)
             self._bias_y += alpha * (accel_y - self._bias_y)
 
             self._mode_label = 'BIAS' if not self._bias_ready else 'IDLE'
 
-        # ZUPT: если скорость мизерная — полный стоп
-        vel_mag = math.sqrt(self._imu_vx**2 + self._imu_vy**2)
-        if vel_mag < IMU_ZUPT_VELOCITY:
-            self._imu_vx = 0.0
-            self._imu_vy = 0.0
-            if not is_moving:
-                self._mode_label = 'BIAS' if not self._bias_ready else 'IDLE'
-
         # Интегрируем позицию из IMU скорости
+        # (is_moving → capped velocity, !is_moving → нулевая скорость)
         self.x += self._imu_vx * dt
         self.y += self._imu_vy * dt
 
@@ -219,6 +227,7 @@ class HybridOdometry:
         self._bias_ready = False
         self._bias_samples = 0
         self._deviation_count = 0
+        self._fast_adapt_remaining = 0
 
     @property
     def velocity_magnitude(self):
@@ -522,8 +531,9 @@ class OdomDebugger:
         print(f'  HYBRID ODOM DEBUG  |  mode={self._mode}  |  robot={self._robot_id}')
         print(f'  CMD: scale_fwd={SCALE_FWD}  scale_bwd={SCALE_BWD}')
         print(f'  IMU: deviation_thr={IMU_DEVIATION_THRESHOLD} m/s²'
-              f'  decay={IMU_VELOCITY_DECAY}  zupt={IMU_ZUPT_VELOCITY} m/s'
-              f'  bias_alpha={IMU_BIAS_ALPHA}')
+              f'  vel_cap={IMU_VELOCITY_CAP} m/s'
+              f'  bias_slow={IMU_BIAS_ALPHA_SLOW}  bias_fast={IMU_BIAS_ALPHA_FAST}'
+              f'  fast_ticks={IMU_FAST_ADAPT_TICKS}')
         print('='*70)
         print()
         print('  Режимы:  CMD  = позиция по cmd_vel (моторы ON)')
