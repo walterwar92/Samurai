@@ -521,8 +521,9 @@ class OdomDebugger:
         print('='*70)
         print(f'  HYBRID ODOM DEBUG  |  mode={self._mode}  |  robot={self._robot_id}')
         print(f'  CMD: scale_fwd={SCALE_FWD}  scale_bwd={SCALE_BWD}')
-        print(f'  IMU: threshold={IMU_ACCEL_THRESHOLD} m/s²'
-              f'  decay={IMU_VELOCITY_DECAY}  zupt={IMU_ZUPT_VELOCITY} m/s')
+        print(f'  IMU: deviation_thr={IMU_DEVIATION_THRESHOLD} m/s²'
+              f'  decay={IMU_VELOCITY_DECAY}  zupt={IMU_ZUPT_VELOCITY} m/s'
+              f'  bias_alpha={IMU_BIAS_ALPHA}')
         print('='*70)
         print()
         print('  Режимы:  CMD  = позиция по cmd_vel (моторы ON)')
