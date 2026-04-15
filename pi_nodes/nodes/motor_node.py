@@ -25,11 +25,12 @@ Calibration MQTT interface:
     samurai/{robot_id}/calibration/profile/delete — "name"
     samurai/{robot_id}/calibration/profile/list  — any (triggers response)
 
-Position estimation (dead-reckoning from motor commands):
-    - Position: integrated from commanded velocity × calibration scale
+Position estimation:
+    - Motors ON:  dead-reckoning from commanded velocity × calibration scale
+    - Motors OFF: IMU push detector — detects physical movement via raw
+                  accelerometer, estimates displacement at fixed speed
     - Heading: IMU yaw (accurate, drift-free via EKF)
     - AccelPositionEstimator runs in background for diagnostics only
-    - No ZUPT oscillation — position changes only when motors are commanded
 """
 
 import math
@@ -61,6 +62,17 @@ except ImportError:
     cfg = lambda k, d=None: d
 
 WHEEL_BASE = 0.17
+
+# ── IMU passive push detection (motors OFF) ────────────────────
+# Когда моторы выключены, IMU детектирует физическое перемещение.
+# Не интегрируем ускорение — используем фиксированную оценку скорости.
+IMU_PUSH_SPEED       = cfg('imu_push.speed', 0.12)           # м/с
+IMU_DEVIATION_THR    = cfg('imu_push.deviation_threshold', 0.20)  # м/с²
+IMU_CONFIRM_SAMPLES  = cfg('imu_push.confirm_samples', 2)
+IMU_MAX_MOVE_TICKS   = cfg('imu_push.max_move_ticks', 30)    # 1.5с
+IMU_BIAS_ALPHA_SLOW  = cfg('imu_push.bias_alpha_slow', 0.02)
+IMU_BIAS_ALPHA_FAST  = cfg('imu_push.bias_alpha_fast', 0.15)
+IMU_FAST_ADAPT_TICKS = cfg('imu_push.fast_adapt_ticks', 20)
 
 # Collision guard — stops forward motion when obstacle too close
 COLLISION_GUARD_STOP_M  = 0.20   # full stop distance
@@ -150,6 +162,21 @@ class MotorNode(MqttNode):
         self._imu_calibrated = False
         self._imu_gz = 0.0       # raw gyro Z for angular velocity
         self._imu_last_ts = None  # for actual dt computation
+
+        # ── IMU push detector (passive movement when motors OFF) ──
+        self._imu_gravity_body = None     # [gx, gy, gz] from calibration
+        self._imu_raw_lin_bx = 0.0        # gravity-free body-frame accel
+        self._imu_raw_lin_by = 0.0
+        self._push_bias_x = 0.0           # EMA bias (world frame)
+        self._push_bias_y = 0.0
+        self._push_bias_ready = False
+        self._push_bias_samples = 0
+        self._push_dev_count = 0           # consecutive deviations
+        self._push_fast_remaining = 0
+        self._push_cont_ticks = 0          # continuous IMU+ ticks
+        self._push_active = False          # direction locked
+        self._push_dir_x = 0.0
+        self._push_dir_y = 0.0
 
         # Accelerometer position estimator — pass VelocityEKF params from config
         self._pos_estimator = None
@@ -353,9 +380,11 @@ class MotorNode(MqttNode):
         if not self._imu_calibrated:
             if data.get('calibrated', False):
                 self._imu_calibrated = True
+                # Save gravity_body for push detector
+                gb = data.get('gravity_body', [0, 0, 9.81])
+                self._imu_gravity_body = list(gb)
                 # Initialize position estimator with gravity calibration
                 if self._pos_estimator is not None:
-                    gb = data.get('gravity_body', [0, 0, 9.81])
                     ekf = data.get('ekf', {})
                     home_roll = ekf.get('roll_rad', 0.0)
                     home_pitch = ekf.get('pitch_rad', 0.0)
@@ -383,6 +412,13 @@ class MotorNode(MqttNode):
         # Store gyro Z for angular velocity reporting
         gz = data.get('gz', 0.0)
         self._imu_gz = gz
+
+        # ── Raw gravity-free accel for push detector (body frame) ──
+        if self._imu_gravity_body is not None:
+            ax_raw = data.get('ax', 0.0)
+            ay_raw = data.get('ay', 0.0)
+            self._imu_raw_lin_bx = ax_raw - self._imu_gravity_body[0]
+            self._imu_raw_lin_by = ay_raw - self._imu_gravity_body[1]
 
         # Feed accelerometer to position estimator
         if self._pos_estimator_ready:
@@ -418,6 +454,15 @@ class MotorNode(MqttNode):
         self._vz = 0.0
         if self._pos_estimator is not None:
             self._pos_estimator.reset()
+        # Reset push detector bias
+        self._push_bias_x = 0.0
+        self._push_bias_y = 0.0
+        self._push_bias_ready = False
+        self._push_bias_samples = 0
+        self._push_dev_count = 0
+        self._push_fast_remaining = 0
+        self._push_cont_ticks = 0
+        self._push_active = False
         self.log_info('Position reset to (0, 0, 0) — new home set')
 
     def _profile_cb(self, topic, data):
@@ -524,8 +569,74 @@ class MotorNode(MqttNode):
         self._vx = v_actual
         self._vz = self._imu_gz if self._imu_calibrated else ang
         self._speed = abs(v_actual)
-        is_stationary = (abs(v_actual) < 0.001
-                         and abs(ang) < DEADZONE_ANGULAR)
+        motors_idle = (abs(v_actual) < 0.001
+                       and abs(ang) < DEADZONE_ANGULAR)
+
+        # ── IMU push detection (passive movement, motors OFF) ──────
+        push_vx = 0.0
+        push_vy = 0.0
+        if motors_idle and self._imu_gravity_body is not None:
+            # Body→world rotation of raw linear accel
+            bx = self._imu_raw_lin_bx
+            by = self._imu_raw_lin_by
+            wx = bx * cy - by * sy
+            wy = bx * sy + by * cy
+
+            # Deviation from bias
+            dx = wx - self._push_bias_x
+            dy = wy - self._push_bias_y
+            dev = math.sqrt(dx * dx + dy * dy)
+
+            is_push = False
+            if dev > IMU_DEVIATION_THR:
+                self._push_dev_count += 1
+                if self._push_dev_count >= IMU_CONFIRM_SAMPLES:
+                    is_push = True
+            else:
+                self._push_dev_count = 0
+
+            if is_push:
+                self._push_cont_ticks += 1
+                if self._push_cont_ticks > IMU_MAX_MOVE_TICKS:
+                    # GRAV recovery — gravity residual, not real movement
+                    self._push_active = False
+                    alpha = IMU_BIAS_ALPHA_FAST
+                    self._push_bias_x += alpha * (wx - self._push_bias_x)
+                    self._push_bias_y += alpha * (wy - self._push_bias_y)
+                else:
+                    if not self._push_active:
+                        self._push_dir_x = dx / dev
+                        self._push_dir_y = dy / dev
+                        self._push_active = True
+                    push_vx = IMU_PUSH_SPEED * self._push_dir_x
+                    push_vy = IMU_PUSH_SPEED * self._push_dir_y
+                    self._push_fast_remaining = IMU_FAST_ADAPT_TICKS
+            else:
+                self._push_cont_ticks = 0
+                self._push_active = False
+                # Bias update
+                if self._push_bias_samples < 40:
+                    alpha = 0.1
+                    self._push_bias_samples += 1
+                    if self._push_bias_samples >= 40:
+                        self._push_bias_ready = True
+                elif self._push_fast_remaining > 0:
+                    alpha = IMU_BIAS_ALPHA_FAST
+                    self._push_fast_remaining -= 1
+                else:
+                    alpha = IMU_BIAS_ALPHA_SLOW
+                self._push_bias_x += alpha * (wx - self._push_bias_x)
+                self._push_bias_y += alpha * (wy - self._push_bias_y)
+
+            self._x += push_vx * dt
+            self._y += push_vy * dt
+        else:
+            # Motors active — reset push state, don't learn bias (vibration)
+            self._push_dev_count = 0
+            self._push_cont_ticks = 0
+            self._push_active = False
+
+        is_stationary = motors_idle and push_vx == 0.0 and push_vy == 0.0
 
         # AccelPositionEstimator — background diagnostics only
         # (provides linear_accel_world for dashboard graphs)
