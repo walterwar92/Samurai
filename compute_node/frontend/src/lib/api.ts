@@ -165,4 +165,23 @@ export const api = {
 
   listCalibrationProfiles: () =>
     get('/api/calibration/profile/list'),
+
+  // Hardware presets
+  listHardwarePresets: () =>
+    get('/api/hardware/presets'),
+
+  getHardwarePreset: (name: string) =>
+    get(`/api/hardware/presets/${encodeURIComponent(name)}`),
+
+  saveHardwarePreset: (preset: object) =>
+    post('/api/hardware/presets', preset),
+
+  deleteHardwarePreset: (name: string) =>
+    del(`/api/hardware/presets/${encodeURIComponent(name)}`),
+
+  applyHardwarePreset: (name: string) =>
+    post('/api/hardware/apply', { name }),
+
+  getActiveHardwarePreset: () =>
+    get('/api/hardware/active'),
 }

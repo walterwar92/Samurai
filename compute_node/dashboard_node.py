@@ -104,6 +104,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+# Hardware presets — direct file I/O (no MQTT round-trip for CRUD)
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+import hardware_presets as _hw_presets
+
 
 # =============================================================
 # ROS2 Node
@@ -1700,6 +1705,50 @@ def create_app(ros_node: DashboardNode):
         target_id = body.get('robot_id', '')
         ros_node._mqtt_pub('call_robot', target_id, qos=1)
         return _ok(called=target_id)
+
+    # ── Hardware Presets ─────────────────────────────────────────────
+    @app.get('/api/hardware/presets')
+    async def api_hardware_presets_list():
+        return _ok(presets=_hw_presets.list_presets(),
+                   active=_hw_presets.get_active())
+
+    @app.get('/api/hardware/presets/{name:path}')
+    async def api_hardware_preset_get(name: str):
+        preset = _hw_presets.get_preset(name)
+        if preset is None:
+            return _err(f'Preset not found: {name}')
+        return _ok(preset=preset)
+
+    @app.post('/api/hardware/presets')
+    async def api_hardware_preset_save(req: Request):
+        body = await req.json()
+        if not body.get('name'):
+            return _err('Missing preset name')
+        fname = _hw_presets.save_preset(body)
+        return _ok(saved=body['name'], file=fname)
+
+    @app.delete('/api/hardware/presets/{name:path}')
+    async def api_hardware_preset_delete(name: str):
+        ok = _hw_presets.delete_preset(name)
+        if not ok:
+            return _err(f'Preset not found: {name}')
+        return _ok(deleted=name)
+
+    @app.post('/api/hardware/apply')
+    async def api_hardware_apply(req: Request):
+        body = await req.json()
+        name = body.get('name', '')
+        preset = _hw_presets.get_preset(name)
+        if preset is None:
+            return _err(f'Preset not found: {name}')
+        _hw_presets.set_active(name)
+        ros_node._mqtt_pub('hardware/config', json.dumps(preset), qos=1)
+        return _ok(applied=name)
+
+    @app.get('/api/hardware/active')
+    async def api_hardware_active():
+        name = _hw_presets.get_active()
+        return _ok(active=name)
 
     # ── Static files (JS/CSS assets for React SPA) ─────────────────
     assets_dir = os.path.join(static_dir, 'assets')
