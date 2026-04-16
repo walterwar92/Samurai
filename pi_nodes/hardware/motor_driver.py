@@ -1,11 +1,12 @@
 """
-DC motor driver for 4-motor tracked chassis on Adeept Robot HAT V3.1.
+DC motor driver for 2-motor tracked chassis on Adeept Robot HAT V3.1.
+
+Физически на роботе установлены только 2 задних мотора (передние
+каналы HAT'а ch12-ch15 не используются — нет моторов).
 
 Motor channel map on PCA9685 (address 0x5f):
-  M1: IN1=ch15, IN2=ch14  (right-front)
-  M2: IN1=ch12, IN2=ch13  (left-front)
-  M3: IN1=ch11, IN2=ch10  (left-rear)
-  M4: IN1=ch8,  IN2=ch9   (right-rear)
+  M1: IN1=ch11, IN2=ch10  (left-rear)
+  M2: IN1=ch8,  IN2=ch9   (right-rear)
 
 Throttle range: -1.0 … +1.0  (negative = reverse).
 Based on adeept_rasptank2/web/move.py patterns.
@@ -23,10 +24,8 @@ from .pca9685_driver import PCA9685Driver
 
 # (IN1_channel, IN2_channel)
 MOTOR_CHANNELS = {
-    1: (15, 14),  # M1 right-front
-    2: (12, 13),  # M2 left-front
-    3: (11, 10),  # M3 left-rear
-    4: (8, 9),    # M4 right-rear
+    1: (11, 10),  # M1 left-rear
+    2: (8, 9),    # M2 right-rear
 }
 
 _log = logging.getLogger(__name__)
@@ -44,7 +43,7 @@ def _map_value(x: float, in_min: float, in_max: float,
 
 
 class MotorDriver:
-    """High-level API for 4-motor tracked platform."""
+    """High-level API for 2-motor tracked platform (rear wheels only)."""
 
     def __init__(self):
         self._pca = PCA9685Driver()
@@ -85,8 +84,8 @@ class MotorDriver:
         *linear*  : -100 … +100  (forward positive)
         *angular* : -100 … +100  (counter-clockwise positive)
 
-        Left  side = M2, M3
-        Right side = M1, M4
+        Left  side = M1 (left-rear)
+        Right side = M2 (right-rear)
         """
         left = linear + angular
         right = linear - angular
@@ -97,10 +96,8 @@ class MotorDriver:
             left = left / max_val * 100.0
             right = right / max_val * 100.0
 
-        self.set_motor(2, left)   # left-front
-        self.set_motor(3, left)   # left-rear
-        self.set_motor(1, right)  # right-front
-        self.set_motor(4, right)  # right-rear
+        self.set_motor(1, left)   # M1 left-rear
+        self.set_motor(2, right)  # M2 right-rear
 
     # ------------------------------------------------------------------
     def stop(self):

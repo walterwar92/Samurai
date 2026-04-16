@@ -23,15 +23,44 @@ _ACTIVE_FILE = os.path.join(_PRESETS_DIR, '_active.txt')
 _lock = threading.Lock()
 
 
-def _ensure_dir():
-    """Create presets directory if missing; generate default preset."""
+def _ensure_dir(seed_default: bool = True):
+    """Create presets directory if missing; optionally seed a default preset.
+
+    IMPORTANT: `seed_default` must be False when this is called from inside
+    save_preset() to avoid infinite recursion (save_preset → _ensure_dir →
+    save_preset).
+    """
     if not os.path.isdir(_PRESETS_DIR):
         os.makedirs(_PRESETS_DIR, exist_ok=True)
+    if not seed_default:
+        return
     # Auto-generate default preset if empty
     yamls = [f for f in os.listdir(_PRESETS_DIR) if f.endswith('.yaml')]
     if not yamls:
-        save_preset(generate_default())
-        set_active('Samurai Default')
+        _write_preset_file(generate_default())
+        _write_active_file('Samurai Default')
+
+
+def _write_preset_file(data: dict) -> str:
+    """Write a preset dict to disk. Returns the filename. No recursion guard."""
+    name = data.get('name', 'Unnamed')
+    now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    data.setdefault('created', now)
+    data['modified'] = now
+    fname = _slugify(name) + '.yaml'
+    path = os.path.join(_PRESETS_DIR, fname)
+    with _lock:
+        with open(path, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False,
+                      sort_keys=False)
+    return fname
+
+
+def _write_active_file(name: str):
+    """Write the active preset marker. Internal — no _ensure_dir call."""
+    with _lock:
+        with open(_ACTIVE_FILE, 'w', encoding='utf-8') as f:
+            f.write(name)
 
 
 def _slugify(name: str) -> str:
@@ -95,18 +124,10 @@ def get_preset(name: str) -> dict | None:
 
 def save_preset(data: dict) -> str:
     """Save preset. data must contain 'name'. Returns filename."""
-    _ensure_dir()
-    name = data.get('name', 'Unnamed')
-    now = datetime.now(timezone.utc).isoformat(timespec='seconds')
-    data.setdefault('created', now)
-    data['modified'] = now
-    fname = _slugify(name) + '.yaml'
-    path = os.path.join(_PRESETS_DIR, fname)
-    with _lock:
-        with open(path, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False,
-                      sort_keys=False)
-    return fname
+    # Don't seed default on save — we're about to write a user preset,
+    # which would have triggered infinite recursion in the old code.
+    _ensure_dir(seed_default=False)
+    return _write_preset_file(data)
 
 
 def delete_preset(name: str) -> bool:
@@ -146,10 +167,8 @@ def get_active() -> str:
 
 def set_active(name: str):
     """Set the active preset name."""
-    _ensure_dir()
-    with _lock:
-        with open(_ACTIVE_FILE, 'w', encoding='utf-8') as f:
-            f.write(name)
+    _ensure_dir(seed_default=False)
+    _write_active_file(name)
 
 
 # -- Default preset generation ---------------------------------------------
@@ -159,16 +178,14 @@ def generate_default() -> dict:
     return {
         'name': 'Samurai Default',
         'platform': 'raspberry_pi_pca9685',
-        'description': 'Adeept Robot HAT V3.1 — 4 мотора, 5 серво, WS2812B',
+        'description': 'Adeept Robot HAT V3.1 — 2 мотора (задние), 5 серво, WS2812B',
 
         'motors': {
             'driver': 'pca9685',
-            'count': 4,
+            'count': 2,
             'channels': {
-                'M1': {'in1': 15, 'in2': 14, 'label': 'Правый-передний'},
-                'M2': {'in1': 12, 'in2': 13, 'label': 'Левый-передний'},
-                'M3': {'in1': 11, 'in2': 10, 'label': 'Левый-задний'},
-                'M4': {'in1': 8,  'in2': 9,  'label': 'Правый-задний'},
+                'M1': {'in1': 11, 'in2': 10, 'label': 'Левый-задний'},
+                'M2': {'in1': 8,  'in2': 9,  'label': 'Правый-задний'},
             },
         },
 

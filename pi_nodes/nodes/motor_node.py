@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-motor_node — 4-motor tracked chassis control + dead-reckoning odometry.
+motor_node — 2-motor tracked chassis control + dead-reckoning odometry.
 
 Priority command mux (higher overrides lower, resumes after timeout):
   1. MANUAL   — cmd_vel/manual (user joystick/voice direct, highest priority)
