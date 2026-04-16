@@ -1,16 +1,16 @@
 /**
- * motor_node — 4-motor tracked chassis + open-loop odometry.
+ * motor_node — 2-motor tracked chassis + open-loop odometry.
  *
  * C++ replaces Python motor_node (adafruit-circuitpython-motor):
  *   - PCA9685 @ I2C 0x5F controlled via direct Linux ioctl — no Python GIL
  *   - Deterministic 20 Hz control loop (timer jitter < 100 µs vs ~1 ms Python)
  *   - Same topics, same TF output, same speed profiles as Python version
  *
+ * Физически на роботе только 2 задних мотора (ch12-ch15 свободны).
+ *
  * Motor channel map (Adeept Robot HAT V3.1):
- *   M1: IN1=ch15, IN2=ch14  (right-front)
- *   M2: IN1=ch12, IN2=ch13  (left-front)
- *   M3: IN1=ch11, IN2=ch10  (left-rear)
- *   M4: IN1=ch8,  IN2=ch9   (right-rear)
+ *   M1: IN1=ch11, IN2=ch10  (left-rear)
+ *   M2: IN1=ch8,  IN2=ch9   (right-rear)
  *
  * PWM drive mode: SLOW_DECAY (matches adafruit_motor.SLOW_DECAY):
  *   forward (t>0): IN1 = 4095,              IN2 = 4095*(1-t)
@@ -56,18 +56,14 @@ static constexpr int     PWM_FREQ_HZ   = 50;
 static constexpr int     OSC_FREQ_HZ   = 25'000'000;
 static constexpr int     PWM_MAX       = 4095;
 
-// ── Motor channel layout ──────────────────────────────────────────────────────
+// ── Motor channel layout (only 2 rear motors) ───────────────────────────────
 struct MotorCh { int in1; int in2; };
-static constexpr std::array<MotorCh, 4> MOTORS = {{
-  {15, 14},   // index 0 → M1 right-front
-  {12, 13},   // index 1 → M2 left-front
-  {11, 10},   // index 2 → M3 left-rear
-  { 8,  9},   // index 3 → M4 right-rear
+static constexpr std::array<MotorCh, 2> MOTORS = {{
+  {11, 10},   // index 0 → M1 left-rear
+  { 8,  9},   // index 1 → M2 right-rear
 }};
-static constexpr int IDX_RIGHT_FRONT = 0;
-static constexpr int IDX_LEFT_FRONT  = 1;
-static constexpr int IDX_LEFT_REAR   = 2;
-static constexpr int IDX_RIGHT_REAR  = 3;
+static constexpr int IDX_LEFT_REAR   = 0;
+static constexpr int IDX_RIGHT_REAR  = 1;
 
 // ── Robot geometry ────────────────────────────────────────────────────────────
 static constexpr double WHEEL_BASE = 0.17;  // metres between tracks
@@ -233,7 +229,7 @@ private:
 
   void stopMotors()
   {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 2; ++i) {
       if (!simulated_ && pca_) {
         pca_->setPwm(MOTORS[i].in1, PWM_MAX);
         pca_->setPwm(MOTORS[i].in2, PWM_MAX);
@@ -260,9 +256,7 @@ private:
     double max_val = std::max({std::abs(left), std::abs(right), 1.0});
     if (max_val > 1.0) { left /= max_val; right /= max_val; }
 
-    setMotor(IDX_LEFT_FRONT,  left);
     setMotor(IDX_LEFT_REAR,   left);
-    setMotor(IDX_RIGHT_FRONT, right);
     setMotor(IDX_RIGHT_REAR,  right);
 
     // Open-loop odometry integration

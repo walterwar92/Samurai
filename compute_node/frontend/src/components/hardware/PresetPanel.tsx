@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -14,18 +14,43 @@ interface PresetPanelProps {
   currentName: string
 }
 
-export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, currentName }: PresetPanelProps) {
+export function PresetPanel({
+  active, onLoad, onRefresh, presets, dirty, currentName,
+}: PresetPanelProps) {
   const [saveName, setSaveName] = useState('')
   const [saveDesc, setSaveDesc] = useState('')
   const [showSave, setShowSave] = useState(false)
 
-  const inputCls = 'w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono text-zinc-200 focus:outline-none focus:border-amber-500'
+  const inputCls =
+    'w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono text-zinc-200 focus:outline-none focus:border-amber-500'
 
-  const handleLoad = (name: string) => {
-    onLoad(name)
+  const emitSave = (name: string, description: string) => {
+    window.dispatchEvent(
+      new CustomEvent('hw-preset-save', {
+        detail: { name, description },
+      }),
+    )
+  }
+
+  const handleSaveAs = () => {
+    if (!saveName.trim()) return
+    emitSave(saveName.trim(), saveDesc.trim())
+    setSaveName('')
+    setSaveDesc('')
+    setShowSave(false)
+  }
+
+  const handleQuickSave = () => {
+    // Re-save the currently loaded preset under the same name.
+    if (!currentName) {
+      setShowSave(true)
+      return
+    }
+    emitSave(currentName, '')
   }
 
   const handleDelete = async (name: string) => {
+    if (!confirm(`Удалить пресет «${name}»?`)) return
     await api.deleteHardwarePreset(name)
     onRefresh()
   }
@@ -34,6 +59,8 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
     await api.applyHardwarePreset(name)
     onRefresh()
   }
+
+  const nameExists = presets.some((p) => p.name === saveName.trim())
 
   return (
     <Card>
@@ -46,15 +73,22 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
         {/* Active indicator */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${active ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
+            <div
+              className={`w-2 h-2 rounded-full ${
+                active ? 'bg-emerald-500' : 'bg-zinc-600'
+              }`}
+            />
             <span className="text-xs text-zinc-300">
-              Активный: <span className="text-amber-300 font-medium">{active || '—'}</span>
+              Активный:{' '}
+              <span className="text-amber-300 font-medium">
+                {active || '—'}
+              </span>
             </span>
           </div>
           <button
             onClick={onRefresh}
             className="text-[10px] text-zinc-500 hover:text-zinc-300"
-            title="Обновить"
+            title="Обновить список"
           >
             ↻
           </button>
@@ -66,15 +100,25 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
           </div>
         )}
 
-        {/* Save dialog toggle */}
+        {/* Save buttons */}
         <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs h-7 px-2.5 flex-1"
+            onClick={handleQuickSave}
+            disabled={!currentName || !dirty}
+            title={currentName ? `Сохранить в «${currentName}»` : 'Сначала выберите имя'}
+          >
+            💾 Сохранить
+          </Button>
           <Button
             size="sm"
             variant="outline"
             className="text-xs h-7 px-2.5 flex-1"
             onClick={() => {
               setShowSave(!showSave)
-              if (!showSave) setSaveName(currentName)
+              if (!showSave) setSaveName(currentName || '')
             }}
           >
             {showSave ? 'Отмена' : 'Сохранить как...'}
@@ -86,34 +130,30 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
             <input
               className={inputCls}
               value={saveName}
-              onChange={e => setSaveName(e.target.value)}
+              onChange={(e) => setSaveName(e.target.value)}
               placeholder="Имя пресета"
+              autoFocus
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveAs()}
             />
             <input
               className={inputCls}
               value={saveDesc}
-              onChange={e => setSaveDesc(e.target.value)}
+              onChange={(e) => setSaveDesc(e.target.value)}
               placeholder="Описание (необязательно)"
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveAs()}
             />
+            {nameExists && (
+              <div className="text-[9px] text-amber-400">
+                Пресет с таким именем существует — будет перезаписан
+              </div>
+            )}
             <Button
               size="sm"
               className="text-xs h-7 w-full"
-              onClick={() => {
-                if (saveName.trim()) {
-                  // Parent handles actual save via onSave callback —
-                  // we emit via custom event or the parent reads our state.
-                  // For simplicity, dispatch custom event
-                  window.dispatchEvent(new CustomEvent('hw-preset-save', {
-                    detail: { name: saveName.trim(), description: saveDesc.trim() }
-                  }))
-                  setSaveName('')
-                  setSaveDesc('')
-                  setShowSave(false)
-                }
-              }}
+              onClick={handleSaveAs}
               disabled={!saveName.trim()}
             >
-              Сохранить пресет
+              {nameExists ? 'Перезаписать' : 'Создать пресет'}
             </Button>
           </div>
         )}
@@ -123,10 +163,12 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
         {/* Preset list */}
         <div>
           <span className="text-[10px] uppercase text-muted-foreground tracking-wider block mb-1.5">
-            Все пресеты
+            Все пресеты ({presets.length})
           </span>
           {presets.length === 0 ? (
-            <span className="text-[10px] text-zinc-600">Нет сохранённых пресетов</span>
+            <span className="text-[10px] text-zinc-600">
+              Нет сохранённых пресетов
+            </span>
           ) : (
             <div className="space-y-1">
               {presets.map((p) => (
@@ -143,7 +185,9 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
                       {p.name === active && (
                         <span className="text-[8px] text-amber-400">●</span>
                       )}
-                      <span className="font-medium text-zinc-200 truncate">{p.name}</span>
+                      <span className="font-medium text-zinc-200 truncate">
+                        {p.name}
+                      </span>
                     </div>
                   </div>
                   <div className="text-[10px] text-zinc-500 mb-1">
@@ -151,7 +195,7 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
                   </div>
                   <div className="flex gap-1">
                     <button
-                      onClick={() => handleLoad(p.name)}
+                      onClick={() => onLoad(p.name)}
                       className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
                     >
                       Загрузить
@@ -172,6 +216,7 @@ export function PresetPanel({ active, onLoad, onRefresh, presets, dirty, current
                     <button
                       onClick={() => handleDelete(p.name)}
                       className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-400 hover:bg-red-800/50 ml-auto"
+                      title="Удалить"
                     >
                       ✕
                     </button>

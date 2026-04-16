@@ -27,6 +27,13 @@ export interface ServoArmConfig {
   labels: string[]
 }
 
+export interface BlockPosition {
+  x: number
+  y: number
+}
+
+export type LayoutMap = Record<string, BlockPosition>
+
 export interface HardwarePreset {
   name: string
   platform: Platform
@@ -75,6 +82,9 @@ export interface HardwarePreset {
     pca9685_address: string
     pca9685_frequency: number
   }
+
+  /** Optional block positions on the visual canvas (by block id) */
+  layout?: LayoutMap
 }
 
 export interface PresetSummary {
@@ -94,12 +104,10 @@ export function emptyPreset(): HardwarePreset {
     modified: '',
     motors: {
       driver: 'pca9685',
-      count: 4,
+      count: 2,
       channels: {
-        M1: { in1: 0, in2: 1, label: 'Правый-передний' },
-        M2: { in1: 2, in2: 3, label: 'Левый-передний' },
-        M3: { in1: 4, in2: 5, label: 'Левый-задний' },
-        M4: { in1: 6, in2: 7, label: 'Правый-задний' },
+        M1: { in1: 11, in2: 10, label: 'Левый-задний' },
+        M2: { in1: 8,  in2: 9,  label: 'Правый-задний' },
       },
     },
     servos: {
@@ -118,5 +126,6 @@ export function emptyPreset(): HardwarePreset {
     range_sensor: { type: 'hc_sr04', trigger_pin: 23, echo_pin: 24 },
     leds: { type: 'ws2812b', gpio_pin: 10, count: 12, brightness: 0.3 },
     i2c: { pca9685_address: '0x5F', pca9685_frequency: 50 },
+    layout: {},
   }
 }

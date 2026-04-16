@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Header } from '@/components/layout/Header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { api } from '@/lib/api'
 import { emptyPreset } from '@/types/hardware'
-import type { HardwarePreset, PresetSummary, Platform } from '@/types/hardware'
+import type { HardwarePreset, PresetSummary, LayoutMap } from '@/types/hardware'
 import { HardwareBlockDiagram, type BlockId } from '@/components/hardware/HardwareBlockDiagram'
 import { PlatformSelector } from '@/components/hardware/PlatformSelector'
 import { PresetPanel } from '@/components/hardware/PresetPanel'
@@ -21,14 +21,20 @@ export function HardwarePage() {
   const [activeBlock, setActiveBlock] = useState<BlockId | null>(null)
   const [dirty, setDirty] = useState(false)
   const [loadedName, setLoadedName] = useState('')
+  const [saveStatus, setSaveStatus] = useState<string>('')
+  // Keep latest preset in a ref so the save handler never uses stale state.
+  const presetRef = useRef(preset)
+  useEffect(() => { presetRef.current = preset }, [preset])
 
   // ── Fetch presets list + active ──────────────────────────────────
   const refresh = useCallback(async () => {
     try {
       const data = await api.listHardwarePresets()
-      setPresets(data.presets || [])
-      setActive(data.active || '')
-    } catch { /* backend offline */ }
+      setPresets(Array.isArray(data?.presets) ? data.presets : [])
+      setActive(data?.active || '')
+    } catch (err) {
+      console.warn('[hardware] refresh failed:', err)
+    }
   }, [])
 
   // Initial load
@@ -47,36 +53,59 @@ export function HardwarePage() {
   const loadPreset = async (name: string) => {
     try {
       const data = await api.getHardwarePreset(name)
-      if (data.preset) {
+      if (data?.preset) {
         // Merge with empty to ensure all fields exist
-        setPreset({ ...emptyPreset(), ...data.preset })
+        setPreset({ ...emptyPreset(), ...data.preset, layout: data.preset.layout || {} })
         setLoadedName(name)
         setDirty(false)
       }
-    } catch { /* */ }
+    } catch (err) {
+      console.warn('[hardware] loadPreset failed:', err)
+    }
   }
 
   // ── Save preset (via custom event from PresetPanel) ─────────────
   useEffect(() => {
     const handler = async (e: Event) => {
       const { name, description } = (e as CustomEvent).detail
-      const toSave = {
-        ...preset,
-        name,
-        description,
+      try {
+        setSaveStatus('Сохранение...')
+        // Use ref so we always grab the latest preset state.
+        const toSave = {
+          ...presetRef.current,
+          name,
+          description,
+        }
+        const result = await api.saveHardwarePreset(toSave)
+        if (!result?.ok) {
+          setSaveStatus(`Ошибка: ${result?.error || 'unknown'}`)
+          return
+        }
+        setLoadedName(name)
+        setDirty(false)
+        setSaveStatus(`Сохранено: ${name}`)
+        // Refresh list so the new preset appears immediately
+        await refresh()
+        // Clear status after a moment
+        setTimeout(() => setSaveStatus(''), 2500)
+      } catch (err) {
+        console.error('[hardware] save failed:', err)
+        setSaveStatus(`Ошибка: ${(err as Error).message}`)
       }
-      await api.saveHardwarePreset(toSave)
-      setLoadedName(name)
-      setDirty(false)
-      refresh()
     }
     window.addEventListener('hw-preset-save', handler)
     return () => window.removeEventListener('hw-preset-save', handler)
-  }, [preset, refresh])
+  }, [refresh])
 
   // ── Update helpers (mark dirty) ─────────────────────────────────
   const update = <K extends keyof HardwarePreset>(key: K, val: HardwarePreset[K]) => {
     setPreset(prev => ({ ...prev, [key]: val }))
+    setDirty(true)
+  }
+
+  // Layout changes (drag) — silent update, marked dirty
+  const updateLayout = (layout: LayoutMap) => {
+    setPreset(prev => ({ ...prev, layout }))
     setDirty(true)
   }
 
@@ -152,25 +181,34 @@ export function HardwarePage() {
             </CardContent>
           </Card>
 
-          {/* Block diagram */}
+          {/* Block diagram canvas */}
           <Card>
             <CardHeader className="py-2 px-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
                   Блок-схема оборудования
                 </CardTitle>
-                {loadedName && (
-                  <span className="text-[10px] text-zinc-500">
-                    {loadedName}{dirty && ' *'}
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {saveStatus && (
+                    <span className={`text-[10px] ${saveStatus.startsWith('Ошибка') ? 'text-red-400' : 'text-emerald-400'}`}>
+                      {saveStatus}
+                    </span>
+                  )}
+                  {loadedName && (
+                    <span className="text-[10px] text-zinc-500">
+                      {loadedName}{dirty && ' *'}
+                    </span>
+                  )}
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-3">
               <HardwareBlockDiagram
                 preset={preset}
+                layout={preset.layout || {}}
                 activeBlock={activeBlock}
                 onBlockClick={(id) => setActiveBlock(activeBlock === id ? null : id)}
+                onLayoutChange={updateLayout}
               />
             </CardContent>
           </Card>

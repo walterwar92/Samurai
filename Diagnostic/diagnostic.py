@@ -669,14 +669,14 @@ def _log_pca9685_info(addr_hex: str, freq: int, driver: str):
     logger.info(f"    ch5  — Сервопривод 5")
     logger.info(f"    ch6  — Свободен")
     logger.info(f"    ch7  — Свободен")
-    logger.info(f"    ch8  — M4 правый-задний IN1")
-    logger.info(f"    ch9  — M4 правый-задний IN2")
-    logger.info(f"    ch10 — M3 левый-задний IN2")
-    logger.info(f"    ch11 — M3 левый-задний IN1")
-    logger.info(f"    ch12 — M2 левый-передний IN1")
-    logger.info(f"    ch13 — M2 левый-передний IN2")
-    logger.info(f"    ch14 — M1 правый-передний IN2")
-    logger.info(f"    ch15 — M1 правый-передний IN1")
+    logger.info(f"    ch8  — M2 правый-задний IN1")
+    logger.info(f"    ch9  — M2 правый-задний IN2")
+    logger.info(f"    ch10 — M1 левый-задний IN2")
+    logger.info(f"    ch11 — M1 левый-задний IN1")
+    logger.info(f"    ch12 — свободен (нет левого-переднего мотора)")
+    logger.info(f"    ch13 — свободен (нет левого-переднего мотора)")
+    logger.info(f"    ch14 — свободен (нет правого-переднего мотора)")
+    logger.info(f"    ch15 — свободен (нет правого-переднего мотора)")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -684,21 +684,22 @@ def _log_pca9685_info(addr_hex: str, freq: int, driver: str):
 # ══════════════════════════════════════════════════════════════════════
 
 def diagnose_drv8833(pca):
-    section("DRV8833 x2 — ДРАЙВЕРЫ DC МОТОРОВ")
+    section("DRV8833 — ДРАЙВЕРЫ DC МОТОРОВ (только задние)")
 
     logger.info("  Тип: DRV8833 Dual H-Bridge Motor Driver")
-    logger.info("  Количество: 2 шт. на Adeept Robot HAT V3.1")
-    logger.info("  DRV8833 #1: управляет M1 (правый-передний) + M2 (левый-передний)")
-    logger.info("  DRV8833 #2: управляет M3 (левый-задний) + M4 (правый-задний)")
-    logger.info("  Управление: через PCA9685 PWM-каналы (ch8-ch15)")
+    logger.info("  Количество на HAT'е: 2 шт. (поддерживает до 4 моторов)")
+    logger.info("  Используется: только DRV8833 #2 — M1 (левый-задний) + M2 (правый-задний)")
+    logger.info("  DRV8833 #1 (ch12-ch15): не используется — нет передних моторов")
+    logger.info("  Управление: через PCA9685 PWM-каналы (ch8-ch11)")
     logger.info("  Режим: SLOW_DECAY (плавное управление DC моторами)")
 
     if pca is not None:
-        logger.info("  Статус: PCA9685 доступен — DRV8833 управляемы")
+        logger.info("  Статус: PCA9685 доступен — DRV8833 управляем")
         record("drv8833", status="OK", details={
-            "count": 2,
+            "count_on_hat": 2,
+            "count_used": 1,
             "type": "DRV8833 Dual H-Bridge",
-            "motors": "M1-M4 via PCA9685 ch8-ch15",
+            "motors": "M1-M2 (задние) via PCA9685 ch8-ch11",
         })
     else:
         logger.error("  PCA9685 недоступен — DRV8833 не тестируются")
@@ -729,22 +730,22 @@ def diagnose_lm324():
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  8. DC МОТОРЫ (M1-M4)
+#  8. DC МОТОРЫ (M1-M2, только задние)
 # ══════════════════════════════════════════════════════════════════════
 
 def diagnose_motors(pca):
-    section("DC МОТОРЫ (4× гусеничная платформа, через DRV8833)")
+    section("DC МОТОРЫ (2× задние, гусеничная платформа, через DRV8833)")
 
     if pca is None:
         logger.error("  PCA9685 не инициализирован — моторы недоступны")
         record("motors", status="ERROR", details={"error": "PCA9685 not available"})
         return None
 
+    # Физически установлены только 2 задних мотора.
+    # Передние каналы HAT'а (ch12-ch15) не используются — нет моторов.
     MOTOR_MAP = {
-        "M1_right_front": (15, 14),
-        "M2_left_front": (12, 13),
-        "M3_left_rear": (11, 10),
-        "M4_right_rear": (8, 9),
+        "M1_left_rear": (11, 10),
+        "M2_right_rear": (8, 9),
     }
 
     is_smbus = isinstance(pca, PCA9685Smbus)
@@ -1484,7 +1485,7 @@ def main():
     #  7. LM324 — операционный усилитель (информация)
     diagnose_lm324()
 
-    #  8. DC моторы M1-M4
+    #  8. DC моторы M1-M2 (только задние)
     diagnose_motors(pca)
 
     #  9. AD002 сервоприводы x6

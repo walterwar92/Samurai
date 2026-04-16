@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-motor_node — ROS2 node for 4-motor tracked chassis.
+motor_node — ROS2 node for 2-motor tracked chassis (rear wheels only).
 
 Subscribes:
   /cmd_vel        (geometry_msgs/Twist)  — linear.x  forward m/s

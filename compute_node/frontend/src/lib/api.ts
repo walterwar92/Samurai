@@ -9,8 +9,22 @@ async function post(url: string, body?: object) {
   return res
 }
 
+/** POST that parses the JSON body — use when you need the response payload. */
+async function postJson(url: string, body?: object) {
+  const res = await fetch(BASE + url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  try {
+    return await res.json()
+  } catch {
+    return { ok: res.ok }
+  }
+}
+
 async function get(url: string) {
-  const res = await fetch(BASE + url)
+  const res = await fetch(BASE + url, { cache: 'no-store' })
   return res.json()
 }
 
@@ -174,7 +188,7 @@ export const api = {
     get(`/api/hardware/presets/${encodeURIComponent(name)}`),
 
   saveHardwarePreset: (preset: object) =>
-    post('/api/hardware/presets', preset),
+    postJson('/api/hardware/presets', preset),
 
   deleteHardwarePreset: (name: string) =>
     del(`/api/hardware/presets/${encodeURIComponent(name)}`),
