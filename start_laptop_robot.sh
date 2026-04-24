@@ -41,6 +41,8 @@ HOTSPOT_MODE=false
 REBUILD_IMAGE=false
 REBUILD_WS=false
 REMOTE_YOLO=false
+NO_VPERED=false
+VPERED_PORT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,6 +52,8 @@ while [[ $# -gt 0 ]]; do
         --rebuild-image) REBUILD_IMAGE=true; shift ;;
         --rebuild-ws)    REBUILD_WS=true; shift ;;
         --remote-yolo)   REMOTE_YOLO=true; shift ;;
+        --no-vpered)     NO_VPERED=true; shift ;;
+        --vpered-port)   VPERED_PORT="$2"; shift 2 ;;
         -h|--help)
             echo "Использование: $0 [--pi IP] [--hotspot] [--rebuild] [--remote-yolo]"
             echo ""
@@ -59,6 +63,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --rebuild-image  Пересобрать только Docker образ"
             echo "  --rebuild-ws     Пересобрать только ROS2 workspace"
             echo "  --remote-yolo    YOLO на отдельном GPU-ноутбуке (не запускать локально)"
+            echo "  --no-vpered      Не запускать Vpered USB bridge (по умолчанию включён)"
+            echo "  --vpered-port P  Указать конкретный COM-порт для Vpered (иначе авто)"
             exit 0
             ;;
         *) die "Неизвестный аргумент: $1. Используй --help" ;;
@@ -284,6 +290,80 @@ configure_network() {
     log_ok "MQTT broker: ${BOLD}$MQTT_BROKER:1883${NC}"
 }
 
+# ─── 6.5 Vpered USB bridge (Arduino Uno) ─────────────────────────────────────
+VPERED_PID=""
+VPERED_LOG="/tmp/vpered_bridge.log"
+
+start_vpered_bridge() {
+    if $NO_VPERED; then
+        log_info "Vpered bridge отключён (--no-vpered)"
+        return
+    fi
+
+    log_step "Vpered USB bridge (Arduino Uno)"
+
+    # Проверка зависимостей Python (вне Docker — bridge крутится на хосте,
+    # потому что pyserial должен видеть USB-устройство напрямую).
+    if ! command -v python &>/dev/null && ! command -v python3 &>/dev/null; then
+        log_warn "Python не найден — пропускаю Vpered bridge"
+        return
+    fi
+    local PY=python; command -v python &>/dev/null || PY=python3
+
+    if ! "$PY" -c "import serial, fastapi, uvicorn" &>/dev/null; then
+        log_warn "Vpered зависимости (pyserial/fastapi/uvicorn) не установлены"
+        log_info "Устанавливаю автоматически: pip install pyserial fastapi uvicorn pydantic"
+        "$PY" -m pip install --quiet --user pyserial 'fastapi>=0.110' 'uvicorn[standard]>=0.27' 'pydantic>=2' 2>&1 \
+            | tail -3 \
+            || { log_warn "pip install не удался — пропускаю Vpered"; return; }
+    fi
+
+    # Проверка что bridge не уже запущен
+    if pgrep -f "vpered_bridge.py" &>/dev/null; then
+        log_warn "Старый vpered_bridge.py обнаружен — убиваю"
+        pkill -f "vpered_bridge.py" || true
+        sleep 0.5
+    fi
+
+    # Аргументы: либо явный порт, либо --auto
+    local args
+    if [[ -n "$VPERED_PORT" ]]; then
+        args="--port $VPERED_PORT"
+        log_info "Указан порт: $VPERED_PORT"
+    else
+        args="--auto"
+        log_info "Авто-поиск порта Arduino"
+    fi
+
+    # Запуск в фоне с логом
+    log_info "Старт vpered_bridge.py → :5005 (лог: $VPERED_LOG)"
+    nohup "$PY" "$SCRIPT_DIR/compute_node/vpered_bridge.py" $args > "$VPERED_LOG" 2>&1 &
+    VPERED_PID=$!
+
+    # Дать ему время стартануть и проверить что процесс жив
+    sleep 1.2
+    if kill -0 "$VPERED_PID" 2>/dev/null; then
+        log_ok "Vpered bridge запущен (PID $VPERED_PID, http://localhost:5005)"
+    else
+        log_warn "Bridge упал. Лог:"
+        tail -10 "$VPERED_LOG" | sed 's/^/    /'
+        VPERED_PID=""
+    fi
+}
+
+stop_vpered_bridge() {
+    if [[ -n "$VPERED_PID" ]] && kill -0 "$VPERED_PID" 2>/dev/null; then
+        log_info "Останавливаю Vpered bridge (PID $VPERED_PID)..."
+        kill "$VPERED_PID" 2>/dev/null || true
+        wait "$VPERED_PID" 2>/dev/null || true
+    fi
+    # на всякий — добиваем по имени (если pid потерян)
+    pkill -f "vpered_bridge.py" 2>/dev/null || true
+}
+
+# Cleanup при выходе/Ctrl+C
+trap stop_vpered_bridge EXIT INT TERM
+
 # ─── 7. Запуск ───────────────────────────────────────────────────────────────
 launch() {
     log_step "Запуск compute нод в Docker"
@@ -310,6 +390,8 @@ launch() {
     echo -e "  ${BOLD}│${NC}  ROS_DOMAIN_ID: ${GREEN}${ROS_DOMAIN_ID}${NC}"
     [[ -n "$PEER_IP" ]] && \
     echo -e "  ${BOLD}│${NC}  Unicast DDS:   ${GREEN}peer_ip=$PEER_IP${NC}"
+    [[ -n "$VPERED_PID" ]] && \
+    echo -e "  ${BOLD}│${NC}  Vpered USB:    ${GREEN}http://localhost:5005${NC} (PID $VPERED_PID)"
     echo -e "  ${BOLD}└──────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${YELLOW}  ── Запуск ROS2 нод (Ctrl+C для остановки) ──${NC}"
@@ -317,10 +399,14 @@ launch() {
 
     # Docker Desktop (Win/Mac): --net=host работает только на Linux.
     # На Win/Mac нужен -p для проброса портов + bridge network.
+    # Для Vpered bridge proxy: на Linux хост = localhost (благодаря --net=host),
+    # на Windows — host.docker.internal:5005.
     local docker_net_args
+    local vpered_url="http://localhost:5005"
     if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN|NT ]] || [[ "$(uname -o 2>/dev/null)" == "Msys" ]]; then
-        docker_net_args="-p 5000:5000"
-        log_ok "Windows: порт 5000 прокинут через -p"
+        docker_net_args="-p 5000:5000 --add-host=host.docker.internal:host-gateway"
+        vpered_url="http://host.docker.internal:5005"
+        log_ok "Windows: порт 5000 прокинут через -p, Vpered bridge → $vpered_url"
     else
         docker_net_args="--net=host"
     fi
@@ -337,6 +423,7 @@ launch() {
         -e MQTT_PORT="1883" \
         -e ROBOT_ID="robot1" \
         -e CAMERA_FLIP="-1" \
+        -e VPERED_BRIDGE_URL="$vpered_url" \
         "$DOCKER_IMAGE" \
         bash -c "
             source /opt/ros/humble/setup.bash
@@ -355,6 +442,7 @@ main() {
     check_avahi
     discover_pi
     configure_network
+    start_vpered_bridge
     launch
 }
 

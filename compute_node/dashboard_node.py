@@ -1091,6 +1091,47 @@ def create_app(ros_node: DashboardNode):
         except Exception:
             pass
 
+    # ── Vpered USB bridge proxy ────────────────────────────────
+    # Хост-процесс vpered_bridge.py крутится на :5005 (см. start_laptop_robot.sh).
+    # Frontend стучится на /api/vpered/* — пробрасываем в bridge.
+    # На Linux Docker (--net=host) хост виден как localhost.
+    # На Windows Docker — нужно host.docker.internal. Управляется через
+    # переменную окружения VPERED_BRIDGE_URL.
+    # Дефолт перебивается переменной окружения VPERED_BRIDGE_URL,
+    # которую правильно подставляет start_laptop_robot.sh
+    # (host.docker.internal:5005 на Windows, localhost:5005 на Linux).
+    VPERED_BRIDGE_URL = os.environ.get('VPERED_BRIDGE_URL', 'http://localhost:5005')
+
+    @app.api_route('/api/vpered/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE'])
+    async def vpered_proxy(path: str, request: Request):
+        try:
+            import httpx
+        except ImportError:
+            return JSONResponse({'error': 'httpx not installed'}, status_code=500)
+        target = f"{VPERED_BRIDGE_URL}/api/vpered/{path}"
+        try:
+            body = await request.body()
+            headers = {k: v for k, v in request.headers.items()
+                       if k.lower() not in ('host', 'content-length', 'connection')}
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.request(
+                    method=request.method,
+                    url=target,
+                    params=dict(request.query_params),
+                    content=body,
+                    headers=headers,
+                )
+            return Response(
+                content=r.content,
+                status_code=r.status_code,
+                media_type=r.headers.get('content-type', 'application/json'),
+            )
+        except Exception as e:
+            return JSONResponse(
+                {'error': 'vpered_bridge unreachable', 'detail': str(e)},
+                status_code=503,
+            )
+
     @app.get('/map.png')
     async def map_image_legacy():
         png = ros_node.get_map_png()
