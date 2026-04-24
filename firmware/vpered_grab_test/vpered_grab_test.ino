@@ -15,6 +15,8 @@
  *   p            : park
  *   g            : full grab sequence (open -> forward -> close -> up)
  *   r            : reset to park
+ *   d            : DETACH all servos now (stop buzzing/heating)
+ *   D            : toggle auto-detach (on by default)
  *   ? h          : status / help
  *   s<X>         : save current angles as preset
  *                  so = CLAW_OPEN, sx = CLAW_CLOSED,
@@ -37,11 +39,19 @@ int BASE_FORWARD = 90;
 int ARM_FORWARD  = 40;
 
 // Less = open on this robot. Press '~' if inverted.
+// CLAW_CLOSED: НЕ зажимать в упор — оставь 5-15° запаса, иначе серво
+// постоянно пытается дойти до цели, греется и жужжит.
 int CLAW_OPEN    = 70;
-int CLAW_CLOSED  = 160;
+int CLAW_CLOSED  = 150;
 
 const int SERVO_SETTLE_MS = 400;
 const int GRAB_HOLD_MS    = 300;
+
+// Auto-detach: после этого простоя отключаем ШИМ сервы — перестаёт
+// держать момент, меньше греется и не жужжит. Компромисс: может слегка
+// сползти под нагрузкой. Для ARM с тяжёлым плечом может упасть —
+// тогда выключи авто-detach командой 'D' (toggle).
+const unsigned long DETACH_IDLE_MS = 600;
 
 // ===== STATE =====
 Servo clawServo, armServo, baseServo;
@@ -51,6 +61,35 @@ int armAngle  = 90;
 int clawAngle = 135;
 int stepDeg   = 2;
 bool savePending = false;
+
+// Авто-detach включён по умолчанию. Если ARM падает при detach —
+// командой 'D' можно отключить.
+bool autoDetach = true;
+
+unsigned long lastBaseMs = 0;
+unsigned long lastArmMs  = 0;
+unsigned long lastClawMs = 0;
+
+// ===== SERVO ATTACH HELPERS =====
+void ensureBase() { if (!baseServo.attached()) baseServo.attach(BASE_PIN); lastBaseMs = millis(); }
+void ensureArm()  { if (!armServo.attached())  armServo.attach(ARM_PIN);   lastArmMs  = millis(); }
+void ensureClaw() { if (!clawServo.attached()) clawServo.attach(CLAW_PIN); lastClawMs = millis(); }
+
+// Проверить и detach сервы с истёкшим idle
+void checkAutoDetach() {
+    if (!autoDetach) return;
+    unsigned long now = millis();
+    if (baseServo.attached() && now - lastBaseMs > DETACH_IDLE_MS) baseServo.detach();
+    if (armServo.attached()  && now - lastArmMs  > DETACH_IDLE_MS) armServo.detach();
+    if (clawServo.attached() && now - lastClawMs > DETACH_IDLE_MS) clawServo.detach();
+}
+
+void detachAll() {
+    baseServo.detach();
+    armServo.detach();
+    clawServo.detach();
+    Serial.println(F("DETACHED ALL"));
+}
 
 // ===== SMOOTH SERVO =====
 void smoothWriteServo(Servo &s, int &cur, int tgt) {
@@ -63,9 +102,9 @@ void smoothWriteServo(Servo &s, int &cur, int tgt) {
     }
 }
 
-void moveBase(int a) { smoothWriteServo(baseServo, baseAngle, a); }
-void moveArm(int a)  { smoothWriteServo(armServo,  armAngle,  a); }
-void moveClaw(int a) { smoothWriteServo(clawServo, clawAngle, a); }
+void moveBase(int a) { ensureBase(); smoothWriteServo(baseServo, baseAngle, a); lastBaseMs = millis(); }
+void moveArm(int a)  { ensureArm();  smoothWriteServo(armServo,  armAngle,  a); lastArmMs  = millis(); }
+void moveClaw(int a) { ensureClaw(); smoothWriteServo(clawServo, clawAngle, a); lastClawMs = millis(); }
 
 // ===== ACTIONS =====
 void goPark() {
@@ -109,7 +148,8 @@ void printStatus() {
     Serial.print(F("B="));    Serial.print(baseAngle);
     Serial.print(F(" A="));   Serial.print(armAngle);
     Serial.print(F(" C="));   Serial.print(clawAngle);
-    Serial.print(F(" step=")); Serial.println(stepDeg);
+    Serial.print(F(" step=")); Serial.print(stepDeg);
+    Serial.print(F(" auto-detach=")); Serial.println(autoDetach ? F("ON") : F("OFF"));
 
     Serial.print(F("PARK:    B=")); Serial.print(BASE_PARK);
     Serial.print(F(" A="));         Serial.print(ARM_PARK);
@@ -129,6 +169,7 @@ void printHelp() {
     Serial.println(F("o x ~       : open / close / swap polarity"));
     Serial.println(F("f p         : forward / park"));
     Serial.println(F("g r         : grab sequence / reset"));
+    Serial.println(F("d D         : detach NOW / toggle auto-detach"));
     Serial.println(F("so sx sf sp : save current as preset"));
     Serial.println(F("e           : export presets"));
     Serial.println(F("? h         : status / help"));
@@ -193,11 +234,20 @@ void setup() {
     clawServo.write(CLAW_PARK); clawAngle = CLAW_PARK;
     delay(600);
 
+    // Начинаем отсчёт idle прямо сейчас — через DETACH_IDLE_MS после
+    // старта серво отключатся (если autoDetach=true).
+    unsigned long now = millis();
+    lastBaseMs = lastArmMs = lastClawMs = now;
+
     printHelp();
 }
 
 // ===== LOOP =====
 void loop() {
+    // Проверяем авто-detach КАЖДЫЙ цикл — чтобы серво отключалось
+    // сразу после истечения idle, даже если Serial команд нет.
+    checkAutoDetach();
+
     if (!Serial.available()) return;
     char ch = Serial.read();
 
@@ -237,6 +287,12 @@ void loop() {
         case 'p': goPark();     printStatus(); break;
 
         case '~': swapClawPolarity(); break;
+
+        case 'd': detachAll(); break;
+        case 'D':
+            autoDetach = !autoDetach;
+            Serial.print(F("auto-detach=")); Serial.println(autoDetach ? F("ON") : F("OFF"));
+            break;
 
         case 's':
             savePending = true;
