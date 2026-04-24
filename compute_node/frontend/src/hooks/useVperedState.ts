@@ -28,7 +28,11 @@ export interface VperedApi {
   log: () => Promise<string[]>
 }
 
-const POLL_MS = 250
+// Опрос телеметрии. Когда соединение есть — быстро (200 мс).
+// При ошибках растёт backoff до 5 сек чтобы не нагружать браузер
+// fetch'ами в холостую (когда bridge не запущен).
+const POLL_OK_MS   = 250
+const POLL_MAX_MS  = 5000
 
 export function useVpered(): VperedApi {
   const [state, setState] = useState<VperedState | null>(null)
@@ -36,24 +40,41 @@ export function useVpered(): VperedApi {
 
   useEffect(() => {
     aliveRef.current = true
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let backoff = POLL_OK_MS
+
+    const schedule = (ms: number) => {
+      if (!aliveRef.current) return
+      timer = setTimeout(tick, ms)
+    }
+
     const tick = async () => {
+      let ok = false
       try {
-        const res = await fetch('/api/vpered/state', { cache: 'no-store' })
+        const ctrl = new AbortController()
+        const t = setTimeout(() => ctrl.abort(), 1500)
+        const res = await fetch('/api/vpered/state', { cache: 'no-store', signal: ctrl.signal })
+        clearTimeout(t)
         if (res.ok) {
           const data = await res.json()
           if (aliveRef.current) setState(data)
-        } else if (aliveRef.current) {
-          setState(s => s ? { ...s, connected: false, telemetry_fresh: false } : null)
+          ok = true
         }
       } catch {
-        if (aliveRef.current) {
-          setState(s => s ? { ...s, connected: false, telemetry_fresh: false } : null)
-        }
+        /* network/timeout/abort — handled below */
       }
+      if (!ok && aliveRef.current) {
+        setState(s => s ? { ...s, connected: false, telemetry_fresh: false } : null)
+      }
+      backoff = ok ? POLL_OK_MS : Math.min(POLL_MAX_MS, Math.max(POLL_OK_MS * 2, backoff * 2))
+      schedule(backoff)
     }
+
     tick()
-    const id = setInterval(tick, POLL_MS)
-    return () => { aliveRef.current = false; clearInterval(id) }
+    return () => {
+      aliveRef.current = false
+      if (timer) clearTimeout(timer)
+    }
   }, [])
 
   const send = async (cmd: string, arg?: number) => {
