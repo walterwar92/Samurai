@@ -17,6 +17,7 @@ import { TelemetryHistory } from '@/components/vpered/TelemetryHistory'
 import { ArmVisualizer } from '@/components/vpered/ArmVisualizer'
 import { VperedEventLog } from '@/components/vpered/VperedEventLog'
 import { PresetManager } from '@/components/vpered/PresetManager'
+import { ConnectionDiagnostics } from '@/components/vpered/ConnectionDiagnostics'
 
 // ════════════════════════════════════════════════════════════
 // SCENARIOS
@@ -125,6 +126,11 @@ export function VperedPage() {
             </Button>
           </div>
         </div>
+      </div>
+
+      {/* Diagnostics — показывается только когда нет связи */}
+      <div className="max-w-[1600px] mx-auto px-3 pt-3">
+        <ConnectionDiagnostics api={api} />
       </div>
 
       {/* Main 3-col grid */}

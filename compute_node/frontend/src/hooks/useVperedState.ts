@@ -19,6 +19,29 @@ export interface VperedState {
   telemetry_fresh: boolean
   telemetry: VperedTelemetry
   scenarios: string[]
+  // диагностика
+  last_error?: string
+  attempted_port?: string | null
+  rx_count?: number
+  age_sec?: number | null
+}
+
+export interface VperedDiag {
+  connected: boolean
+  port: string | null
+  attempted_port: string | null
+  last_error: string
+  last_attempt_ts: number
+  last_seen_ts: number
+  rx_count: number
+  available_ports: Array<{
+    device: string
+    description: string
+    hwid?: string
+    manufacturer?: string
+    vid?: number | null
+    pid?: number | null
+  }>
 }
 
 export interface VperedPresets {
@@ -36,6 +59,7 @@ export interface VperedApi {
   send: (cmd: string, arg?: number) => Promise<void>
   scenario: (name: string) => Promise<void>
   log: () => Promise<string[]>
+  diag: () => Promise<VperedDiag | null>
   getPresets: () => Promise<VperedPresets>
   savePreset: (
     name: 'park' | 'forward' | 'claw_open' | 'claw_closed',
@@ -119,6 +143,16 @@ export function useVpered(): VperedApi {
     }
   }
 
+  const diag = async (): Promise<VperedDiag | null> => {
+    try {
+      const res = await fetch('/api/vpered/diag', { cache: 'no-store' })
+      if (!res.ok) return null
+      return (await res.json()) as VperedDiag
+    } catch {
+      return null
+    }
+  }
+
   const getPresets = async (): Promise<VperedPresets> => {
     try {
       const res = await fetch('/api/vpered/presets')
@@ -145,5 +179,5 @@ export function useVpered(): VperedApi {
     })
   }
 
-  return { state, send, scenario, log, getPresets, savePreset, applyPreset }
+  return { state, send, scenario, log, diag, getPresets, savePreset, applyPreset }
 }

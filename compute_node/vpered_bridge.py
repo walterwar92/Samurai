@@ -53,6 +53,11 @@ class BridgeState:
         self.log_buffer: list[str] = []          # последние строки из Serial
         self.LOG_MAX = 200
         self.serial: serial.Serial | None = None
+        # Диагностика
+        self.last_error: str = ""
+        self.last_attempt_ts: float = 0.0
+        self.attempted_port: str | None = None
+        self.rx_count: int = 0                   # сколько строк пришло
 
     def add_log(self, line: str) -> None:
         self.log_buffer.append(line)
@@ -135,17 +140,37 @@ presets: dict[str, Any] = load_presets()
 # Serial reader thread (asyncio task)
 # ────────────────────────────────────────────────────────────
 
-async def serial_reader_task(port: str, baud: int = 9600) -> None:
+async def serial_reader_task(port_hint: str | None, baud: int = 9600) -> None:
     """Открывает Serial, читает строки, парсит телеметрию.
-    При обрыве — пытается переподключиться раз в 2 сек."""
+    При обрыве или если порт не указан — пытается переподключиться раз в 2 сек.
+    Если port_hint пустой — каждую итерацию пересканирует find_arduino_port()."""
     while True:
+        # Определяем порт на этой итерации
+        current_port = port_hint or find_arduino_port()
+        state.attempted_port = current_port
+        state.last_attempt_ts = time.time()
+
+        if not current_port:
+            ports_list = [p.device for p in serial.tools.list_ports.comports()]
+            state.last_error = (
+                "Не найден ни один COM-порт" if not ports_list
+                else f"Arduino-порт не определён автоматически. Доступны: {', '.join(ports_list)}. "
+                      f"Запусти с --vpered-port <порт>"
+            )
+            log.warning(state.last_error)
+            await asyncio.sleep(2.0)
+            continue
+
+        ser: serial.Serial | None = None
         try:
-            log.info("Открываю %s @ %d", port, baud)
-            ser = serial.Serial(port, baud, timeout=0.1)
+            log.info("Открываю %s @ %d", current_port, baud)
+            ser = serial.Serial(current_port, baud, timeout=0.1)
             state.serial = ser
             state.connected = True
-            state.port = port
-            log.info("Подключено")
+            state.port = current_port
+            state.last_error = ""
+            state.rx_count = 0
+            log.info("Подключено к %s", current_port)
             await asyncio.sleep(0.5)
             try:
                 ser.write(b"H\n")  # запрос help — заодно проверка связи
@@ -157,6 +182,7 @@ async def serial_reader_task(port: str, baud: int = 9600) -> None:
                     raw = ser.readline()
                 except Exception as e:
                     log.warning("read error: %s", e)
+                    state.last_error = f"read error: {e}"
                     break
                 if not raw:
                     await asyncio.sleep(0.005)
@@ -168,20 +194,27 @@ async def serial_reader_task(port: str, baud: int = 9600) -> None:
                 if not line:
                     continue
                 state.add_log(line)
+                state.rx_count += 1
                 if not state.parse_telemetry(line):
                     log.debug("RX: %s", line)
         except serial.SerialException as e:
-            log.warning("Serial error: %s", e)
+            log.warning("Serial error on %s: %s", current_port, e)
+            state.last_error = f"{current_port}: {e}"
+        except PermissionError as e:
+            log.warning("Permission denied %s: %s", current_port, e)
+            state.last_error = f"{current_port}: permission denied (порт занят другим приложением?)"
         except Exception as e:
             log.exception("reader exception: %s", e)
+            state.last_error = f"{type(e).__name__}: {e}"
         finally:
             state.connected = False
             state.serial = None
-            try:
-                ser.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-        log.info("Переподключение через 2 сек...")
+            if ser is not None:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+        log.info("Переподключение через 2 сек... (last error: %s)", state.last_error or "—")
         await asyncio.sleep(2.0)
 
 
@@ -278,6 +311,36 @@ async def get_state() -> dict:
         "telemetry_fresh": fresh,
         "telemetry": state.last_telemetry,
         "scenarios": list(SCENARIOS),
+        # Диагностика — чтобы UI мог показать причину «нет связи»
+        "last_error": state.last_error,
+        "attempted_port": state.attempted_port,
+        "rx_count": state.rx_count,
+        "age_sec": round(time.time() - state.last_seen_ts, 2) if state.last_seen_ts else None,
+    }
+
+
+@app.get("/api/vpered/diag")
+async def get_diag() -> dict:
+    """Полная диагностика — доступные порты, последняя ошибка, счётчики."""
+    ports = []
+    for p in serial.tools.list_ports.comports():
+        ports.append({
+            "device": p.device,
+            "description": p.description,
+            "hwid": p.hwid,
+            "manufacturer": p.manufacturer,
+            "vid": p.vid,
+            "pid": p.pid,
+        })
+    return {
+        "connected": state.connected,
+        "port": state.port,
+        "attempted_port": state.attempted_port,
+        "last_error": state.last_error,
+        "last_attempt_ts": state.last_attempt_ts,
+        "last_seen_ts": state.last_seen_ts,
+        "rx_count": state.rx_count,
+        "available_ports": ports,
     }
 
 
@@ -453,10 +516,9 @@ def find_arduino_port() -> str | None:
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    if app.state.serial_port:
-        asyncio.create_task(serial_reader_task(app.state.serial_port, app.state.baud))
-    else:
-        log.warning("no serial port — starting in disconnected mode")
+    # Всегда стартуем reader. Если порт не задан — каждую итерацию
+    # reader сам пересканирует через find_arduino_port().
+    asyncio.create_task(serial_reader_task(app.state.serial_port, app.state.baud))
 
 
 def main() -> None:
