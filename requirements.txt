@@ -40,6 +40,7 @@ paho-mqtt>=1.6.0
 fastapi>=0.110.0                # Заменяет Flask: async, меньше CPU
 uvicorn[standard]>=0.27.0       # ASGI сервер для FastAPI
 python-multipart>=0.0.9         # Для form-data в FastAPI
+pyserial>=3.5                   # Vpered USB bridge (Arduino Uno)
 # flask и flask-socketio оставлены для совместимости (simulator.py)
 flask>=3.0.0
 flask-cors

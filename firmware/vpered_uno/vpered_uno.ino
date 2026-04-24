@@ -1,59 +1,63 @@
 /*
- * Vpered — Arduino Uno + shift-register motor driver (74HC595)
+ * Vpered — Arduino Uno controller (USB Serial, 9600 baud)
  *
- * Базовое поведение: едет вперёд, держит курс по гироскопу (target = 0°),
- * останавливается перед препятствием (< STOP_DISTANCE см).
+ * Объединённая прошивка: моторы + ПИД-курсодержание + ультразвук +
+ * клешня (3 серво) + Serial-протокол управления с компьютера.
  *
- * Контроллер курса — полноценный PI+D:
- *   correction = Kp*err + Ki*∫err dt + Kd*omega_filt
- *   err     = targetTheta - theta  (target = 0 → возврат на изначальный курс)
- *   ∫err    — интегральный член с anti-windup (устраняет стационарную ошибку
- *             от асимметрии моторов; без него робот стабилизируется не на 0,
- *             а на каком-то смещении).
- *   omega   — отфильтрованная угловая скорость (LPF EMA), для демпфирования.
- *   slew    — лимит изменения PWM за цикл, плавный возврат без рывков.
- *   deadband — мёртвая зона ±0.3° чтобы не дёргаться от шума гироскопа.
+ * Главное отличие от автономной версии — НЕблокирующий main loop:
+ * команда из Serial меняет state, действия выполняются в tick'е.
  *
- * Железо:
- *   - 2 мотора (задние ведущие колёса), PWM1 (левый) / PWM2 (правый),
- *     направление через 74HC595 (DATA/SHCP/STCP) + EN
- *   - MPU-6050 (гироскоп по Z для ПИД коррекции курса)
- *   - HC-SR04 ультразвук (TRIG/ECHO)
- *   - 3 серво: CLAW, ARM, BASE
+ * === ПРОТОКОЛ (текстовые команды, разделитель \n или \r) ===
  *
- * Переключатели для отладки:
- *   - OPEN_LOOP — ПИД выключен, оба мотора равны. Для диагностики физики.
- *   - GYRO_SIGN — переворот знака гироскопа, если ось Z на корпусе перевёрнута.
+ *   F          — drive forward (с ПИД-удержанием курса)
+ *   B          — drive backward
+ *   L          — pivot left  (правое колесо вперёд, левое стоит)
+ *   R          — pivot right (левое колесо вперёд, правое стоит)
+ *   S          — stop
+ *
+ *   O          — open claw
+ *   X          — close claw
+ *   G          — grab sequence (open → arm forward → close → arm up)
+ *   P          — park arm
+ *   M<deg>     — move ARM to angle (0..180), e.g. "M45"
+ *   N<deg>     — move BASE to angle (0..180)
+ *   D          — detach all servos NOW
+ *
+ *   K          — manual kick-start
+ *   C          — calibrate gyro + control sign (~3 сек, робот на полу!)
+ *   T          — toggle telemetry stream
+ *   Z          — zero heading (target = current θ)
+ *   H          — print help
+ *
+ * === ТЕЛЕМЕТРИЯ (раз в 200 мс если включена) ===
+ *
+ *   T,θ=2.30,ω=0.5,d=120.4,L=180,R=180,m=FWD,obs=0,arm=90,claw=70
  */
 
 #include <Wire.h>
 #include <Servo.h>
 
-// ========== РЕЖИМ ОТЛАДКИ ==========
-// Раскомментируй для разомкнутого цикла (без ПИД) — диагностика
-// #define OPEN_LOOP
-
-// Знак гироскопа по оси Z. Если ПИД усиливает поворот → -1.
-const int GYRO_SIGN = +1;
-
 // ========== ПИНЫ ==========
-#define PWM1_PIN    5    // левый PWM
-#define PWM2_PIN    6    // правый PWM
-#define SHCP_PIN    2
-#define EN_PIN      7
-#define DATA_PIN    8
-#define STCP_PIN    4
-#define CLAW_PIN    11
-#define ARM_PIN     10
-#define BASE_PIN    9
-#define TRIG_PIN    12
-#define ECHO_PIN    13
+#define PWM1_PIN  5    // левый PWM
+#define PWM2_PIN  6    // правый PWM
+#define SHCP_PIN  2
+#define EN_PIN    7
+#define DATA_PIN  8
+#define STCP_PIN  4
+#define CLAW_PIN  11
+#define ARM_PIN   10
+#define BASE_PIN  9
+#define TRIG_PIN  12
+#define ECHO_PIN  13
 
 // ========== НАПРАВЛЕНИЯ (биты 74HC595) ==========
-const uint8_t DIR_FORWARD = 92;   // 0b01011100
-const uint8_t DIR_STOP    = 0;
+const uint8_t DIR_FORWARD  = 92;   // 0b01011100
+const uint8_t DIR_STOP     = 0;
+// Backward — у нас нет рабочего значения от пользователя.
+// Используем reverse через изменение PWM нельзя, поэтому B = pivot turn-around.
+// Можно перепрошить если найдёт корректные биты.
 
-// ========== ПАРАМЕТРЫ ДВИЖЕНИЯ ==========
+// ========== ПАРАМЕТРЫ ==========
 const float STOP_DISTANCE_CM = 10.0f;
 const int   BASE_PWM         = 180;
 const int   MIN_PWM          = 70;
@@ -61,155 +65,141 @@ const int   MAX_PWM          = 255;
 const int   KICK_PWM         = 255;
 const int   KICK_MS          = 150;
 
-// Механическая компенсация (1.0 = без компенсации). С PI это чаще не нужно —
-// интеграл сам поднимет постоянное смещение, чтобы устранить уход.
 const float LEFT_TRIM  = 1.00f;
 const float RIGHT_TRIM = 1.00f;
 
-// ========== ПИД-КОНТРОЛЛЕР КУРСА (PI + D на угловой скорости) ==========
-// Цель — целевой курс (0 = идти прямо «как стартанули»).
-const float TARGET_THETA_DEG = 0.0f;
-
-// Коэффициенты. Тюнинг (в этом порядке):
-//   1) Поставь Ki=0, Kd=0. Подбирай Kp пока робот не начнёт чуть-чуть
-//      колебаться около 0. Возьми ~70% от этого Kp.
-//   2) Подними Kd пока колебания не исчезнут (обычно Kd ≈ 0.2..0.5 от Kp).
-//   3) Если устойчивое смещение (стабильно едет под углом) — поднимай Ki
-//      малыми шагами. Слишком большой Ki → раскачка с большим периодом.
-float Kp = 2.2f;     // на градус ошибки → единиц PWM (более агрессивно)
-float Ki = 0.12f;    // на (градус·с) накопленной ошибки
-float Kd = 0.40f;    // на (градус/с) угловой скорости
-
-// Anti-windup: ограничение интеграла чтобы он не накапливался бесконечно при
-// насыщении исполнительных механизмов.
-const float INTEGRAL_MAX_DEG_S = 60.0f;
-
-// Deadband: ошибки меньше этого не интегрируются и не корректируются —
-// чтобы шум гироскопа не дёргал моторы.
+// PI+D
+float Kp = 2.2f;
+float Ki = 0.12f;
+float Kd = 0.40f;
+const float INTEGRAL_MAX_DEG_S   = 60.0f;
 const float HEADING_DEADBAND_DEG = 0.3f;
+const float OMEGA_LPF_ALPHA      = 0.35f;
+const int   SLEW_MAX_PWM         = 50;
+const float CORRECTION_CLAMP     = 100.0f;
+const float AGGRESSIVE_DEG       = 12.0f;
+const float AGGRESSIVE_BOOST     = 2.5f;
 
-// LPF для угловой скорости (EMA). 0 < α ≤ 1; меньше = больше сглаживания.
-const float OMEGA_LPF_ALPHA = 0.35f;
-
-// Slew rate: максимальное изменение PWM за один цикл, единиц.
-// Плавный возврат без рывков. 50 — компромисс между плавностью и
-// скоростью реакции.
-const int SLEW_MAX_PWM = 50;
-
-// Clamp итоговой коррекции — защита от выбросов.
-const float CORRECTION_CLAMP = 100.0f;
-
-// Агрессивный режим: при |err| > AGGRESSIVE_DEG включается ускоренный
-// возврат — Kp умножается на BOOST. Так робот возвращается к курсу
-// БЛИЖАЙШИМ путём, а не «дрифтит» долго при сильных отклонениях.
-const float AGGRESSIVE_DEG = 12.0f;
-const float AGGRESSIVE_BOOST = 2.5f;
-
-// Watchdog: если |err| > 30° непрерывно дольше WATCHDOG_MS → STOP.
-// Знак ПИД скорее всего перевёрнут.
-const float WATCHDOG_ERR_DEG = 30.0f;
-const unsigned long WATCHDOG_MS = 1500;
-
-// Знак контроля. Авто-определяется на старте — НЕ const.
-// +1 = стандартная схема (correction>0 → правый быстрее → поворот в −θ)
-// −1 = инвертированная (нестандартное шасси или GYRO_SIGN не тот)
+const int GYRO_SIGN = +1;
 int controlSign = +1;
 
-// ========== ГИРОСКОП MPU-6050 ==========
-#define MPU6050_ADDR 0x68
-float theta         = 0.0f;    // угол (рад)
-float theta_deg     = 0.0f;    // угол (град)
-float omega         = 0.0f;    // угловая скорость (рад/с)
-float omega_deg     = 0.0f;    // угловая скорость (град/с)
-float omega_filt    = 0.0f;    // отфильтрованная (для D-члена)
-float dt_sec        = 0.0f;    // dt последнего цикла updateGyro
-unsigned long lastTime = 0;
+// ========== СОСТОЯНИЕ ==========
+enum RobotMode {
+    MODE_IDLE,
+    MODE_FWD,
+    MODE_BWD,
+    MODE_LEFT,
+    MODE_RIGHT
+};
+RobotMode mode = MODE_IDLE;
+float targetTheta = 0.0f;
 
-// Состояние ПИД
-float pidIntegral = 0.0f;
-int prevLeftCmd  = 0;
-int prevRightCmd = 0;
+// ========== СЕРВО ПРЕСЕТЫ ==========
+int BASE_PARK    = 90;
+int ARM_PARK     = 90;
+int CLAW_PARK    = 135;
+int BASE_FORWARD = 90;
+int ARM_FORWARD  = 40;
+int CLAW_OPEN    = 70;
+int CLAW_CLOSED  = 150;
+
+const int SERVO_SETTLE_MS = 400;
+const int GRAB_HOLD_MS    = 300;
+
+const unsigned long DETACH_IDLE_MS = 600;
+bool autoDetach = true;
 
 Servo clawServo, armServo, baseServo;
+int baseAngle = 90, armAngle = 90, clawAngle = 135;
+unsigned long lastBaseMs = 0, lastArmMs = 0, lastClawMs = 0;
 
-// ========== УПРАВЛЕНИЕ МОТОРАМИ ==========
+// ========== ГИРОСКОП ==========
+#define MPU6050_ADDR 0x68
+float theta = 0, theta_deg = 0, omega = 0, omega_deg = 0, omega_filt = 0;
+float dt_sec = 0;
+unsigned long lastTime = 0;
+float gyroBiasZ = 0;
+
+float pidIntegral = 0;
+int prevLeftCmd = 0, prevRightCmd = 0;
+unsigned long watchdogSince = 0;
+
+// ========== ТЕЛЕМЕТРИЯ ==========
+bool telemetryEnabled = true;
+float lastDistance = 999.0f;
+bool obstacleStop = false;
+
+// ============================================================
+// MOTOR
+// ============================================================
 static inline int applyTrim(int speed, float trim) {
     if (speed <= 0) return 0;
     int v = (int)(speed * trim + 0.5f);
     return constrain(v, MIN_PWM, MAX_PWM);
 }
 
-void motorRaw(uint8_t dir, int pwmLeft, int pwmRight) {
+void motorRaw(uint8_t dir, int pwmL, int pwmR) {
     digitalWrite(EN_PIN, LOW);
-    analogWrite(PWM1_PIN, constrain(pwmLeft,  0, 255));
-    analogWrite(PWM2_PIN, constrain(pwmRight, 0, 255));
+    analogWrite(PWM1_PIN, constrain(pwmL, 0, 255));
+    analogWrite(PWM2_PIN, constrain(pwmR, 0, 255));
     digitalWrite(STCP_PIN, LOW);
     shiftOut(DATA_PIN, SHCP_PIN, MSBFIRST, dir);
     digitalWrite(STCP_PIN, HIGH);
     delayMicroseconds(100);
 }
 
-void motorDrive(uint8_t dir, int speedLeft, int speedRight) {
-    motorRaw(dir, applyTrim(speedLeft, LEFT_TRIM), applyTrim(speedRight, RIGHT_TRIM));
+void motorDrive(uint8_t dir, int sL, int sR) {
+    motorRaw(dir, applyTrim(sL, LEFT_TRIM), applyTrim(sR, RIGHT_TRIM));
 }
 
 void motorStop() {
     motorRaw(DIR_STOP, 0, 0);
-    delay(50);
     digitalWrite(STCP_PIN, LOW);
     shiftOut(DATA_PIN, SHCP_PIN, MSBFIRST, 0);
     digitalWrite(STCP_PIN, HIGH);
+    prevLeftCmd = 0;
+    prevRightCmd = 0;
 }
 
 void kickStart() {
-    Serial.println("Kick-start");
     motorRaw(DIR_FORWARD, KICK_PWM, KICK_PWM);
     delay(KICK_MS);
-    for (int pwm = KICK_PWM; pwm >= BASE_PWM; pwm -= 10) {
-        motorDrive(DIR_FORWARD, pwm, pwm);
+    for (int p = KICK_PWM; p >= BASE_PWM; p -= 10) {
+        motorDrive(DIR_FORWARD, p, p);
         delay(15);
     }
     prevLeftCmd  = BASE_PWM;
     prevRightCmd = BASE_PWM;
 }
 
-// ========== УЛЬТРАЗВУК ==========
+// ============================================================
+// ULTRASONIC
+// ============================================================
 float readDistanceRaw() {
+    digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
-    delayMicroseconds(2);
-    digitalWrite(TRIG_PIN, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(TRIG_PIN, LOW);
-    long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-    if (duration == 0) return 999.0f;
-    return duration * 0.0343f / 2.0f;
+    long d = pulseIn(ECHO_PIN, HIGH, 25000);
+    if (d == 0) return 999.0f;
+    return d * 0.0343f / 2.0f;
 }
 
-float getDistance() {
-    float a = readDistanceRaw(); delay(6);
-    float b = readDistanceRaw(); delay(6);
-    float c = readDistanceRaw();
-    if (a > b) { float t = a; a = b; b = t; }
-    if (b > c) { float t = b; b = c; c = t; }
-    if (a > b) { float t = a; a = b; b = t; }
-    return b;
-}
-
-// ========== ГИРОСКОП ==========
+// ============================================================
+// GYRO
+// ============================================================
 void readGyroRaw(int16_t *gx, int16_t *gy, int16_t *gz) {
     Wire.beginTransmission((uint8_t)MPU6050_ADDR);
     Wire.write((uint8_t)0x3B);
     Wire.endTransmission(false);
     Wire.requestFrom((uint8_t)MPU6050_ADDR, (uint8_t)14, (uint8_t)true);
-    for (int i = 0; i < 4; i++) { (void)(Wire.read() << 8 | Wire.read()); }
+    for (int i = 0; i < 4; i++) (void)(Wire.read() << 8 | Wire.read());
     *gx = Wire.read() << 8 | Wire.read();
     *gy = Wire.read() << 8 | Wire.read();
     *gz = Wire.read() << 8 | Wire.read();
 }
 
-float gyroBiasZ = 0.0f;
-
 void calibrateGyro() {
+    Serial.println(F("Calibrating gyro..."));
     const int N = 300;
     long sum = 0;
     int16_t gx, gy, gz;
@@ -219,102 +209,263 @@ void calibrateGyro() {
         delay(3);
     }
     gyroBiasZ = (float)sum / N;
-    Serial.print("Gyro bias Z: ");
-    Serial.println(gyroBiasZ);
+    Serial.print(F("bias=")); Serial.println(gyroBiasZ);
 }
 
 void updateGyro() {
     int16_t gx, gy, gz;
     readGyroRaw(&gx, &gy, &gz);
-    omega_deg = GYRO_SIGN * (gz - gyroBiasZ) / 131.0f;   // ±250°/s, 131 LSB/(°/s)
+    omega_deg = GYRO_SIGN * (gz - gyroBiasZ) / 131.0f;
     omega = omega_deg * PI / 180.0f;
-
     unsigned long now = micros();
     float dt = (now - lastTime) / 1000000.0f;
-    if (dt > 0.1f) dt = 0.0f;     // защита от мусорного первого dt
+    if (dt > 0.1f) dt = 0.0f;
     lastTime = now;
     dt_sec = dt;
-
     theta += omega * dt;
     theta_deg = theta * 180.0f / PI;
-
-    // EMA фильтр угловой скорости (для D-члена)
     omega_filt = OMEGA_LPF_ALPHA * omega_deg + (1.0f - OMEGA_LPF_ALPHA) * omega_filt;
 }
 
 void resetGyroIntegral() {
-    theta = 0.0f;
-    pidIntegral = 0.0f;
-    omega_filt = 0.0f;
+    theta = 0;
+    pidIntegral = 0;
+    omega_filt = 0;
     lastTime = micros();
+    targetTheta = 0;
+    watchdogSince = 0;
 }
 
-// ========== АВТО-КАЛИБРОВКА ЗНАКА КОНТРОЛЯ ==========
-// Подаёт на 250 мс асимметричную команду «правый быстрее на 60 PWM»
-// и смотрит, в какую сторону по theta ушёл робот.
-//
-// Стандартная схема (controlSign=+1):
-//   correction>0 → leftCmd = BASE-corr, rightCmd = BASE+corr → правый быстрее
-//   → робот поворачивает физически в одну сторону → ИЗМЕРЕНИЕ θ должно
-//   уменьшаться (drift < 0).
-//
-// Если drift положительный — измерение θ растёт когда робот делает физический
-// «правый-быстрее»-поворот. Тогда при θ>0 наша коррекция correction>0 даст
-// тот же физический поворот → θ растёт ещё → робот в кругу.
-// Решение: инвертируем controlSign — тогда при θ>0 correction<0,
-// leftCmd>BASE, rightCmd<BASE → левый быстрее → робот в обратную сторону.
 void autoCalibrateControlSign() {
-    Serial.println("Auto-calibrating control polarity...");
-    delay(120);                      // дать моторам стабилизироваться после kickStart
-
-    // Чистый сброс перед измерением
-    theta = 0.0f;
+    Serial.println(F("Auto-cal sign..."));
+    delay(120);
+    theta = 0;
     lastTime = micros();
     updateGyro();
     float thetaBefore = theta_deg;
-
-    // Тестовая асимметрия: «правый быстрее» (как при correction=+60)
     motorRaw(DIR_FORWARD, BASE_PWM - 60, BASE_PWM + 60);
-
     unsigned long t0 = millis();
-    while (millis() - t0 < 250) {
-        updateGyro();
-        delay(10);
-    }
-    // Снять асимметрию, дать гироскопу осесть
+    while (millis() - t0 < 250) { updateGyro(); delay(10); }
     motorRaw(DIR_FORWARD, BASE_PWM, BASE_PWM);
     delay(60);
     updateGyro();
     float drift = theta_deg - thetaBefore;
-
-    Serial.print("  drift=");  Serial.print(drift, 2);  Serial.print("° → ");
-    if (drift > 1.5f) {
-        controlSign = -1;
-        Serial.println("INVERTED (controlSign=-1)");
-    } else if (drift < -1.5f) {
-        controlSign = +1;
-        Serial.println("STANDARD (controlSign=+1)");
-    } else {
-        // Слишком слабая реакция — оставляем дефолт.
-        Serial.println("WEAK response, keeping +1");
-    }
-
-    // Полный reset перед основным циклом — чтобы накопленная за тест θ
-    // не сбила ПИД.
+    Serial.print(F("drift=")); Serial.print(drift); Serial.print(F(" sign="));
+    if (drift > 1.5f)       { controlSign = -1; Serial.println(-1); }
+    else if (drift < -1.5f) { controlSign = +1; Serial.println(+1); }
+    else                    { Serial.println(F("WEAK")); }
     resetGyroIntegral();
     prevLeftCmd  = BASE_PWM;
     prevRightCmd = BASE_PWM;
 }
 
-// ========== СЕРВО ==========
-void armSafePose() {
-    clawServo.write(135);
-    armServo.write(90);
-    baseServo.write(90);
-    delay(500);
+// ============================================================
+// SERVOS
+// ============================================================
+void ensureBase() { if (!baseServo.attached()) baseServo.attach(BASE_PIN); lastBaseMs = millis(); }
+void ensureArm()  { if (!armServo.attached())  armServo.attach(ARM_PIN);   lastArmMs  = millis(); }
+void ensureClaw() { if (!clawServo.attached()) clawServo.attach(CLAW_PIN); lastClawMs = millis(); }
+
+void checkAutoDetach() {
+    if (!autoDetach) return;
+    unsigned long now = millis();
+    if (baseServo.attached() && now - lastBaseMs > DETACH_IDLE_MS) baseServo.detach();
+    if (armServo.attached()  && now - lastArmMs  > DETACH_IDLE_MS) armServo.detach();
+    if (clawServo.attached() && now - lastClawMs > DETACH_IDLE_MS) clawServo.detach();
 }
 
-// ========== SETUP ==========
+void smoothServo(Servo &s, int &cur, int tgt) {
+    tgt = constrain(tgt, 0, 180);
+    int step = (tgt > cur) ? 1 : -1;
+    while (cur != tgt) { cur += step; s.write(cur); delay(8); }
+}
+
+void moveBase(int a) { ensureBase(); smoothServo(baseServo, baseAngle, a); lastBaseMs = millis(); }
+void moveArm(int a)  { ensureArm();  smoothServo(armServo,  armAngle,  a); lastArmMs  = millis(); }
+void moveClaw(int a) { ensureClaw(); smoothServo(clawServo, clawAngle, a); lastClawMs = millis(); }
+
+void detachAll() {
+    baseServo.detach(); armServo.detach(); clawServo.detach();
+}
+
+void doGrab() {
+    Serial.println(F("GRAB"));
+    moveClaw(CLAW_OPEN);   delay(SERVO_SETTLE_MS);
+    moveBase(BASE_FORWARD);
+    moveArm(ARM_FORWARD);  delay(SERVO_SETTLE_MS);
+    delay(GRAB_HOLD_MS);
+    moveClaw(CLAW_CLOSED); delay(SERVO_SETTLE_MS);
+    moveArm(ARM_PARK);     delay(SERVO_SETTLE_MS);
+    Serial.println(F("OK"));
+}
+
+void doPark() {
+    moveClaw(CLAW_PARK);
+    moveArm(ARM_PARK);
+    moveBase(BASE_PARK);
+}
+
+// ============================================================
+// MOTION TICK
+// ============================================================
+void tickForward() {
+    updateGyro();
+    float err = theta_deg - targetTheta;
+    float errEff = (err > -HEADING_DEADBAND_DEG && err < HEADING_DEADBAND_DEG) ? 0.0f : err;
+    pidIntegral += errEff * dt_sec;
+    if (pidIntegral >  INTEGRAL_MAX_DEG_S) pidIntegral =  INTEGRAL_MAX_DEG_S;
+    if (pidIntegral < -INTEGRAL_MAX_DEG_S) pidIntegral = -INTEGRAL_MAX_DEG_S;
+
+    float kpEff = (err > AGGRESSIVE_DEG || err < -AGGRESSIVE_DEG) ? Kp * AGGRESSIVE_BOOST : Kp;
+    float corr = controlSign * (kpEff * errEff + Ki * pidIntegral + Kd * omega_filt);
+    if (corr >  CORRECTION_CLAMP) corr =  CORRECTION_CLAMP;
+    if (corr < -CORRECTION_CLAMP) corr = -CORRECTION_CLAMP;
+
+    int leftCmd  = BASE_PWM - (int)corr;
+    int rightCmd = BASE_PWM + (int)corr;
+
+    int dL = leftCmd - prevLeftCmd;
+    if (dL >  SLEW_MAX_PWM) leftCmd = prevLeftCmd + SLEW_MAX_PWM;
+    if (dL < -SLEW_MAX_PWM) leftCmd = prevLeftCmd - SLEW_MAX_PWM;
+    int dR = rightCmd - prevRightCmd;
+    if (dR >  SLEW_MAX_PWM) rightCmd = prevRightCmd + SLEW_MAX_PWM;
+    if (dR < -SLEW_MAX_PWM) rightCmd = prevRightCmd - SLEW_MAX_PWM;
+    prevLeftCmd  = leftCmd;
+    prevRightCmd = rightCmd;
+
+    motorDrive(DIR_FORWARD, leftCmd, rightCmd);
+}
+
+void tickPivot(bool leftDir) {
+    // Левый поворот: правый колесо вперёд, левое стоит → робот разворачивается влево
+    // (физическая полярность зависит от шасси, при необходимости — поменяй).
+    updateGyro();
+    if (leftDir) {
+        motorDrive(DIR_FORWARD, 0, BASE_PWM);
+    } else {
+        motorDrive(DIR_FORWARD, BASE_PWM, 0);
+    }
+}
+
+// ============================================================
+// SERIAL HANDLER
+// ============================================================
+char cmdBuf[24];
+uint8_t cmdLen = 0;
+
+void enterMode(RobotMode m) {
+    if (m == mode) return;
+    mode = m;
+    if (m == MODE_FWD) {
+        // полноценный старт с kick-start и сбросом интегралов
+        kickStart();
+        resetGyroIntegral();
+    } else if (m == MODE_LEFT || m == MODE_RIGHT) {
+        // мягкий старт без kick (поворот не нужен kick)
+        prevLeftCmd = prevRightCmd = 0;
+    } else if (m == MODE_IDLE) {
+        motorStop();
+    }
+}
+
+void printHelp() {
+    Serial.println(F("=== VPERED CMDS ==="));
+    Serial.println(F("F B L R S    : drive / stop"));
+    Serial.println(F("O X G P      : open / close / grab / park"));
+    Serial.println(F("M<deg>       : ARM angle"));
+    Serial.println(F("N<deg>       : BASE angle"));
+    Serial.println(F("D            : detach servos"));
+    Serial.println(F("K C T Z H    : kick / cal / tlm / zero / help"));
+}
+
+void executeCommand() {
+    if (cmdLen == 0) return;
+    char c = cmdBuf[0];
+    int arg = (cmdLen > 1) ? atoi(cmdBuf + 1) : 0;
+
+    switch (c) {
+        case 'F': enterMode(MODE_FWD);   Serial.println(F("FWD"));  break;
+        case 'B': enterMode(MODE_BWD);   Serial.println(F("BWD (no rev hw, idle)")); enterMode(MODE_IDLE); break;
+        case 'L': enterMode(MODE_LEFT);  Serial.println(F("LEFT")); break;
+        case 'R': enterMode(MODE_RIGHT); Serial.println(F("RIGHT")); break;
+        case 'S': enterMode(MODE_IDLE);  Serial.println(F("STOP")); break;
+        case 'O': moveClaw(CLAW_OPEN);   Serial.println(F("OPEN")); break;
+        case 'X': moveClaw(CLAW_CLOSED); Serial.println(F("CLOSE")); break;
+        case 'G': enterMode(MODE_IDLE); doGrab(); break;
+        case 'P': enterMode(MODE_IDLE); doPark(); Serial.println(F("PARK")); break;
+        case 'M':
+            if (arg >= 0 && arg <= 180) { moveArm(arg);  Serial.print(F("ARM=")); Serial.println(arg); }
+            break;
+        case 'N':
+            if (arg >= 0 && arg <= 180) { moveBase(arg); Serial.print(F("BASE=")); Serial.println(arg); }
+            break;
+        case 'D': detachAll(); Serial.println(F("DETACH")); break;
+        case 'K': enterMode(MODE_IDLE); kickStart(); enterMode(MODE_IDLE); Serial.println(F("KICK")); break;
+        case 'C':
+            enterMode(MODE_IDLE);
+            calibrateGyro();
+            kickStart();
+            autoCalibrateControlSign();
+            enterMode(MODE_IDLE);
+            break;
+        case 'T':
+            telemetryEnabled = !telemetryEnabled;
+            Serial.print(F("TLM=")); Serial.println(telemetryEnabled ? F("ON") : F("OFF"));
+            break;
+        case 'Z':
+            targetTheta = theta_deg;
+            pidIntegral = 0;
+            Serial.print(F("ZERO θ=")); Serial.println(targetTheta);
+            break;
+        case 'H': printHelp(); break;
+        default:
+            Serial.print(F("?")); Serial.println(c);
+    }
+    cmdLen = 0;
+}
+
+void handleSerial() {
+    while (Serial.available()) {
+        char c = Serial.read();
+        if (c == '\n' || c == '\r') {
+            cmdBuf[cmdLen] = '\0';
+            executeCommand();
+        } else if (cmdLen < sizeof(cmdBuf) - 1) {
+            cmdBuf[cmdLen++] = c;
+        }
+    }
+}
+
+// ============================================================
+// TELEMETRY
+// ============================================================
+const __FlashStringHelper* modeName() {
+    switch (mode) {
+        case MODE_IDLE:  return F("IDLE");
+        case MODE_FWD:   return F("FWD");
+        case MODE_BWD:   return F("BWD");
+        case MODE_LEFT:  return F("LEFT");
+        case MODE_RIGHT: return F("RIGHT");
+    }
+    return F("?");
+}
+
+void sendTelemetry() {
+    Serial.print(F("T,th=")); Serial.print(theta_deg, 2);
+    Serial.print(F(",om="));  Serial.print(omega_filt, 1);
+    Serial.print(F(",d="));   Serial.print(lastDistance, 1);
+    Serial.print(F(",L="));   Serial.print(prevLeftCmd);
+    Serial.print(F(",R="));   Serial.print(prevRightCmd);
+    Serial.print(F(",m="));   Serial.print(modeName());
+    Serial.print(F(",ob="));  Serial.print(obstacleStop ? 1 : 0);
+    Serial.print(F(",a="));   Serial.print(armAngle);
+    Serial.print(F(",b="));   Serial.print(baseAngle);
+    Serial.print(F(",c="));   Serial.println(clawAngle);
+}
+
+// ============================================================
+// SETUP / LOOP
+// ============================================================
 void setup() {
     Serial.begin(9600);
 
@@ -328,154 +479,75 @@ void setup() {
     pinMode(ECHO_PIN, INPUT);
     motorStop();
 
-    clawServo.attach(CLAW_PIN);
-    armServo.attach(ARM_PIN);
-    baseServo.attach(BASE_PIN);
-    armSafePose();
+    // park position (без долгого attach — серво будут attach по требованию)
+    baseServo.attach(BASE_PIN); baseServo.write(BASE_PARK); baseAngle = BASE_PARK;
+    armServo.attach(ARM_PIN);   armServo.write(ARM_PARK);   armAngle  = ARM_PARK;
+    clawServo.attach(CLAW_PIN); clawServo.write(CLAW_PARK); clawAngle = CLAW_PARK;
+    delay(500);
 
     Wire.begin();
     Wire.beginTransmission((uint8_t)MPU6050_ADDR);
-    Wire.write((uint8_t)0x6B);   // PWR_MGMT_1
-    Wire.write((uint8_t)0x00);   // wake up
+    Wire.write((uint8_t)0x6B);
+    Wire.write((uint8_t)0x00);
     Wire.endTransmission();
     delay(100);
 
-    Serial.println("=== Vpered Uno ===");
-#ifdef OPEN_LOOP
-    Serial.println("MODE: OPEN_LOOP (no gyro correction)");
-#else
-    Serial.println("MODE: PI+D (closed-loop heading hold)");
-    Serial.print("GYRO_SIGN="); Serial.println(GYRO_SIGN);
-    Serial.print("Kp="); Serial.print(Kp); Serial.print(" Ki="); Serial.print(Ki); Serial.print(" Kd="); Serial.println(Kd);
-#endif
-    Serial.println("Calibrating gyro (hold still)...");
+    Serial.println(F("=== VPERED v2 ==="));
     calibrateGyro();
+    Serial.println(F("READY (send 'H' for help)"));
 
-    Serial.println("Ready. Going forward in 1s...");
-    delay(1000);
+    unsigned long now = millis();
+    lastBaseMs = lastArmMs = lastClawMs = now;
 }
 
-// ========== MAIN ==========
 void loop() {
-    // Kick-start раскручивает моторы; только ПОСЛЕ него сбрасываем интегралы.
-    kickStart();
-    resetGyroIntegral();
+    handleSerial();
+    checkAutoDetach();
 
-#ifndef OPEN_LOOP
-    // Авто-определение знака контроля — устраняет проблему «робот едет
-    // по кругу из-за перевёрнутой ориентации MPU или нестандартного шасси».
-    autoCalibrateControlSign();
-#endif
+    // Active state tick (~50 Hz)
+    static unsigned long lastTick = 0;
+    unsigned long now = millis();
+    if (now - lastTick >= 20) {
+        lastTick = now;
+        if (mode == MODE_FWD)   tickForward();
+        else if (mode == MODE_LEFT)  tickPivot(true);
+        else if (mode == MODE_RIGHT) tickPivot(false);
+    }
 
-    unsigned long loopStart = millis();
-    unsigned long watchdogSince = 0;
-
-    while (true) {
-        float obstacle = getDistance();
-        updateGyro();
-
-#ifdef OPEN_LOOP
-        int leftCmd  = BASE_PWM;
-        int rightCmd = BASE_PWM;
-#else
-        // === PI+D heading hold ===
-        // Ошибка курса (+ значит робот «ушёл» вправо относительно стартового).
-        // target=0 → робот всегда стремится к стартовому курсу.
-        float err = theta_deg - TARGET_THETA_DEG;
-
-        // Deadband: малые ошибки игнорируем (не интегрируем, не корректируем).
-        // Даёт «спокойствие» на прямой и убирает дребезг моторов от шума.
-        float errEffective = err;
-        if (err > -HEADING_DEADBAND_DEG && err < HEADING_DEADBAND_DEG) {
-            errEffective = 0.0f;
+    // Ультразвук — раз в 100 мс (медленный pulseIn до 25 мс)
+    static unsigned long lastSonar = 0;
+    if (now - lastSonar >= 100) {
+        lastSonar = now;
+        lastDistance = readDistanceRaw();
+        // Авто-стоп при езде вперёд
+        if (mode == MODE_FWD && lastDistance < STOP_DISTANCE_CM) {
+            obstacleStop = true;
+            enterMode(MODE_IDLE);
+            Serial.print(F("OBS stop d=")); Serial.println(lastDistance, 1);
+        } else if (lastDistance > STOP_DISTANCE_CM + 5.0f) {
+            obstacleStop = false;
         }
+    }
 
-        // Интеграл — устраняет стационарную ошибку от любой асимметрии моторов.
-        // Только когда есть РЕАЛЬНАЯ ошибка (за пределами deadband).
-        pidIntegral += errEffective * dt_sec;
-        if (pidIntegral >  INTEGRAL_MAX_DEG_S) pidIntegral =  INTEGRAL_MAX_DEG_S;
-        if (pidIntegral < -INTEGRAL_MAX_DEG_S) pidIntegral = -INTEGRAL_MAX_DEG_S;
-
-        // Kp_eff: при больших отклонениях усиливаем P-член → быстрый
-        // возврат «ближайшим путём» (робот активно докручивается обратно,
-        // а не дрейфит по широкой дуге).
-        float kpEff = Kp;
-        if (err > AGGRESSIVE_DEG || err < -AGGRESSIVE_DEG) {
-            kpEff = Kp * AGGRESSIVE_BOOST;
-        }
-
-        // Полная коррекция (PI+D), затем умножение на controlSign
-        // (определён автокалибровкой в начале loop).
-        float correction = controlSign * (kpEff * errEffective + Ki * pidIntegral + Kd * omega_filt);
-        if (correction >  CORRECTION_CLAMP) correction =  CORRECTION_CLAMP;
-        if (correction < -CORRECTION_CLAMP) correction = -CORRECTION_CLAMP;
-
-        // err>0 → correction>0 → leftCmd уменьшается, rightCmd
-        // увеличивается → правый быстрее → робот поворачивает в сторону
-        // уменьшения theta. ControlSign уже учтён в correction выше.
-        int leftCmd  = BASE_PWM - (int)correction;
-        int rightCmd = BASE_PWM + (int)correction;
-
-        // Watchdog: если ошибка гигантская и не уменьшается полторы секунды
-        // → знак точно перевёрнут, надо остановиться.
-        if (err > WATCHDOG_ERR_DEG || err < -WATCHDOG_ERR_DEG) {
-            if (watchdogSince == 0) watchdogSince = millis();
-            if (millis() - watchdogSince > WATCHDOG_MS) {
-                motorStop();
-                Serial.print("STOP — watchdog: |err|>");
-                Serial.print(WATCHDOG_ERR_DEG, 0);
-                Serial.print("° for ");
-                Serial.print(WATCHDOG_MS);
-                Serial.println("ms. Check GYRO_SIGN / wiring.");
-                break;
+    // Watchdog: курс уехал безнадёжно при FWD → STOP
+    if (mode == MODE_FWD) {
+        float err = theta_deg - targetTheta;
+        if (err > 30.0f || err < -30.0f) {
+            if (watchdogSince == 0) watchdogSince = now;
+            if (now - watchdogSince > 1500) {
+                enterMode(MODE_IDLE);
+                Serial.println(F("WATCHDOG stop"));
+                watchdogSince = 0;
             }
         } else {
             watchdogSince = 0;
         }
-
-        // Slew-rate limit: плавный возврат, без рывков (защита моторов и
-        // драйвера, плюс уменьшает «качание» во время больших корректировок).
-        int dL = leftCmd - prevLeftCmd;
-        if (dL >  SLEW_MAX_PWM) leftCmd = prevLeftCmd + SLEW_MAX_PWM;
-        if (dL < -SLEW_MAX_PWM) leftCmd = prevLeftCmd - SLEW_MAX_PWM;
-        int dR = rightCmd - prevRightCmd;
-        if (dR >  SLEW_MAX_PWM) rightCmd = prevRightCmd + SLEW_MAX_PWM;
-        if (dR < -SLEW_MAX_PWM) rightCmd = prevRightCmd - SLEW_MAX_PWM;
-        prevLeftCmd  = leftCmd;
-        prevRightCmd = rightCmd;
-#endif
-
-        motorDrive(DIR_FORWARD, leftCmd, rightCmd);
-
-        // Лог ~10 Гц
-        static unsigned long lastLog = 0;
-        if (millis() - lastLog > 100) {
-            lastLog = millis();
-            Serial.print("t=");     Serial.print((millis() - loopStart) / 1000.0f, 1);
-            Serial.print("s θ=");   Serial.print(theta_deg, 2);
-            Serial.print(" ω=");    Serial.print(omega_filt, 1);
-#ifndef OPEN_LOOP
-            Serial.print(" I=");    Serial.print(pidIntegral, 2);
-            Serial.print(" s=");    Serial.print(controlSign);
-            if (theta_deg > AGGRESSIVE_DEG || theta_deg < -AGGRESSIVE_DEG) {
-                Serial.print("[!]");
-            }
-#endif
-            Serial.print(" L=");    Serial.print(leftCmd);
-            Serial.print(" R=");    Serial.print(rightCmd);
-            Serial.print(" d=");    Serial.println(obstacle, 1);
-        }
-
-        if (obstacle < STOP_DISTANCE_CM) {
-            motorStop();
-            Serial.print("STOP — obstacle at ");
-            Serial.print(obstacle, 1);
-            Serial.println(" cm");
-            break;
-        }
-
-        delay(20);
     }
 
-    while (true) { delay(1000); }
+    // Telemetry (~5 Hz)
+    static unsigned long lastTelem = 0;
+    if (telemetryEnabled && now - lastTelem >= 200) {
+        lastTelem = now;
+        sendTelemetry();
+    }
 }
