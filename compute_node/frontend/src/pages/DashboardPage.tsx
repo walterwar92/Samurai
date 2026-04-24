@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useRobotState } from '@/hooks/useRobotState'
 import { useSensorHistory } from '@/hooks/useSensorHistory'
 import { Header } from '@/components/layout/Header'
+import { SamuraiStatusBanner } from '@/components/layout/SamuraiStatusBanner'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { MapCanvas } from '@/components/map/MapCanvas'
 import { FsmBadge } from '@/components/fsm/FsmBadge'
@@ -35,6 +36,7 @@ export function DashboardPage() {
   return (
     <div className="min-h-screen">
       <Header onDebugOpen={() => setDebugOpen(true)} simTime={state?.sim_time} />
+      <SamuraiStatusBanner state={state} />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_340px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">
         {/* Col 1, Row 1: Camera */}

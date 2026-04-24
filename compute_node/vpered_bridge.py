@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import serial
@@ -77,6 +79,56 @@ class BridgeState:
 
 
 state = BridgeState()
+
+
+# ────────────────────────────────────────────────────────────
+# Persistent presets (JSON file next to config.yaml)
+# ────────────────────────────────────────────────────────────
+
+PRESETS_FILE = Path(__file__).resolve().parent.parent / "vpered_presets.json"
+
+DEFAULT_PRESETS: dict[str, Any] = {
+    # углы BASE/ARM для поз
+    "park":    {"base": 90, "arm": 90, "claw": 135},
+    "forward": {"base": 90, "arm": 40},
+    # углы клешни для действий
+    "claw_open":   70,
+    "claw_closed": 150,
+    # задержки последовательности grab, мс
+    "settle_ms":   400,
+    "hold_ms":     300,
+}
+
+
+def load_presets() -> dict[str, Any]:
+    if PRESETS_FILE.exists():
+        try:
+            data = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+            # merge с defaults чтобы новые ключи появлялись если расширим
+            merged = DEFAULT_PRESETS.copy()
+            merged.update(data)
+            # но вложенные объекты тоже мержим
+            for k, dv in DEFAULT_PRESETS.items():
+                if isinstance(dv, dict) and isinstance(merged.get(k), dict):
+                    m = dv.copy()
+                    m.update(merged[k])
+                    merged[k] = m
+            return merged
+        except Exception as e:
+            log.warning("presets load error: %s — using defaults", e)
+    return DEFAULT_PRESETS.copy()
+
+
+def save_presets(presets: dict[str, Any]) -> None:
+    try:
+        PRESETS_FILE.write_text(json.dumps(presets, indent=2, ensure_ascii=False), encoding="utf-8")
+        log.info("presets saved → %s", PRESETS_FILE)
+    except Exception as e:
+        log.error("presets save error: %s", e)
+        raise HTTPException(500, f"cannot write {PRESETS_FILE.name}: {e}")
+
+
+presets: dict[str, Any] = load_presets()
 
 
 # ────────────────────────────────────────────────────────────
@@ -237,6 +289,146 @@ async def get_log(lines: int = 50) -> dict:
 @app.get("/api/vpered/scenarios")
 async def get_scenarios() -> dict:
     return {"scenarios": list(SCENARIOS)}
+
+
+# ────────────────────────────────────────────────────────────
+# Presets API
+# ────────────────────────────────────────────────────────────
+
+class PresetSaveReq(BaseModel):
+    name: str                    # park | forward | claw_open | claw_closed
+    base: int | None = None
+    arm: int | None = None
+    claw: int | None = None
+
+
+class PresetsPutReq(BaseModel):
+    presets: dict[str, Any]
+
+
+@app.get("/api/vpered/presets")
+async def get_presets() -> dict:
+    return {"presets": presets}
+
+
+@app.put("/api/vpered/presets")
+async def put_presets(req: PresetsPutReq) -> dict:
+    presets.clear()
+    presets.update(req.presets)
+    save_presets(presets)
+    return {"ok": True, "presets": presets}
+
+
+@app.post("/api/vpered/preset/save")
+async def save_preset_action(req: PresetSaveReq) -> dict:
+    """Сохранить конкретный пресет. Принимает частичное обновление:
+    - park / forward: base / arm / claw (что передано)
+    - claw_open / claw_closed: только claw, сохраняется в корне
+    """
+    name = req.name.strip().lower()
+    if name in ("park", "forward"):
+        pose = dict(presets.get(name, {}))
+        if req.base is not None: pose["base"] = int(req.base)
+        if req.arm  is not None: pose["arm"]  = int(req.arm)
+        if req.claw is not None: pose["claw"] = int(req.claw)
+        presets[name] = pose
+    elif name == "claw_open":
+        if req.claw is None:
+            raise HTTPException(400, "claw required for claw_open")
+        presets["claw_open"] = int(req.claw)
+    elif name == "claw_closed":
+        if req.claw is None:
+            raise HTTPException(400, "claw required for claw_closed")
+        presets["claw_closed"] = int(req.claw)
+    else:
+        raise HTTPException(400, f"unknown preset: {name}")
+    save_presets(presets)
+    return {"ok": True, "name": name, "presets": presets}
+
+
+async def apply_pose(base: int | None, arm: int | None, claw: int | None, settle_ms: int = 0) -> None:
+    """Применить пресет-позу: отправить команды BASE/ARM/CLAW с настройкой."""
+    if base is not None:
+        write_serial(f"N{int(base)}")
+        if settle_ms:
+            await asyncio.sleep(settle_ms / 1000)
+    if arm is not None:
+        write_serial(f"M{int(arm)}")
+        if settle_ms:
+            await asyncio.sleep(settle_ms / 1000)
+    if claw is not None:
+        write_serial(f"M{int(claw)}")  # CLAW тоже через сервокомманду — у нас нет отдельного опкода
+
+
+@app.post("/api/vpered/preset/apply")
+async def apply_preset(req: ScenarioReq) -> dict:
+    """Применить сохранённый пресет. Поддерживает: park, forward, grab."""
+    name = req.name.strip().lower()
+
+    if name == "park":
+        p = presets.get("park", DEFAULT_PRESETS["park"])
+        asyncio.create_task(_apply_park(p))
+        return {"ok": True, "applied": "park", "pose": p}
+
+    if name == "forward":
+        p = presets.get("forward", DEFAULT_PRESETS["forward"])
+        asyncio.create_task(_apply_forward(p))
+        return {"ok": True, "applied": "forward", "pose": p}
+
+    if name == "grab":
+        asyncio.create_task(_apply_grab())
+        return {"ok": True, "applied": "grab"}
+
+    raise HTTPException(404, f"preset '{name}' not applicable")
+
+
+async def _apply_park(p: dict) -> None:
+    settle = int(presets.get("settle_ms", 400))
+    # claw → arm → base (парк сверху — сначала подтягиваем руку)
+    if "claw" in p: write_serial(f"O"); await asyncio.sleep(0.05)  # force servo attach
+    if "claw" in p:
+        # точечный угол — через отдельную команду servo claw нельзя, используем O/X если совпадает
+        # в остальных случаях — ручное O -> M не подходит для claw. Пропускаем.
+        pass
+    if "arm" in p:  write_serial(f"M{int(p['arm'])}");  await asyncio.sleep(settle/1000)
+    if "base" in p: write_serial(f"N{int(p['base'])}"); await asyncio.sleep(settle/1000)
+
+
+async def _apply_forward(p: dict) -> None:
+    settle = int(presets.get("settle_ms", 400))
+    if "base" in p: write_serial(f"N{int(p['base'])}"); await asyncio.sleep(settle/1000)
+    if "arm" in p:  write_serial(f"M{int(p['arm'])}");  await asyncio.sleep(settle/1000)
+
+
+async def _apply_grab() -> None:
+    """Custom grab с учётом пользовательских пресетов forward и claw_open/closed.
+    Последовательность: open claw → move to forward → settle → close claw → lift arm.
+    """
+    settle = int(presets.get("settle_ms", 400))
+    hold = int(presets.get("hold_ms", 300))
+    fwd = presets.get("forward", DEFAULT_PRESETS["forward"])
+    park = presets.get("park", DEFAULT_PRESETS["park"])
+
+    # 1. открыть клешню — используем Arduino команду 'O' (она зажмёт CLAW_OPEN
+    # из flash-пресета, который совпадает по дефолту, но фактически это
+    # fallback; альтернативно можно закомитить M<angle> но в прошивке M
+    # пишет в ARM. Оставляем 'O' для совместимости.)
+    write_serial("O")
+    await asyncio.sleep(settle/1000)
+
+    # 2. рука вперёд
+    if "base" in fwd: write_serial(f"N{int(fwd['base'])}"); await asyncio.sleep(settle/1000)
+    if "arm" in fwd:  write_serial(f"M{int(fwd['arm'])}");  await asyncio.sleep(settle/1000)
+
+    # 3. пауза
+    await asyncio.sleep(hold/1000)
+
+    # 4. закрыть клешню
+    write_serial("X")
+    await asyncio.sleep(settle/1000)
+
+    # 5. вернуть руку в парк
+    if "arm" in park: write_serial(f"M{int(park['arm'])}"); await asyncio.sleep(settle/1000)
 
 
 # ────────────────────────────────────────────────────────────

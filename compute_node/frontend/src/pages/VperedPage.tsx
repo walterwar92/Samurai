@@ -16,6 +16,7 @@ import { VirtualJoystick } from '@/components/vpered/VirtualJoystick'
 import { TelemetryHistory } from '@/components/vpered/TelemetryHistory'
 import { ArmVisualizer } from '@/components/vpered/ArmVisualizer'
 import { VperedEventLog } from '@/components/vpered/VperedEventLog'
+import { PresetManager } from '@/components/vpered/PresetManager'
 
 // ════════════════════════════════════════════════════════════
 // SCENARIOS
@@ -33,7 +34,8 @@ const SCENARIOS: { id: string; label: string; descr: string; emoji: string }[] =
 // PAGE
 // ════════════════════════════════════════════════════════════
 export function VperedPage() {
-  const { state, send, scenario, log } = useVpered()
+  const api = useVpered()
+  const { state, send, scenario, log } = api
   const tlm = state?.telemetry || {}
   const connected = !!(state?.connected && state?.telemetry_fresh)
 
@@ -240,6 +242,18 @@ export function VperedPage() {
                 onChange={setBaseAngle}
                 onCommit={v => send('N', v)}
                 liveValue={tlm.b}
+                disabled={!connected}
+              />
+
+              <Separator />
+
+              <PresetManager
+                api={api}
+                liveArm={tlm.a}
+                liveBase={tlm.b}
+                liveClaw={tlm.c}
+                sliderArm={armAngle}
+                sliderBase={baseAngle}
                 disabled={!connected}
               />
             </CardContent>

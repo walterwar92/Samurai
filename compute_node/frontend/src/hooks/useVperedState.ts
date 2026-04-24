@@ -21,11 +21,27 @@ export interface VperedState {
   scenarios: string[]
 }
 
+export interface VperedPresets {
+  park?:    { base?: number; arm?: number; claw?: number }
+  forward?: { base?: number; arm?: number; claw?: number }
+  claw_open?:   number
+  claw_closed?: number
+  settle_ms?:   number
+  hold_ms?:     number
+  [key: string]: unknown
+}
+
 export interface VperedApi {
   state: VperedState | null
   send: (cmd: string, arg?: number) => Promise<void>
   scenario: (name: string) => Promise<void>
   log: () => Promise<string[]>
+  getPresets: () => Promise<VperedPresets>
+  savePreset: (
+    name: 'park' | 'forward' | 'claw_open' | 'claw_closed',
+    fields: { base?: number; arm?: number; claw?: number },
+  ) => Promise<void>
+  applyPreset: (name: 'park' | 'forward' | 'grab') => Promise<void>
 }
 
 // Опрос телеметрии. Когда соединение есть — быстро (200 мс).
@@ -103,5 +119,31 @@ export function useVpered(): VperedApi {
     }
   }
 
-  return { state, send, scenario, log }
+  const getPresets = async (): Promise<VperedPresets> => {
+    try {
+      const res = await fetch('/api/vpered/presets')
+      const data = await res.json()
+      return (data.presets || {}) as VperedPresets
+    } catch {
+      return {}
+    }
+  }
+
+  const savePreset: VperedApi['savePreset'] = async (name, fields) => {
+    await fetch('/api/vpered/preset/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, ...fields }),
+    })
+  }
+
+  const applyPreset: VperedApi['applyPreset'] = async (name) => {
+    await fetch('/api/vpered/preset/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+  }
+
+  return { state, send, scenario, log, getPresets, savePreset, applyPreset }
 }

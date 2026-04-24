@@ -17,17 +17,19 @@ export function ArmVisualizer({
   clawOpen = 70,
   clawClosed = 150,
 }: ArmVisualizerProps) {
-  // ARM: 90 = горизонтально вперёд, 0 = вниз, 180 = вверх
-  // SVG y возрастает вниз, поэтому инвертируем
+  // ARM: физически на этом роботе МЕНЬШЕ угол = выше плечо.
+  // 90 = горизонтально вперёд, 0 = вверх, 180 = вниз.
+  // SVG y возрастает вниз → используем +sin (без инверсии), так плечо
+  // на малых углах идёт ВВЕРХ (Y уменьшается), на больших — ВНИЗ.
   const armRad = ((arm - 90) * Math.PI) / 180  // -90..+90
   const upperLen = 60
   const baseX = 80
   const baseY = 110
   const elbowX = baseX + Math.cos(armRad) * upperLen
-  const elbowY = baseY - Math.sin(armRad) * upperLen
+  const elbowY = baseY + Math.sin(armRad) * upperLen
   const handLen = 36
   const handX = elbowX + Math.cos(armRad) * handLen
-  const handY = elbowY - Math.sin(armRad) * handLen
+  const handY = elbowY + Math.sin(armRad) * handLen
 
   // Клешня раскрывается симметрично от продольной оси руки.
   // Нормализуем к 0..1 (1 = полностью открыта)
@@ -37,9 +39,9 @@ export function ArmVisualizer({
   const fingerSpread = (15 + openness * 30) * Math.PI / 180  // 15°..45° от оси
   const fingerLen = 22
   const finger1X = handX + Math.cos(armRad + fingerSpread) * fingerLen
-  const finger1Y = handY - Math.sin(armRad + fingerSpread) * fingerLen
+  const finger1Y = handY + Math.sin(armRad + fingerSpread) * fingerLen
   const finger2X = handX + Math.cos(armRad - fingerSpread) * fingerLen
-  const finger2Y = handY - Math.sin(armRad - fingerSpread) * fingerLen
+  const finger2Y = handY + Math.sin(armRad - fingerSpread) * fingerLen
 
   // База — поворот сверху (стрелка)
   const baseAngle = base - 90  // -90..+90 от прямого вперёд
