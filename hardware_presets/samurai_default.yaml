@@ -1,6 +1,8 @@
 name: Samurai Default
 platform: raspberry_pi_pca9685
-description: Adeept Robot HAT V3.1 — 2 мотора (задние), 5 серво, WS2812B
+description: ''
+created: '2026-04-15T16:11:27+00:00'
+modified: '2026-04-16T07:35:02+00:00'
 motors:
   driver: pca9685
   count: 2
@@ -66,5 +68,19 @@ leds:
 i2c:
   pca9685_address: '0x5F'
   pca9685_frequency: 50
-created: '2026-04-15T16:11:27+00:00'
-modified: '2026-04-15T16:11:27+00:00'
+layout:
+  camera:
+    x: 335.5556335449219
+    y: 263.3332824707031
+  leds:
+    x: 342.22222900390625
+    y: 25.555572509765625
+  range:
+    x: 347.77777099609375
+    y: 477.77777099609375
+  imu:
+    x: 346.66668701171875
+    y: 368.8888854980469
+  pca9685:
+    x: 330
+    y: 137.77780151367188
