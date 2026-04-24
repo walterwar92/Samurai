@@ -51,11 +51,23 @@
 #define ECHO_PIN  13
 
 // ========== НАПРАВЛЕНИЯ (биты 74HC595) ==========
+// Эти биты подаются на 8 выходов 74HC595, которые управляют входами H-моста.
+// Точная распиновка моста на этом шасси неизвестна, поэтому DIR_FORWARD
+// был подобран опытно (=92), а DIR_BACKWARD нужно подобрать командой Y<N>.
+//
+// КАК ПОДОБРАТЬ DIR_BACKWARD:
+//   1. Подними робота (или поставь на подставку чтобы колёса крутились свободно).
+//   2. Из UI на странице Vpered → панель "Подбор reverse" → набирай байты,
+//      или из Serial шли команды вида "Y163", "Y172", "Y228" и т.д.
+//   3. Каждая команда Y запускает моторы на 1 сек с этим DIR-байтом и BASE PWM.
+//   4. Когда оба колеса крутятся НАЗАД (одинаково и вместе) — впиши значение
+//      сюда в DIR_BACKWARD и перепрошей, кнопка "Назад" заработает.
+//
+// Типичные кандидаты для классического 74HC595+L298 шасси (если FWD=92):
+//   163 (~92 ^ 0xFF), 172, 228, 35, 76, 240, 95, 80
 const uint8_t DIR_FORWARD  = 92;   // 0b01011100
 const uint8_t DIR_STOP     = 0;
-// Backward — у нас нет рабочего значения от пользователя.
-// Используем reverse через изменение PWM нельзя, поэтому B = pivot turn-around.
-// Можно перепрошить если найдёт корректные биты.
+const uint8_t DIR_BACKWARD = 0;    // ← вписать после подбора (0 = недоступно)
 
 // ========== ПАРАМЕТРЫ ==========
 const float STOP_DISTANCE_CM = 10.0f;
@@ -347,6 +359,37 @@ void tickPivot(bool leftDir) {
     }
 }
 
+void tickBackward() {
+    // Простой open-loop задний ход (без ПИД — гироскоп правильнее интегрируется
+    // только при движении вперёд). Если DIR_BACKWARD не задан — стоп.
+    if (DIR_BACKWARD == 0) {
+        motorStop();
+        return;
+    }
+    updateGyro();
+    motorDrive(DIR_BACKWARD, BASE_PWM, BASE_PWM);
+}
+
+// Тестовая прокрутка моторов произвольным DIR-байтом (для подбора DIR_BACKWARD)
+unsigned long dirTestUntilMs = 0;
+uint8_t dirTestByte = 0;
+
+void startDirTest(uint8_t dirByte, unsigned long ms = 1000) {
+    dirTestByte = dirByte;
+    dirTestUntilMs = millis() + ms;
+    motorDrive(dirByte, BASE_PWM, BASE_PWM);
+    Serial.print(F("DIR-TEST byte=")); Serial.print(dirByte);
+    Serial.print(F(" for ")); Serial.print(ms); Serial.println(F("ms"));
+}
+
+void tickDirTest() {
+    if (millis() >= dirTestUntilMs) {
+        motorStop();
+        dirTestUntilMs = 0;
+        Serial.println(F("DIR-TEST done"));
+    }
+}
+
 // ============================================================
 // SERIAL HANDLER
 // ============================================================
@@ -371,6 +414,7 @@ void enterMode(RobotMode m) {
 void printHelp() {
     Serial.println(F("=== VPERED CMDS ==="));
     Serial.println(F("F B L R S    : drive / stop"));
+    Serial.println(F("Y<0..255>    : test DIR byte 1s (для подбора DIR_BACKWARD)"));
     Serial.println(F("O X G P      : open / close / grab / park"));
     Serial.println(F("M<deg>       : ARM angle"));
     Serial.println(F("N<deg>       : BASE angle"));
@@ -385,10 +429,30 @@ void executeCommand() {
 
     switch (c) {
         case 'F': enterMode(MODE_FWD);   Serial.println(F("FWD"));  break;
-        case 'B': enterMode(MODE_BWD);   Serial.println(F("BWD (no rev hw, idle)")); enterMode(MODE_IDLE); break;
+        case 'B':
+            if (DIR_BACKWARD == 0) {
+                Serial.println(F("BWD disabled — DIR_BACKWARD=0, подбери через Y<N>"));
+                enterMode(MODE_IDLE);
+            } else {
+                enterMode(MODE_BWD);
+                Serial.println(F("BWD"));
+            }
+            break;
         case 'L': enterMode(MODE_LEFT);  Serial.println(F("LEFT")); break;
         case 'R': enterMode(MODE_RIGHT); Serial.println(F("RIGHT")); break;
         case 'S': enterMode(MODE_IDLE);  Serial.println(F("STOP")); break;
+        case 'Y': {
+            // Y<num> — тест произвольного DIR-байта на 1 сек.
+            // Используется для подбора DIR_BACKWARD.
+            int dir = arg;
+            if (dir < 0 || dir > 255) {
+                Serial.println(F("Y: byte 0..255"));
+            } else {
+                enterMode(MODE_IDLE);
+                startDirTest((uint8_t)dir, 1000);
+            }
+            break;
+        }
         case 'O': moveClaw(CLAW_OPEN);   Serial.println(F("OPEN")); break;
         case 'X': moveClaw(CLAW_CLOSED); Serial.println(F("CLOSE")); break;
         case 'G': enterMode(MODE_IDLE); doGrab(); break;
@@ -504,12 +568,16 @@ void loop() {
     handleSerial();
     checkAutoDetach();
 
+    // DIR-test (tested байт работает 1 сек, потом стоп)
+    if (dirTestUntilMs != 0) tickDirTest();
+
     // Active state tick (~50 Hz)
     static unsigned long lastTick = 0;
     unsigned long now = millis();
     if (now - lastTick >= 20) {
         lastTick = now;
-        if (mode == MODE_FWD)   tickForward();
+        if (mode == MODE_FWD)        tickForward();
+        else if (mode == MODE_BWD)   tickBackward();
         else if (mode == MODE_LEFT)  tickPivot(true);
         else if (mode == MODE_RIGHT) tickPivot(false);
     }

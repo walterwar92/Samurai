@@ -18,6 +18,7 @@ import { ArmVisualizer } from '@/components/vpered/ArmVisualizer'
 import { VperedEventLog } from '@/components/vpered/VperedEventLog'
 import { PresetManager } from '@/components/vpered/PresetManager'
 import { ConnectionDiagnostics } from '@/components/vpered/ConnectionDiagnostics'
+import { ReverseFinder } from '@/components/vpered/ReverseFinder'
 
 // ════════════════════════════════════════════════════════════
 // SCENARIOS
@@ -281,6 +282,18 @@ export function VperedPage() {
                 <DiagBtn               label="Help"       onClick={() => send('H')} disabled={!connected} />
                 <DiagBtn               label="Emergency"  onClick={() => send('S')} destructive />
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Reverse finder */}
+          <Card>
+            <CardHeader className="py-2 px-3 border-b border-border/50">
+              <CardTitle className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-2">
+                <Wrench className="w-3 h-3" /> Подбор reverse
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-3">
+              <ReverseFinder api={api} disabled={!connected} />
             </CardContent>
           </Card>
         </div>

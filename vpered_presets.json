@@ -1,0 +1,15 @@
+{
+  "park": {
+    "base": 150,
+    "arm": 0,
+    "claw": 70
+  },
+  "forward": {
+    "base": 150,
+    "arm": 130
+  },
+  "claw_open": 70,
+  "claw_closed": 150,
+  "settle_ms": 400,
+  "hold_ms": 300
+}

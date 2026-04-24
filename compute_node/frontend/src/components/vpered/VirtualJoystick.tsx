@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 
-type Dir = 'F' | 'L' | 'R' | 'S'
+type Dir = 'F' | 'B' | 'L' | 'R' | 'S'
 
 interface VirtualJoystickProps {
   /** Колбэк при смене направления (срабатывает только когда направление меняется). */
@@ -49,7 +49,7 @@ export function VirtualJoystick({ onDirChange, size = 220, disabled }: VirtualJo
       const angle = (Math.atan2(dy, dx) * 180) / Math.PI
       let dir: Dir
       if (angle > -45 && angle <= 45)         dir = 'R'
-      else if (angle > 45 && angle <= 135)    dir = 'S' // вниз пока недоступно (нет реверса)
+      else if (angle > 45 && angle <= 135)    dir = 'B' // вниз = назад (работает если DIR_BACKWARD задан)
       else if (angle > -135 && angle <= -45)  dir = 'F'
       else                                    dir = 'L'
 
@@ -105,7 +105,7 @@ export function VirtualJoystick({ onDirChange, size = 220, disabled }: VirtualJo
       <DirHint label="F" angle={0}   color="rgb(34 197 94)" />
       <DirHint label="L" angle={270} color="rgb(56 189 248)" />
       <DirHint label="R" angle={90}  color="rgb(56 189 248)" />
-      <DirHint label="—" angle={180} color="rgb(71 85 105)" />
+      <DirHint label="B" angle={180} color="rgb(234 179 8)" />
 
       {/* center crosshair */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
