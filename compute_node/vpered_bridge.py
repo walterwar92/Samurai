@@ -253,7 +253,10 @@ class ScenarioReq(BaseModel):
     name: str         # 'fwd_back', 'square', 'wiggle', 'open_close', 'grab_demo'
 
 
-VALID_CMDS = set("FBLRSOXGPDKCTZHMN")
+# Y добавлен для подбора DIR-байта обратного хода
+VALID_CMDS = set("FBLRSOXGPDKCTZHMNY")
+# Команды, которым нужен числовой аргумент (встраивается в payload)
+CMDS_WITH_ARG = {"M", "N", "Y"}
 
 
 @app.post("/api/vpered/cmd")
@@ -262,9 +265,9 @@ async def post_cmd(req: CmdReq) -> dict:
     if not cmd or cmd[0] not in VALID_CMDS:
         raise HTTPException(400, f"unknown cmd: {cmd!r}")
     payload = cmd[0]
-    if cmd[0] in ("M", "N"):
+    if cmd[0] in CMDS_WITH_ARG:
         if req.arg is None:
-            raise HTTPException(400, f"{cmd[0]} requires arg (0-180)")
+            raise HTTPException(400, f"{cmd[0]} requires numeric arg")
         payload = f"{cmd[0]}{int(req.arg)}"
     write_serial(payload)
     return {"ok": True, "sent": payload}
