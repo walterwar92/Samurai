@@ -1,8 +1,10 @@
 import { cn } from '@/lib/utils'
 import { useSocket } from '@/providers/SocketProvider'
+import { useRobot } from '@/providers/RobotProvider'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Link, useLocation } from 'react-router-dom'
+import { RobotSelector } from '@/components/layout/RobotSelector'
 
 interface HeaderProps {
   isAdmin?: boolean
@@ -12,6 +14,7 @@ interface HeaderProps {
 
 export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
   const { connected } = useSocket()
+  const { activeRobot } = useRobot()
   const { pathname } = useLocation()
 
   const navLink = (to: string, label: string) => {
@@ -29,21 +32,28 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
     )
   }
 
+  const isVpered = activeRobot === 'vpered'
+
   return (
     <header className="flex items-center justify-between px-5 py-3 bg-card border-b border-border sticky top-0 z-50">
       <div className="flex items-center gap-4">
-        <h1 className="text-lg font-bold tracking-widest text-primary">SAMURAI</h1>
+        <h1 className="text-lg font-bold tracking-widest text-primary">
+          {isVpered ? 'VPERED' : 'SAMURAI'}
+        </h1>
         {isAdmin && (
           <Badge variant="destructive" className="text-[10px] tracking-wider">
             ADMIN
           </Badge>
         )}
-        <nav className="flex items-center gap-2 ml-4">
-          {navLink('/dashboard', 'Панель')}
-          {navLink('/admin', 'Админ')}
-          {navLink('/3d', '3D Карта')}
-          {navLink('/hardware', 'Оборудование')}
-        </nav>
+        <RobotSelector />
+        {!isVpered && (
+          <nav className="flex items-center gap-2 ml-2">
+            {navLink('/dashboard', 'Панель')}
+            {navLink('/admin', 'Админ')}
+            {navLink('/3d', '3D Карта')}
+            {navLink('/hardware', 'Оборудование')}
+          </nav>
+        )}
       </div>
 
       <div className="flex items-center gap-4">
@@ -61,10 +71,10 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
           <div
             className={cn(
               'w-2 h-2 rounded-full transition-colors',
-              connected ? 'bg-samurai-green' : 'bg-samurai-red'
+              isVpered ? 'bg-samurai-red' : connected ? 'bg-samurai-green' : 'bg-samurai-red'
             )}
           />
-          {connected ? 'Подключено' : 'Отключено'}
+          {isVpered ? 'Нет связи (USB)' : connected ? 'Подключено' : 'Отключено'}
         </div>
       </div>
     </header>
