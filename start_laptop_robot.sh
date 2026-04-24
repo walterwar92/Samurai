@@ -43,6 +43,8 @@ REBUILD_WS=false
 REMOTE_YOLO=false
 NO_VPERED=false
 VPERED_PORT=""
+NO_FRONTEND_BUILD=false
+FORCE_FRONTEND_BUILD=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,17 +56,21 @@ while [[ $# -gt 0 ]]; do
         --remote-yolo)   REMOTE_YOLO=true; shift ;;
         --no-vpered)     NO_VPERED=true; shift ;;
         --vpered-port)   VPERED_PORT="$2"; shift 2 ;;
+        --no-frontend-build) NO_FRONTEND_BUILD=true; shift ;;
+        --rebuild-frontend)  FORCE_FRONTEND_BUILD=true; shift ;;
         -h|--help)
             echo "Использование: $0 [--pi IP] [--hotspot] [--rebuild] [--remote-yolo]"
             echo ""
-            echo "  --pi IP          IP Raspberry Pi (вместо авто-обнаружения)"
-            echo "  --hotspot        Режим мобильного хотспота (unicast DDS)"
-            echo "  --rebuild        Пересобрать Docker образ и workspace"
-            echo "  --rebuild-image  Пересобрать только Docker образ"
-            echo "  --rebuild-ws     Пересобрать только ROS2 workspace"
-            echo "  --remote-yolo    YOLO на отдельном GPU-ноутбуке (не запускать локально)"
-            echo "  --no-vpered      Не запускать Vpered USB bridge (по умолчанию включён)"
-            echo "  --vpered-port P  Указать конкретный COM-порт для Vpered (иначе авто)"
+            echo "  --pi IP             IP Raspberry Pi (вместо авто-обнаружения)"
+            echo "  --hotspot           Режим мобильного хотспота (unicast DDS)"
+            echo "  --rebuild           Пересобрать Docker образ и workspace"
+            echo "  --rebuild-image     Пересобрать только Docker образ"
+            echo "  --rebuild-ws        Пересобрать только ROS2 workspace"
+            echo "  --remote-yolo       YOLO на отдельном GPU-ноутбуке"
+            echo "  --no-vpered         Не запускать Vpered USB bridge"
+            echo "  --vpered-port P     Конкретный COM-порт для Vpered"
+            echo "  --no-frontend-build Не пересобирать React фронт"
+            echo "  --rebuild-frontend  Принудительно пересобрать React фронт"
             exit 0
             ;;
         *) die "Неизвестный аргумент: $1. Используй --help" ;;
@@ -290,6 +296,76 @@ configure_network() {
     log_ok "MQTT broker: ${BOLD}$MQTT_BROKER:1883${NC}"
 }
 
+# ─── 6.4 React frontend (vite build → compute_node/static) ───────────────────
+build_frontend() {
+    if $NO_FRONTEND_BUILD; then
+        log_info "Сборка фронтенда отключена (--no-frontend-build)"
+        return
+    fi
+
+    log_step "React frontend"
+
+    local fe_dir="$SCRIPT_DIR/compute_node/frontend"
+    local out_index="$SCRIPT_DIR/compute_node/static/index.html"
+
+    if [[ ! -d "$fe_dir" ]]; then
+        log_warn "compute_node/frontend не найден — пропускаю сборку"
+        return
+    fi
+
+    if ! command -v npm &>/dev/null; then
+        log_warn "npm не установлен — фронт не пересобирается"
+        log_warn "Установи Node.js (https://nodejs.org) для авто-сборки UI"
+        if [[ -f "$out_index" ]]; then
+            log_info "Используется старый билд: $out_index"
+        else
+            log_err "Старого билда тоже нет — UI не будет работать"
+        fi
+        return
+    fi
+
+    # Решаем нужно ли пересобирать
+    local need_build=false
+    if $FORCE_FRONTEND_BUILD; then
+        log_info "Принудительная пересборка (--rebuild-frontend)"
+        need_build=true
+    elif [[ ! -f "$out_index" ]]; then
+        log_info "Билд не найден — собираю"
+        need_build=true
+    else
+        # Есть ли .tsx/.ts/.css/.html новее чем static/index.html?
+        local stale
+        stale=$(find "$fe_dir/src" "$fe_dir/index.html" -type f \
+                  \( -name "*.tsx" -o -name "*.ts" -o -name "*.css" -o -name "*.html" \) \
+                  -newer "$out_index" 2>/dev/null | head -1 || true)
+        if [[ -n "$stale" ]]; then
+            log_info "Найдены изменения в src — пересобираю фронт"
+            log_info "  trigger: $(basename "$stale")"
+            need_build=true
+        else
+            log_ok "Фронт актуален (билд новее source)"
+            return
+        fi
+    fi
+
+    # node_modules — установим если нет
+    if [[ ! -d "$fe_dir/node_modules" ]]; then
+        log_info "node_modules не найден — npm install (1-3 мин)..."
+        (cd "$fe_dir" && npm install --no-audit --no-fund) \
+            || { log_warn "npm install не удался — пропускаю сборку"; return; }
+    fi
+
+    # Vite не чистит outDir когда он вне frontend (.../static), руками удаляем
+    rm -rf "$SCRIPT_DIR/compute_node/static/assets" 2>/dev/null || true
+
+    log_info "vite build (~10-30 сек)..."
+    if (cd "$fe_dir" && npm run build 2>&1 | tail -5); then
+        log_ok "Фронт собран → compute_node/static/"
+    else
+        log_warn "Сборка не удалась — будет использован старый билд"
+    fi
+}
+
 # ─── 6.5 Vpered USB bridge (Arduino Uno) ─────────────────────────────────────
 VPERED_PID=""
 VPERED_LOG="/tmp/vpered_bridge.log"
@@ -442,6 +518,7 @@ main() {
     check_avahi
     discover_pi
     configure_network
+    build_frontend
     start_vpered_bridge
     launch
 }
