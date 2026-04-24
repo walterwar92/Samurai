@@ -76,9 +76,9 @@ const float TARGET_THETA_DEG = 0.0f;
 //   2) Подними Kd пока колебания не исчезнут (обычно Kd ≈ 0.2..0.5 от Kp).
 //   3) Если устойчивое смещение (стабильно едет под углом) — поднимай Ki
 //      малыми шагами. Слишком большой Ki → раскачка с большим периодом.
-float Kp = 1.5f;     // на градус ошибки → единиц PWM
-float Ki = 0.10f;    // на (градус·с) накопленной ошибки
-float Kd = 0.35f;    // на (градус/с) угловой скорости
+float Kp = 2.2f;     // на градус ошибки → единиц PWM (более агрессивно)
+float Ki = 0.12f;    // на (градус·с) накопленной ошибки
+float Kd = 0.40f;    // на (градус/с) угловой скорости
 
 // Anti-windup: ограничение интеграла чтобы он не накапливался бесконечно при
 // насыщении исполнительных механизмов.
@@ -92,11 +92,28 @@ const float HEADING_DEADBAND_DEG = 0.3f;
 const float OMEGA_LPF_ALPHA = 0.35f;
 
 // Slew rate: максимальное изменение PWM за один цикл, единиц.
-// Плавный возврат, исключает рывки моторов.
-const int SLEW_MAX_PWM = 25;
+// Плавный возврат без рывков. 50 — компромисс между плавностью и
+// скоростью реакции.
+const int SLEW_MAX_PWM = 50;
 
 // Clamp итоговой коррекции — защита от выбросов.
-const float CORRECTION_CLAMP = 80.0f;
+const float CORRECTION_CLAMP = 100.0f;
+
+// Агрессивный режим: при |err| > AGGRESSIVE_DEG включается ускоренный
+// возврат — Kp умножается на BOOST. Так робот возвращается к курсу
+// БЛИЖАЙШИМ путём, а не «дрифтит» долго при сильных отклонениях.
+const float AGGRESSIVE_DEG = 12.0f;
+const float AGGRESSIVE_BOOST = 2.5f;
+
+// Watchdog: если |err| > 30° непрерывно дольше WATCHDOG_MS → STOP.
+// Знак ПИД скорее всего перевёрнут.
+const float WATCHDOG_ERR_DEG = 30.0f;
+const unsigned long WATCHDOG_MS = 1500;
+
+// Знак контроля. Авто-определяется на старте — НЕ const.
+// +1 = стандартная схема (correction>0 → правый быстрее → поворот в −θ)
+// −1 = инвертированная (нестандартное шасси или GYRO_SIGN не тот)
+int controlSign = +1;
 
 // ========== ГИРОСКОП MPU-6050 ==========
 #define MPU6050_ADDR 0x68
@@ -232,6 +249,63 @@ void resetGyroIntegral() {
     lastTime = micros();
 }
 
+// ========== АВТО-КАЛИБРОВКА ЗНАКА КОНТРОЛЯ ==========
+// Подаёт на 250 мс асимметричную команду «правый быстрее на 60 PWM»
+// и смотрит, в какую сторону по theta ушёл робот.
+//
+// Стандартная схема (controlSign=+1):
+//   correction>0 → leftCmd = BASE-corr, rightCmd = BASE+corr → правый быстрее
+//   → робот поворачивает физически в одну сторону → ИЗМЕРЕНИЕ θ должно
+//   уменьшаться (drift < 0).
+//
+// Если drift положительный — измерение θ растёт когда робот делает физический
+// «правый-быстрее»-поворот. Тогда при θ>0 наша коррекция correction>0 даст
+// тот же физический поворот → θ растёт ещё → робот в кругу.
+// Решение: инвертируем controlSign — тогда при θ>0 correction<0,
+// leftCmd>BASE, rightCmd<BASE → левый быстрее → робот в обратную сторону.
+void autoCalibrateControlSign() {
+    Serial.println("Auto-calibrating control polarity...");
+    delay(120);                      // дать моторам стабилизироваться после kickStart
+
+    // Чистый сброс перед измерением
+    theta = 0.0f;
+    lastTime = micros();
+    updateGyro();
+    float thetaBefore = theta_deg;
+
+    // Тестовая асимметрия: «правый быстрее» (как при correction=+60)
+    motorRaw(DIR_FORWARD, BASE_PWM - 60, BASE_PWM + 60);
+
+    unsigned long t0 = millis();
+    while (millis() - t0 < 250) {
+        updateGyro();
+        delay(10);
+    }
+    // Снять асимметрию, дать гироскопу осесть
+    motorRaw(DIR_FORWARD, BASE_PWM, BASE_PWM);
+    delay(60);
+    updateGyro();
+    float drift = theta_deg - thetaBefore;
+
+    Serial.print("  drift=");  Serial.print(drift, 2);  Serial.print("° → ");
+    if (drift > 1.5f) {
+        controlSign = -1;
+        Serial.println("INVERTED (controlSign=-1)");
+    } else if (drift < -1.5f) {
+        controlSign = +1;
+        Serial.println("STANDARD (controlSign=+1)");
+    } else {
+        // Слишком слабая реакция — оставляем дефолт.
+        Serial.println("WEAK response, keeping +1");
+    }
+
+    // Полный reset перед основным циклом — чтобы накопленная за тест θ
+    // не сбила ПИД.
+    resetGyroIntegral();
+    prevLeftCmd  = BASE_PWM;
+    prevRightCmd = BASE_PWM;
+}
+
 // ========== СЕРВО ==========
 void armSafePose() {
     clawServo.write(135);
@@ -287,7 +361,14 @@ void loop() {
     kickStart();
     resetGyroIntegral();
 
+#ifndef OPEN_LOOP
+    // Авто-определение знака контроля — устраняет проблему «робот едет
+    // по кругу из-за перевёрнутой ориентации MPU или нестандартного шасси».
+    autoCalibrateControlSign();
+#endif
+
     unsigned long loopStart = millis();
+    unsigned long watchdogSince = 0;
 
     while (true) {
         float obstacle = getDistance();
@@ -315,19 +396,42 @@ void loop() {
         if (pidIntegral >  INTEGRAL_MAX_DEG_S) pidIntegral =  INTEGRAL_MAX_DEG_S;
         if (pidIntegral < -INTEGRAL_MAX_DEG_S) pidIntegral = -INTEGRAL_MAX_DEG_S;
 
-        // Полная коррекция (PI+D). Знак сохраняется как в старой версии —
-        // если у тебя уже подобран GYRO_SIGN при котором робот ехал прямо,
-        // ничего перенастраивать не нужно.
-        float correction = Kp * errEffective + Ki * pidIntegral + Kd * omega_filt;
+        // Kp_eff: при больших отклонениях усиливаем P-член → быстрый
+        // возврат «ближайшим путём» (робот активно докручивается обратно,
+        // а не дрейфит по широкой дуге).
+        float kpEff = Kp;
+        if (err > AGGRESSIVE_DEG || err < -AGGRESSIVE_DEG) {
+            kpEff = Kp * AGGRESSIVE_BOOST;
+        }
+
+        // Полная коррекция (PI+D), затем умножение на controlSign
+        // (определён автокалибровкой в начале loop).
+        float correction = controlSign * (kpEff * errEffective + Ki * pidIntegral + Kd * omega_filt);
         if (correction >  CORRECTION_CLAMP) correction =  CORRECTION_CLAMP;
         if (correction < -CORRECTION_CLAMP) correction = -CORRECTION_CLAMP;
 
-        // Старая (рабочая) полярность: err>0 → correction>0 → leftCmd
-        // уменьшается, rightCmd увеличивается → правый быстрее → робот
-        // поворачивает в сторону уменьшения theta. Если знак неправильный
-        // (робот усиливает поворот) — инвертируй GYRO_SIGN, не эту строку.
+        // err>0 → correction>0 → leftCmd уменьшается, rightCmd
+        // увеличивается → правый быстрее → робот поворачивает в сторону
+        // уменьшения theta. ControlSign уже учтён в correction выше.
         int leftCmd  = BASE_PWM - (int)correction;
         int rightCmd = BASE_PWM + (int)correction;
+
+        // Watchdog: если ошибка гигантская и не уменьшается полторы секунды
+        // → знак точно перевёрнут, надо остановиться.
+        if (err > WATCHDOG_ERR_DEG || err < -WATCHDOG_ERR_DEG) {
+            if (watchdogSince == 0) watchdogSince = millis();
+            if (millis() - watchdogSince > WATCHDOG_MS) {
+                motorStop();
+                Serial.print("STOP — watchdog: |err|>");
+                Serial.print(WATCHDOG_ERR_DEG, 0);
+                Serial.print("° for ");
+                Serial.print(WATCHDOG_MS);
+                Serial.println("ms. Check GYRO_SIGN / wiring.");
+                break;
+            }
+        } else {
+            watchdogSince = 0;
+        }
 
         // Slew-rate limit: плавный возврат, без рывков (защита моторов и
         // драйвера, плюс уменьшает «качание» во время больших корректировок).
@@ -352,6 +456,10 @@ void loop() {
             Serial.print(" ω=");    Serial.print(omega_filt, 1);
 #ifndef OPEN_LOOP
             Serial.print(" I=");    Serial.print(pidIntegral, 2);
+            Serial.print(" s=");    Serial.print(controlSign);
+            if (theta_deg > AGGRESSIVE_DEG || theta_deg < -AGGRESSIVE_DEG) {
+                Serial.print("[!]");
+            }
 #endif
             Serial.print(" L=");    Serial.print(leftCmd);
             Serial.print(" R=");    Serial.print(rightCmd);
