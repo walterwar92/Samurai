@@ -377,9 +377,14 @@ uint8_t dirTestByte = 0;
 void startDirTest(uint8_t dirByte, unsigned long ms = 1000) {
     dirTestByte = dirByte;
     dirTestUntilMs = millis() + ms;
-    motorDrive(dirByte, BASE_PWM, BASE_PWM);
+    // MAX_PWM чтобы точно проявить даже «слабое» направление при
+    // неправильной комбинации битов. И motorRaw напрямую — без trim/clamp
+    // которые могут мешать.
+    motorRaw(dirByte, MAX_PWM, MAX_PWM);
     Serial.print(F("DIR-TEST byte=")); Serial.print(dirByte);
-    Serial.print(F(" for ")); Serial.print(ms); Serial.println(F("ms"));
+    Serial.print(F(" (0b"));
+    for (int i = 7; i >= 0; i--) Serial.print((dirByte >> i) & 1);
+    Serial.print(F(") for ")); Serial.print(ms); Serial.println(F("ms"));
 }
 
 void tickDirTest() {
