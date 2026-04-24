@@ -9,32 +9,29 @@
  * Что делает: даёт ручное управление через Serial (9600 бод) + готовую
  * последовательность захвата «переведи руку вперёд → открой → закрой → подними».
  *
- * Serial-команды (1 символ, без перевода строки):
- *   b / B  — BASE -2° / +2°
- *   a / A  — ARM  -2° / +2°
- *   c / C  — CLAW -2° / +2°
- *   n      — маленький шаг 1° (следующее b/a/c будет на 1°) [не реализовано, см. 1/5/0]
- *   1 / 5 / 0  — переключить шаг: 1° / 5° / 10° (по умолчанию 2°)
- *   o      — OPEN_CLAW (быстро открыть клешню на CLAW_OPEN)
- *   x      — CLOSE_CLAW (быстро закрыть на CLAW_CLOSED)
- *   f      — ARM_FORWARD (рука вперёд, для захвата)
- *   p      — ARM_PARK (рука в парк, нейтраль)
- *   g      — полная последовательность GRAB (f → o → задержка → x → p)
- *   r      — RESET в стартовую позицию
- *   ?      — показать текущие углы и пресеты
+ * Serial-команды (без Enter, 1 символ):
+ *   b / B     — BASE -step / +step
+ *   a / A     — ARM  -step / +step
+ *   c / C     — CLAW -step / +step
+ *   1 / 5 / 0 — шаг 1° / 5° / 10° (по умолчанию 2°)
+ *   o / x     — открыть / закрыть клешню (пресетами CLAW_OPEN/CLAW_CLOSED)
+ *   ~         — swap CLAW_OPEN <-> CLAW_CLOSED (если полярность серв обратная)
+ *   f / p     — ARM_FORWARD / ARM_PARK
+ *   g         — полная последовательность захвата
+ *   r / ? / h — reset / статус / справка
  *
- * Как настраивать:
- *   1. Поставь робота перед маленьким предметом на нужном расстоянии.
- *   2. Нажми 'f' — рука пойдёт в позу для захвата. Клешня должна оказаться
- *      ВОКРУГ объекта. Подбирай ARM_FORWARD (a/A по 2°) пока не совпадёт.
- *      Если клешня слишком высоко/низко — ARM. Если смещена вбок — BASE.
- *   3. Нажми 'o' — клешня открывается. Подбирай CLAW_OPEN пока не будет
- *      достаточно широкая чтобы объект помещался свободно.
- *   4. Нажми 'x' — закрывается. Подбирай CLAW_CLOSED пока объект не
- *      зажимается уверенно, но без перегрузки серво.
- *   5. Нажми 'g' — проверь всю последовательность целиком.
- *   6. Перенеси подобранные значения в основную прошивку vpered_uno.ino
- *      (константы ниже).
+ * Сохранение текущего положения как пресет (2 символа):
+ *   s o — текущий CLAW → CLAW_OPEN
+ *   s x — текущий CLAW → CLAW_CLOSED
+ *   s f — текущие BASE+ARM → FORWARD
+ *   s p — текущие BASE+ARM+CLAW → PARK
+ *   e   — экспортировать все пресеты готовым copy-paste блоком
+ *
+ * Workflow:
+ *   1. Крути угол вручную (b/a/c) — ищешь подходящее положение для шага.
+ *   2. Когда нашёл — сохрани (so/sx/sf/sp) чтобы эта позиция стала пресетом.
+ *   3. Проверь целиком командой 'g' — последовательность работает с новыми пресетами.
+ *   4. 'e' — напечатает готовый блок констант для копирования в vpered_uno.ino.
  */
 
 #include <Servo.h>
@@ -54,10 +51,11 @@ int CLAW_PARK    = 135;
 int BASE_FORWARD = 90;
 int ARM_FORWARD  = 40;
 
-// Открытая / закрытая клешня. Точные значения зависят от конструкции.
-// Типично: открытая = больше, закрытая = меньше. Если наоборот — поменяй.
-int CLAW_OPEN    = 160;
-int CLAW_CLOSED  = 70;
+// Открытая / закрытая клешня. Полярность зависит от конструкции:
+// на этом роботе МЕНЬШЕ = открыто. Если на твоём наоборот — нажми '~'
+// в Serial чтобы swap'нуть, или поменяй значения здесь.
+int CLAW_OPEN    = 70;
+int CLAW_CLOSED  = 160;
 
 // Задержки между шагами последовательности (мс)
 const int SERVO_SETTLE_MS = 400;   // даём серве доехать
@@ -157,16 +155,70 @@ void printHelp() {
     Serial.println("a/A  : ARM  -step/+step");
     Serial.println("c/C  : CLAW -step/+step");
     Serial.println("1/5/0: шаг 1° / 5° / 10°  (default 2°)");
-    Serial.println("o / x: открыть / закрыть клешню");
+    Serial.println("o / x: открыть / закрыть клешню (пресетами)");
+    Serial.println("~    : swap CLAW_OPEN <-> CLAW_CLOSED (если 'o' и 'x' перепутаны)");
     Serial.println("f    : рука вперёд");
     Serial.println("p    : парк");
     Serial.println("g    : полная последовательность захвата");
     Serial.println("r    : reset в парк");
     Serial.println("?    : статус");
+    Serial.println("e    : экспорт пресетов (copy-paste в основную прошивку)");
     Serial.println();
-    Serial.println("Совет: меняй текущий угол (b/a/c), проверяй 'f','o','x'.");
-    Serial.println("      Найдя нужный угол, ОБНОВИ пресеты в коде и перезалей.");
+    Serial.println("СОХРАНЕНИЕ текущего положения как пресет:");
+    Serial.println("  so : текущий CLAW -> CLAW_OPEN");
+    Serial.println("  sx : текущий CLAW -> CLAW_CLOSED");
+    Serial.println("  sf : текущие BASE+ARM -> FORWARD");
+    Serial.println("  sp : текущие BASE+ARM+CLAW -> PARK");
+    Serial.println();
+    Serial.println("Рабочий цикл: крути b/a/c руками, найди хорошее положение,");
+    Serial.println("  сохрани через so/sx/sf/sp, проверь 'g', потом 'e' и скопируй.");
     printStatus();
+}
+
+// ========== СОХРАНЕНИЕ ПРЕСЕТОВ ==========
+void saveAsOpen() {
+    CLAW_OPEN = clawAngle;
+    Serial.print("SAVED CLAW_OPEN = "); Serial.println(CLAW_OPEN);
+}
+void saveAsClosed() {
+    CLAW_CLOSED = clawAngle;
+    Serial.print("SAVED CLAW_CLOSED = "); Serial.println(CLAW_CLOSED);
+}
+void saveAsForward() {
+    BASE_FORWARD = baseAngle;
+    ARM_FORWARD  = armAngle;
+    Serial.print("SAVED FORWARD: BASE="); Serial.print(BASE_FORWARD);
+    Serial.print(" ARM="); Serial.println(ARM_FORWARD);
+}
+void saveAsPark() {
+    BASE_PARK = baseAngle;
+    ARM_PARK  = armAngle;
+    CLAW_PARK = clawAngle;
+    Serial.print("SAVED PARK: BASE="); Serial.print(BASE_PARK);
+    Serial.print(" ARM="); Serial.print(ARM_PARK);
+    Serial.print(" CLAW="); Serial.println(CLAW_PARK);
+}
+
+void swapClawPolarity() {
+    int tmp = CLAW_OPEN;
+    CLAW_OPEN = CLAW_CLOSED;
+    CLAW_CLOSED = tmp;
+    Serial.print("SWAPPED: CLAW_OPEN="); Serial.print(CLAW_OPEN);
+    Serial.print(" CLAW_CLOSED="); Serial.println(CLAW_CLOSED);
+}
+
+void exportPresets() {
+    Serial.println();
+    Serial.println("// ======== COPY-PASTE В vpered_uno.ino ========");
+    Serial.print("const int BASE_PARK    = "); Serial.print(BASE_PARK);    Serial.println(";");
+    Serial.print("const int ARM_PARK     = "); Serial.print(ARM_PARK);     Serial.println(";");
+    Serial.print("const int CLAW_PARK    = "); Serial.print(CLAW_PARK);    Serial.println(";");
+    Serial.print("const int BASE_FORWARD = "); Serial.print(BASE_FORWARD); Serial.println(";");
+    Serial.print("const int ARM_FORWARD  = "); Serial.print(ARM_FORWARD);  Serial.println(";");
+    Serial.print("const int CLAW_OPEN    = "); Serial.print(CLAW_OPEN);    Serial.println(";");
+    Serial.print("const int CLAW_CLOSED  = "); Serial.print(CLAW_CLOSED);  Serial.println(";");
+    Serial.println("// =============================================");
+    Serial.println();
 }
 
 void setup() {
@@ -187,9 +239,30 @@ void setup() {
     printHelp();
 }
 
+// Двухсимвольная команда 's<X>' (save-as): при получении 's' ждём следующий символ.
+bool savePending = false;
+
 void loop() {
     if (!Serial.available()) return;
     char ch = Serial.read();
+
+    // Обработка save-as: 'so'/'sx'/'sf'/'sp'
+    if (savePending) {
+        savePending = false;
+        switch (ch) {
+            case 'o': saveAsOpen();    return;
+            case 'x': saveAsClosed();  return;
+            case 'f': saveAsForward(); return;
+            case 'p': saveAsPark();    return;
+            case '\r': case '\n': case ' ':
+                savePending = true;   // игнор whitespace, продолжаем ждать
+                return;
+            default:
+                Serial.print("? save-as: ожидал o/x/f/p, получил '");
+                Serial.print(ch); Serial.println("'");
+                return;
+        }
+    }
 
     switch (ch) {
         // base
@@ -214,6 +287,18 @@ void loop() {
         case 'x': closeClaw(); printStatus(); break;
         case 'f': armForward(); printStatus(); break;
         case 'p': goPark();     printStatus(); break;
+
+        // swap claw полярности
+        case '~': swapClawPolarity(); break;
+
+        // сохранение current -> preset (2-символьная команда)
+        case 's':
+            savePending = true;
+            Serial.println("save-as: нажми o (open) / x (closed) / f (forward) / p (park)");
+            break;
+
+        // экспорт
+        case 'e': exportPresets(); break;
 
         // последовательность
         case 'g': grabSequence(); break;
