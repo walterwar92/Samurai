@@ -1039,9 +1039,16 @@ def create_app(ros_node: DashboardNode):
     index_html = os.path.join(static_dir, 'index.html')
 
     def _serve_spa():
-        """Serve React SPA index.html, fallback to old HTML templates."""
+        """Serve React SPA index.html, fallback to old HTML templates.
+        Cache-Control: no-cache — index.html ссылается на хешированные
+        assets (index-<hash>.js/.css). При пересборке хеши меняются,
+        и закешированный HTML укажет на удалённые файлы → 404. Потому
+        HTML не кешируем; assets остаются с immutable-кешем."""
         if os.path.isfile(index_html):
-            return FileResponse(index_html)
+            return FileResponse(
+                index_html,
+                headers={'Cache-Control': 'no-cache, no-store, must-revalidate'},
+            )
         return JSONResponse({'error': 'Frontend not built — run npm build in compute_node/frontend/'}, 404)
 
     @app.get('/')

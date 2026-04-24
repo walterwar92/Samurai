@@ -324,29 +324,11 @@ build_frontend() {
         return
     fi
 
-    # Решаем нужно ли пересобирать
-    local need_build=false
-    if $FORCE_FRONTEND_BUILD; then
-        log_info "Принудительная пересборка (--rebuild-frontend)"
-        need_build=true
-    elif [[ ! -f "$out_index" ]]; then
-        log_info "Билд не найден — собираю"
-        need_build=true
-    else
-        # Есть ли .tsx/.ts/.css/.html новее чем static/index.html?
-        local stale
-        stale=$(find "$fe_dir/src" "$fe_dir/index.html" -type f \
-                  \( -name "*.tsx" -o -name "*.ts" -o -name "*.css" -o -name "*.html" \) \
-                  -newer "$out_index" 2>/dev/null | head -1 || true)
-        if [[ -n "$stale" ]]; then
-            log_info "Найдены изменения в src — пересобираю фронт"
-            log_info "  trigger: $(basename "$stale")"
-            need_build=true
-        else
-            log_ok "Фронт актуален (билд новее source)"
-            return
-        fi
-    fi
+    # По умолчанию пересобираем всегда: 10 сек не жалко, зато гарантируем
+    # актуальный UI. Сравнение mtime после git pull ненадёжно (все файлы
+    # получают одинаковый timestamp). Отключить: --no-frontend-build.
+    log_info "Пересобираю фронт (10-30 сек)... (--no-frontend-build чтобы пропустить)"
+    local need_build=true
 
     # node_modules — установим если нет
     if [[ ! -d "$fe_dir/node_modules" ]]; then
