@@ -10,20 +10,26 @@
  *   - HC-SR04 ультразвук (TRIG/ECHO)
  *   - 3 серво: CLAW (клешня), ARM (плечо), BASE (база)
  *
- * Исправление проблемы "левые колёса стартуют позже и медленнее":
- *   1. Kick-start — короткий импульс PWM=255 на оба мотора, чтобы преодолеть
- *      статическое трение одновременно. Без этого мотор с большим трением
- *      (обычно левый) не трогается, пока правый уже крутится.
- *   2. MIN_PWM = 120 — ниже этой зоны мотор не крутится стабильно.
- *      constrain() в ПИД-цикле держит обе стороны выше порога.
- *   3. LEFT_TRIM = 1.12 — множитель PWM для левого мотора. Компенсирует
- *      механическую разницу (трение, посадка, редуктор). Калибруется опытно:
- *      если робот уводит вправо — увеличить, если влево — уменьшить.
- *   4. ПИД по гироскопу продолжает держать курс в движении.
+ * ДВА ПРАКТИЧЕСКИХ ПЕРЕКЛЮЧАТЕЛЯ (см. ниже):
+ *   - OPEN_LOOP  — разомкнутый цикл (ПИД выключен). Включи и проверь:
+ *                  если в open-loop едет ПРЯМО — значит проблема была в знаке ПИД
+ *                  (см. GYRO_SIGN). Если крутится — значит проблема физическая
+ *                  (подбирай LEFT_TRIM).
+ *   - GYRO_SIGN  — знак угловой скорости по Z. Если в закрытом цикле робот
+ *                  только УСИЛИВАЕТ поворот (едет по кругу), поменяй +1 на -1.
  */
 
 #include <Wire.h>
 #include <Servo.h>
+
+// ========== РЕЖИМ ОТЛАДКИ ==========
+// Раскомментируй для разомкнутого цикла (без ПИД) — диагностика
+// #define OPEN_LOOP
+
+// Знак гироскопа по оси Z.
+//   Если робот отклоняется вправо, а theta растёт в «не ту» сторону и
+//   ПИД усиливает поворот — поменяй на -1.
+const int GYRO_SIGN = +1;
 
 // ========== ПИНЫ ==========
 #define PWM1_PIN    5    // левый PWM
@@ -43,21 +49,24 @@ const uint8_t DIR_FORWARD = 92;   // 0b01011100
 const uint8_t DIR_STOP    = 0;
 
 // ========== ПАРАМЕТРЫ ДВИЖЕНИЯ ==========
-const float STOP_DISTANCE_CM = 10.0;
-const int   BASE_PWM         = 200;
-const int   MIN_PWM          = 120;   // ниже моторы не крутятся уверенно
+const float STOP_DISTANCE_CM = 10.0f;
+const int   BASE_PWM         = 180;  // крейсер
+const int   MIN_PWM          = 70;   // не душим ПИД clamp'ом
 const int   MAX_PWM          = 255;
-const int   KICK_PWM         = 255;   // kick-start для срыва статического трения
-const int   KICK_MS          = 180;   // длительность kick-start
+const int   KICK_PWM         = 255;  // kick-start для срыва статического трения
+const int   KICK_MS          = 150;  // длительность kick-start
 
-// Механическая компенсация: левый мотор слабее → умножаем его PWM
-// Подбирается опытно. 1.0 = без компенсации.
-const float LEFT_TRIM  = 1.12f;
+// Механическая компенсация (1.0 = без компенсации).
+// ВАЖНО: оставь 1.00/1.00 для первого теста, иначе навяжешь асимметрию, которую
+// ПИД будет пытаться отработать. Калибруй только если в OPEN_LOOP робот уводит.
+const float LEFT_TRIM  = 1.00f;
 const float RIGHT_TRIM = 1.00f;
 
-// ПИД коррекция курса по гироскопу (угол Z)
-float Kp = 1.80f;   // пропорциональный
-float Kd = 0.85f;   // дифференциальный
+// ПИД коррекция курса по гироскопу (угол Z).
+// Слабее, чем было: слишком агрессивный ПИД сам катает робота при скачках
+// гироскопа от вибраций.
+float Kp = 0.8f;    // пропорциональный (по deg)
+float Kd = 0.25f;   // дифференциальный (по deg/s)
 
 // ========== ГИРОСКОП MPU-6050 ==========
 #define MPU6050_ADDR 0x68
@@ -69,8 +78,8 @@ unsigned long lastTime = 0;
 Servo clawServo, armServo, baseServo;
 
 // ========== УПРАВЛЕНИЕ МОТОРАМИ ==========
-// Применяет trim-коэффициенты и clamp к [MIN_PWM, MAX_PWM].
-// При speed <= 0 — мотор останавливается полностью (обход trim для штатного стопа).
+// Применяет trim и clamp. speed<=0 полностью останавливает мотор
+// (обход MIN_PWM для штатного стопа).
 static inline int applyTrim(int speed, float trim) {
     if (speed <= 0) return 0;
     int v = (int)(speed * trim + 0.5f);
@@ -99,8 +108,7 @@ void motorStop() {
     digitalWrite(STCP_PIN, HIGH);
 }
 
-// Kick-start: одновременно поднимает оба мотора на KICK_PWM, чтобы
-// они тронулись вместе, затем плавно снижает до BASE_PWM.
+// Kick-start: одинаковый импульс 255 → оба мотора срывают трение вместе.
 void kickStart() {
     Serial.println("Kick-start");
     motorRaw(DIR_FORWARD, KICK_PWM, KICK_PWM);
@@ -113,7 +121,7 @@ void kickStart() {
 }
 
 // ========== УЛЬТРАЗВУК ==========
-// Медианный фильтр из 3 измерений — отсекает выбросы от эха/шумов
+// Медианный фильтр из 3 измерений — отсекает выбросы от эха/шумов.
 float readDistanceRaw() {
     digitalWrite(TRIG_PIN, LOW);
     delayMicroseconds(2);
@@ -137,22 +145,23 @@ float getDistance() {
 }
 
 // ========== ГИРОСКОП ==========
+// Явный каст параметров requestFrom — снимает ambiguity warning Uno.
 void readGyroRaw(int16_t *gx, int16_t *gy, int16_t *gz) {
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x3B);
+    Wire.beginTransmission((uint8_t)MPU6050_ADDR);
+    Wire.write((uint8_t)0x3B);
     Wire.endTransmission(false);
-    Wire.requestFrom(MPU6050_ADDR, (uint8_t)14, (uint8_t)true);
+    Wire.requestFrom((uint8_t)MPU6050_ADDR, (uint8_t)14, (uint8_t)true);
     for (int i = 0; i < 4; i++) { (void)(Wire.read() << 8 | Wire.read()); }
     *gx = Wire.read() << 8 | Wire.read();
     *gy = Wire.read() << 8 | Wire.read();
     *gz = Wire.read() << 8 | Wire.read();
 }
 
-// Калибровка bias при старте (робот должен стоять неподвижно)
+// Калибровка bias (робот стоит неподвижно).
 float gyroBiasZ = 0.0f;
 
 void calibrateGyro() {
-    const int N = 200;
+    const int N = 300;
     long sum = 0;
     int16_t gx, gy, gz;
     for (int i = 0; i < N; i++) {
@@ -168,13 +177,23 @@ void calibrateGyro() {
 void updateGyro() {
     int16_t gx, gy, gz;
     readGyroRaw(&gx, &gy, &gz);
-    float omega_deg = (gz - gyroBiasZ) / 131.0f;   // MPU-6050 ±250°/s → 131 LSB/°/s
+    // MPU-6050 ±250°/s → 131 LSB/°/s. GYRO_SIGN переворачивает знак при
+    // необходимости (зависит от ориентации чипа на корпусе).
+    float omega_deg = GYRO_SIGN * (gz - gyroBiasZ) / 131.0f;
     omega = omega_deg * PI / 180.0f;
     unsigned long now = micros();
     float dt = (now - lastTime) / 1000000.0f;
+    // Защита от глюка micros() при первом вызове / overflow: слишком большой dt
+    // мгновенно испортит theta. Разумный потолок 0.1 с.
+    if (dt > 0.1f) dt = 0.0f;
     lastTime = now;
     theta += omega * dt;
     theta_deg = theta * 180.0f / PI;
+}
+
+void resetGyroIntegral() {
+    theta = 0.0f;
+    lastTime = micros();
 }
 
 // ========== СЕРВО ==========
@@ -205,29 +224,32 @@ void setup() {
     armSafePose();
 
     Wire.begin();
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x6B);   // PWR_MGMT_1
-    Wire.write(0x00);   // wake up
+    Wire.beginTransmission((uint8_t)MPU6050_ADDR);
+    Wire.write((uint8_t)0x6B);   // PWR_MGMT_1
+    Wire.write((uint8_t)0x00);   // wake up
     Wire.endTransmission();
     delay(100);
 
     Serial.println("=== Vpered Uno ===");
+#ifdef OPEN_LOOP
+    Serial.println("MODE: OPEN_LOOP (no gyro correction)");
+#else
+    Serial.println("MODE: PID (closed-loop)");
+    Serial.print("GYRO_SIGN="); Serial.println(GYRO_SIGN);
+#endif
     Serial.println("Calibrating gyro (hold still)...");
     calibrateGyro();
 
-    lastTime = micros();
     Serial.println("Ready. Going forward in 1s...");
     delay(1000);
 }
 
 // ========== MAIN ==========
 void loop() {
-    // сброс интеграла угла в момент старта заезда
-    theta = 0.0f;
-    lastTime = micros();
-
-    // Kick-start — раскручиваем оба мотора одновременно
+    // Kick-start раскручивает моторы; только ПОСЛЕ него сбрасываем интеграл —
+    // иначе dt первого updateGyro() включает длительность kick-start.
     kickStart();
+    resetGyroIntegral();
 
     unsigned long loopStart = millis();
 
@@ -235,19 +257,30 @@ void loop() {
         float obstacle = getDistance();
         updateGyro();
 
-        // ПИД: ошибка по углу (0 = идти прямо) + демпфирование по скорости
+#ifdef OPEN_LOOP
+        // Равные PWM на оба борта. Используй для диагностики: если едет прямо
+        // — ПИД рулил в обратную сторону; если крутится — подбирай LEFT_TRIM.
+        int leftCmd  = BASE_PWM;
+        int rightCmd = BASE_PWM;
+#else
+        // ПИД: ошибка по углу + демпфирование по скорости (оба в градусах).
         float correction = Kp * theta_deg + Kd * (omega * 180.0f / PI);
+        // Clamp коррекции — чтобы одиночный спайк не перекосил моторы на весь диапазон
+        if (correction >  60.0f) correction =  60.0f;
+        if (correction < -60.0f) correction = -60.0f;
         int leftCmd  = BASE_PWM - (int)correction;
         int rightCmd = BASE_PWM + (int)correction;
+#endif
 
         motorDrive(DIR_FORWARD, leftCmd, rightCmd);
 
-        // Лог — раз в ~100 мс хватит, полный лог каждый цикл забивает Serial
+        // Лог ~10 Гц — удобно для калибровки без мусора в Serial.
         static unsigned long lastLog = 0;
         if (millis() - lastLog > 100) {
             lastLog = millis();
             Serial.print("t=");   Serial.print((millis() - loopStart) / 1000.0f, 1);
             Serial.print("s  theta="); Serial.print(theta_deg, 1);
+            Serial.print("  omega="); Serial.print(omega * 180.0f / PI, 1);
             Serial.print("  L="); Serial.print(leftCmd);
             Serial.print("  R="); Serial.print(rightCmd);
             Serial.print("  dist="); Serial.println(obstacle, 1);
