@@ -174,11 +174,11 @@ void motorStop() {
     prevRightCmd = 0;
 }
 
-void kickStart() {
-    motorRaw(DIR_FORWARD, KICK_PWM, KICK_PWM);
+void kickStart(uint8_t dir = DIR_FORWARD) {
+    motorRaw(dir, KICK_PWM, KICK_PWM);
     delay(KICK_MS);
     for (int p = KICK_PWM; p >= BASE_PWM; p -= 10) {
-        motorDrive(DIR_FORWARD, p, p);
+        motorDrive(dir, p, p);
         delay(15);
     }
     prevLeftCmd  = BASE_PWM;
@@ -361,14 +361,44 @@ void tickPivot(bool leftDir) {
 }
 
 void tickBackward() {
-    // Простой open-loop задний ход (без ПИД — гироскоп правильнее интегрируется
-    // только при движении вперёд). Если DIR_BACKWARD не задан — стоп.
+    // ПИД-удержание курса при движении назад. Гироскоп измеряет угловую
+    // скорость в системе координат робота независимо от направления, но
+    // реакция моторов на коррекцию инвертирована: при reverse «правый
+    // быстрее» поворачивает корпус в противоположную сторону по сравнению
+    // с forward. Поэтому correction умножается на -1 (или, что то же —
+    // меняем знаки в leftCmd/rightCmd).
     if (DIR_BACKWARD == 0) {
         motorStop();
         return;
     }
     updateGyro();
-    motorDrive(DIR_BACKWARD, BASE_PWM, BASE_PWM);
+
+    float err = theta_deg - targetTheta;
+    float errEff = (err > -HEADING_DEADBAND_DEG && err < HEADING_DEADBAND_DEG) ? 0.0f : err;
+    pidIntegral += errEff * dt_sec;
+    if (pidIntegral >  INTEGRAL_MAX_DEG_S) pidIntegral =  INTEGRAL_MAX_DEG_S;
+    if (pidIntegral < -INTEGRAL_MAX_DEG_S) pidIntegral = -INTEGRAL_MAX_DEG_S;
+
+    float kpEff = (err > AGGRESSIVE_DEG || err < -AGGRESSIVE_DEG) ? Kp * AGGRESSIVE_BOOST : Kp;
+    // -1 — инверсия для реверса (см. комментарий выше)
+    float corr = -controlSign * (kpEff * errEff + Ki * pidIntegral + Kd * omega_filt);
+    if (corr >  CORRECTION_CLAMP) corr =  CORRECTION_CLAMP;
+    if (corr < -CORRECTION_CLAMP) corr = -CORRECTION_CLAMP;
+
+    int leftCmd  = BASE_PWM - (int)corr;
+    int rightCmd = BASE_PWM + (int)corr;
+
+    // Slew-rate
+    int dL = leftCmd - prevLeftCmd;
+    if (dL >  SLEW_MAX_PWM) leftCmd = prevLeftCmd + SLEW_MAX_PWM;
+    if (dL < -SLEW_MAX_PWM) leftCmd = prevLeftCmd - SLEW_MAX_PWM;
+    int dR = rightCmd - prevRightCmd;
+    if (dR >  SLEW_MAX_PWM) rightCmd = prevRightCmd + SLEW_MAX_PWM;
+    if (dR < -SLEW_MAX_PWM) rightCmd = prevRightCmd - SLEW_MAX_PWM;
+    prevLeftCmd  = leftCmd;
+    prevRightCmd = rightCmd;
+
+    motorDrive(DIR_BACKWARD, leftCmd, rightCmd);
 }
 
 // Тестовая прокрутка моторов произвольным DIR-байтом (для подбора DIR_BACKWARD)
@@ -407,8 +437,15 @@ void enterMode(RobotMode m) {
     mode = m;
     if (m == MODE_FWD) {
         // полноценный старт с kick-start и сбросом интегралов
-        kickStart();
+        kickStart(DIR_FORWARD);
         resetGyroIntegral();
+    } else if (m == MODE_BWD) {
+        // kick-start назад тоже нужен — преодолеть статическое трение,
+        // и сбросить интеграл чтобы ПИД не «помнил» курсовую ошибку с FWD.
+        if (DIR_BACKWARD != 0) {
+            kickStart(DIR_BACKWARD);
+            resetGyroIntegral();
+        }
     } else if (m == MODE_LEFT || m == MODE_RIGHT) {
         // мягкий старт без kick (поворот не нужен kick)
         prevLeftCmd = prevRightCmd = 0;
@@ -603,8 +640,8 @@ void loop() {
         }
     }
 
-    // Watchdog: курс уехал безнадёжно при FWD → STOP
-    if (mode == MODE_FWD) {
+    // Watchdog: курс уехал безнадёжно при FWD/BWD → STOP
+    if (mode == MODE_FWD || mode == MODE_BWD) {
         float err = theta_deg - targetTheta;
         if (err > 30.0f || err < -30.0f) {
             if (watchdogSince == 0) watchdogSince = now;
