@@ -293,3 +293,18 @@ mqtt:
   keepalive: 15                # MQTT keepalive (sec) — быстрое обнаружение потери связи
   reconnect_min: 0.5           # MQTT reconnect min delay (sec)
   reconnect_max: 5             # MQTT reconnect max delay (sec)
+
+  # ── Optional authentication ────────────────────────────────────────────
+  # Включить через ./samurai.sh auth init (генерирует файл ~/.samurai/mqtt.passwd)
+  # или через ENV: SAMURAI_MQTT_USER + SAMURAI_MQTT_PASS.
+  #
+  # Приоритет credentials (config_loader.get_mqtt_credentials()):
+  #   1. ENV vars SAMURAI_MQTT_USER / SAMURAI_MQTT_PASS
+  #   2. Файл ~/.samurai/mqtt.passwd
+  #   3. Эта секция (только для dev — не коммить пароли в git!)
+  #
+  # Чтобы принудительно ОТКЛЮЧИТЬ auth не удаляя файл — установить enabled: false.
+  # auth:
+  #   enabled: true            # явный выключатель (опционально)
+  #   username: "samurai"      # дев-режим: пароль в config.yaml (НЕ для production)
+  #   password: "samurai"
