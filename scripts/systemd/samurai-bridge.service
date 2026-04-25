@@ -1,0 +1,28 @@
+[Unit]
+Description=Samurai Samcan USB Bridge — Arduino Uno serial → FastAPI :5005
+Documentation=https://github.com/walterwar92/Samurai
+After=network.target
+
+[Service]
+Type=simple
+User=__SAMURAI_USER__
+Group=__SAMURAI_USER__
+WorkingDirectory=__SAMURAI_ROOT__
+
+Environment="SAMURAI_SKIP_PIP_INSTALL=1"
+Environment="SAMURAI_STATE_DIR=/var/lib/samurai"
+
+ExecStart=__SAMURAI_ROOT__/samurai.sh bridge
+
+Restart=on-failure
+RestartSec=3s
+
+# Доступ к /dev/ttyUSB* / /dev/ttyACM*
+SupplementaryGroups=dialout
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=samurai-bridge
+
+[Install]
+WantedBy=multi-user.target

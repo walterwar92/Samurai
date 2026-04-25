@@ -1,0 +1,36 @@
+[Unit]
+Description=Samurai Compute — laptop side (Docker + ROS2 + Dashboard)
+Documentation=https://github.com/walterwar92/Samurai
+After=network-online.target docker.service avahi-daemon.service
+Wants=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=__SAMURAI_USER__
+Group=__SAMURAI_USER__
+WorkingDirectory=__SAMURAI_ROOT__
+
+# Не устанавливать пакеты автоматически — у service-юзера может не быть pip
+Environment="SAMURAI_SKIP_PIP_INSTALL=1"
+Environment="SAMURAI_STATE_DIR=/var/lib/samurai"
+# DISPLAY нужен для GUI приложений в Docker (если используются)
+Environment="DISPLAY=:0"
+
+# По умолчанию — авто-обнаружение Pi через mDNS, не пересобирать фронт.
+# Если нужны опции (--pi, --hotspot и т.д.) — отредактируй этот файл.
+ExecStart=__SAMURAI_ROOT__/samurai.sh compute --no-frontend-build
+
+# Контейнер запускается через docker run --rm — при остановке нужно убить его
+ExecStop=/usr/bin/docker stop samurai_compute
+TimeoutStopSec=30s
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=samurai-compute
+
+[Install]
+WantedBy=multi-user.target

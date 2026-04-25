@@ -66,6 +66,12 @@ check_pip_packages() {
 
     [[ ${#missing[@]} -eq 0 ]] && { log_ok "Все зависимости на месте"; return 0; }
 
+    # SAMURAI_SKIP_PIP_INSTALL=1 — для systemd (pip недоступен под service-юзером).
+    # В этом режиме отсутствующие пакеты считаются ошибкой.
+    if [[ "${SAMURAI_SKIP_PIP_INSTALL:-0}" == "1" ]]; then
+        die "Отсутствуют пакеты: ${missing[*]}. Установи вручную: pip install ${missing[*]}"
+    fi
+
     log_info "Устанавливаю: ${missing[*]}"
     # Пробуем три варианта pip install (системный → user → break-system-packages)
     pip3 install --quiet "${missing[@]}" 2>/dev/null \
