@@ -343,6 +343,53 @@ unit-файлы в `/etc/systemd/system/`. Подробнее: `./scripts/system
 
 ---
 
+### Камера: H.264 поток (с 2026-04)
+
+Раньше: JPEG в MQTT topic `samurai/{id}/camera` (~2.5 МБ/с, 640×480 q=65 20fps).
+Теперь: **H.264** через TCP, hardware encoder Pi (~200-500 КБ/с, 10× меньше).
+
+**Архитектура:**
+```
+Pi camera_node
+  ├─ picamera2 H264Encoder (hardware) → bitrate 2 Mbps, iperiod 30
+  ├─ TCPStreamServer на :8554
+  │    ├─ Multiplex: множественные клиенты, каждому свой socket
+  │    └─ Late-join safe: новые клиенты получают init_buffer (SPS/PPS+IDR)
+  └─ MQTT discovery: samurai/{id}/camera/endpoint (retained, JSON)
+
+Compute / Frontend
+  ├─ compute_node/detectors/H264TCPFrameSource (PyAV decode → BGR np.ndarray)
+  ├─ dashboard /ws/h264 (asyncio TCP→WebSocket прокси)
+  └─ React CameraFeed (WebCodecs VideoDecoder → canvas)
+```
+
+**Browser requirements (для CameraFeed):**
+- Chrome 94+ / Edge 94+ / Android Chrome 94+ (WebCodecs API)
+- Safari iOS — WebCodecs только в Technology Preview, fallback "не поддерживается"
+
+**Pi requirements:**
+- picamera2 (стандарт на Raspberry Pi OS)
+- Open port 8554 в firewall (если есть): `sudo ufw allow 8554/tcp`
+
+**Compute requirements:**
+- PyAV (`pip install av`) для декодирования H.264 в детекторе
+
+**Конфигурация (config.yaml `mqtt`):**
+```yaml
+camera_h264_port: 8554       # TCP port на Pi
+camera_h264_bitrate: 2000000 # 2 Mbps (можно 1_000_000 для узкого WiFi)
+camera_h264_iperiod: 30      # I-frame каждые 30 кадров (1.5с @ 20fps)
+```
+
+**Что временно сломано (TODO):**
+- Android `CameraScreen` — показывает заглушку "Видео временно недоступно" вместо MJPEG.
+  Нужен MediaCodec H.264 декодер (issue #9 follow-up)
+- `compute_node/simulator.py` — продолжает отдавать MJPEG /video_feed для legacy UI,
+  но React frontend ждёт H.264 → симулятор-видео в нём не работает
+- `tools/camera_and_range.py` — читал JPEG MQTT topic, не работает
+
+---
+
 ### Детектор объектов (YOLO + HSV)
 
 Один объединённый детектор `compute_node/detector.py` (раньше было 3 разных
