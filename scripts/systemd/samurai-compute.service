@@ -16,6 +16,10 @@ Environment="SAMURAI_SKIP_PIP_INSTALL=1"
 Environment="SAMURAI_STATE_DIR=/var/lib/samurai"
 # DISPLAY нужен для GUI приложений в Docker (если используются)
 Environment="DISPLAY=:0"
+# Опциональный MQTT auth (или положи в ~/.samurai/mqtt.passwd, samurai compute
+# подхватит и пробросит в Docker)
+# Environment="SAMURAI_MQTT_USER=samurai"
+# Environment="SAMURAI_MQTT_PASS=samurai"
 
 # По умолчанию — авто-обнаружение Pi через mDNS, не пересобирать фронт.
 # Если нужны опции (--pi, --hotspot и т.д.) — отредактируй этот файл.

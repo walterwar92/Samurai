@@ -43,6 +43,10 @@ ${BOLD}Команды ноутбука:${NC}
                   [pi@host]          Деплой на Pi через scp
 
 ${BOLD}Управление:${NC}
+  ${GREEN}auth${NC} <sub>     MQTT credentials (init/show/set/disable/status)
+                  init                — создать файл ~/.samurai/mqtt.passwd
+                  set USER PASS       — установить вручную
+                  show / status / disable
   ${GREEN}status${NC}        Показать запущенные компоненты + системные службы
   ${GREEN}stop${NC} [target]  Остановить компоненты (без аргумента = все)
   ${GREEN}help${NC}          Эта справка

@@ -113,5 +113,22 @@ confirm() {
     [[ "$ans" =~ ^[Yy]$ ]]
 }
 
+# ── MQTT credentials helper ────────────────────────────────────────────────
+# Читает ~/.samurai/mqtt.passwd и экспортирует SAMURAI_MQTT_USER + SAMURAI_MQTT_PASS.
+# Если файла нет — переменные не устанавливаются (anonymous).
+# Использование (после source common.sh):
+#   load_mqtt_creds        # экспортирует ENV если файл есть
+#   echo "$SAMURAI_MQTT_USER"
+load_mqtt_creds() {
+    local passwd_file="${SAMURAI_MQTT_PASSWD:-$HOME/.samurai/mqtt.passwd}"
+    [[ -f "$passwd_file" ]] || return 1
+    local line
+    line=$(head -n1 "$passwd_file" 2>/dev/null || true)
+    [[ "$line" == *":"* ]] || return 1
+    export SAMURAI_MQTT_USER="${line%%:*}"
+    export SAMURAI_MQTT_PASS="${line#*:}"
+    return 0
+}
+
 # ── Версия CLI ──────────────────────────────────────────────────────────────
 SAMURAI_CLI_VERSION="1.0.0"

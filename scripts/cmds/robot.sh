@@ -34,8 +34,19 @@ cmd_robot_mqtt() {
     check_pip_optional picamera2        "picamera2"
 
     check_i2c || true
-    if [[ "$no_mqtt_restart" != "true" ]]; then
-        check_mosquitto
+
+    # Загружаем MQTT credentials (если есть файл ~/.samurai/mqtt.passwd).
+    # Это экспортирует SAMURAI_MQTT_USER/PASS — pi_nodes.mqtt_node их подхватит.
+    if load_mqtt_creds; then
+        log_ok "MQTT auth: user=${BOLD}${SAMURAI_MQTT_USER}${NC} (из ~/.samurai/mqtt.passwd)"
+        if [[ "$no_mqtt_restart" != "true" ]]; then
+            check_mosquitto --auth "$SAMURAI_MQTT_USER" "$SAMURAI_MQTT_PASS"
+        fi
+    else
+        log_info "MQTT auth: anonymous (нет ~/.samurai/mqtt.passwd)"
+        if [[ "$no_mqtt_restart" != "true" ]]; then
+            check_mosquitto
+        fi
     fi
     check_avahi || true
 
@@ -49,6 +60,8 @@ cmd_robot_mqtt() {
     echo ""
 
     cd "$SAMURAI_ROOT"
+    # ENV vars SAMURAI_MQTT_USER/PASS унаследуются. robot_launcher их подхватит
+    # через config_loader.get_mqtt_credentials().
     exec python3 -m pi_nodes.robot_launcher \
         --broker "$my_ip" \
         --port 1883 \

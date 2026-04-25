@@ -42,6 +42,12 @@ run_cpu_detector() {
         log_warn "Порт 1883 не отвечает — убедись что mosquitto на Pi"
     fi
 
+    # MQTT credentials (через ENV — object_detector_node наследует MqttNode
+    # который сам resolve через config_loader.get_mqtt_credentials)
+    if load_mqtt_creds; then
+        log_ok "MQTT auth: user=${BOLD}${SAMURAI_MQTT_USER}${NC}"
+    fi
+
     log_step "Запуск детектора"
     echo ""
     echo -e "  ${BOLD}┌──────────────────────────────────────────┐${NC}"
@@ -75,6 +81,12 @@ run_gpu_detector() {
         else
             pip install --upgrade onnxruntime && log_ok "onnxruntime (CPU) установлен"
         fi
+    fi
+
+    # MQTT credentials — yolo_detector_mqtt либо через --mqtt-user/--mqtt-pass,
+    # либо через ENV (которые мы загружаем здесь)
+    if load_mqtt_creds; then
+        log_ok "MQTT auth: user=${BOLD}${SAMURAI_MQTT_USER}${NC}"
     fi
 
     log_step "Окружение"

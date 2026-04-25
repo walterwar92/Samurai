@@ -14,6 +14,10 @@ WorkingDirectory=__SAMURAI_ROOT__
 Environment="SAMURAI_SKIP_PIP_INSTALL=1"
 # Лог-директория
 Environment="SAMURAI_STATE_DIR=/var/lib/samurai"
+# Опциональный MQTT auth — раскомментируй и подставь реальные creds,
+# либо положи их в ~/.samurai/mqtt.passwd (config_loader сам подхватит).
+# Environment="SAMURAI_MQTT_USER=samurai"
+# Environment="SAMURAI_MQTT_PASS=samurai"
 
 # --no-mqtt-restart: mosquitto настраивается отдельно через mosquitto.service.
 # Скрипт не должен пересоздавать конфиг при каждом запуске.

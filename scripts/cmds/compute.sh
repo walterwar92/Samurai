@@ -179,6 +179,16 @@ launch_docker() {
         docker_net_args="--net=host"
     fi
 
+    # MQTT credentials (если файл существует) — пробрасываем в Docker через ENV
+    local mqtt_auth_args=()
+    if load_mqtt_creds; then
+        log_ok "MQTT auth: user=${BOLD}${SAMURAI_MQTT_USER}${NC}"
+        mqtt_auth_args=(-e "SAMURAI_MQTT_USER=$SAMURAI_MQTT_USER" \
+                        -e "SAMURAI_MQTT_PASS=$SAMURAI_MQTT_PASS")
+    else
+        log_info "MQTT auth: anonymous (нет ~/.samurai/mqtt.passwd)"
+    fi
+
     # shellcheck disable=SC2086
     MSYS_NO_PATHCONV=1 docker run --rm \
         --name "$CONTAINER_NAME" \
@@ -192,6 +202,7 @@ launch_docker() {
         -e ROBOT_ID="robot1" \
         -e CAMERA_FLIP="-1" \
         -e SAMCAN_BRIDGE_URL="$samcan_url" \
+        "${mqtt_auth_args[@]}" \
         "$DOCKER_IMAGE" \
         bash -c "
             source /opt/ros/humble/setup.bash
