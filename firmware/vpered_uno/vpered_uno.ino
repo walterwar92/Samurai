@@ -65,9 +65,10 @@
 //
 // Типичные кандидаты для классического 74HC595+L298 шасси (если FWD=92):
 //   163 (~92 ^ 0xFF), 172, 228, 35, 76, 240, 95, 80
-const uint8_t DIR_FORWARD  = 92;   // 0b01011100
-const uint8_t DIR_STOP     = 0;
-const uint8_t DIR_BACKWARD = 0;    // ← вписать после подбора (0 = недоступно)
+const uint8_t DIR_FORWARD  = 92;    // 0b01011100  (подобрано в оригинале)
+const uint8_t DIR_STOP     = 0;     // 0b00000000  (все H-мосты в high-Z)
+const uint8_t DIR_BACKWARD = 163;   // 0b10100011  (FORWARD XOR 0xFF — на этом
+                                    //  шасси полная инверсия битов даёт reverse)
 
 // ========== ПАРАМЕТРЫ ==========
 const float STOP_DISTANCE_CM = 10.0f;
