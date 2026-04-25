@@ -27,8 +27,8 @@ REST API reference:
     GET  /api/actuators               — claw state
     GET  /api/battery                 — battery info
     GET  /api/speed_profile           — current speed profile
-    GET  /api/camera/frame            — JPEG binary
-    GET  /api/camera/frame.json       — base64 JPEG
+    GET  /api/camera/endpoint         — H.264 TCP discovery (host, port, codec, ...)
+    WS   /ws/h264                     — H.264 stream proxy (Pi TCP → browser)
     GET  /api/map/image               — PNG binary
     GET  /api/map/info                — map metadata
     GET  /api/map/list                — list saved maps
@@ -142,7 +142,8 @@ class DashboardNode(Node):
         self._mqtt_connected = False
 
         # ── Shared state ────────────────────────────────────
-        self._latest_frame   = None   # raw JPEG bytes (from camera MQTT)
+        self._latest_frame   = None   # YOLO annotated JPEG (only) — see _yolo_frame
+        self._h264_endpoint  = None   # camera discovery info (host, port, codec, ...)
         self._yolo_frame     = None   # annotated JPEG (from ROS2 YOLO)
         self._robot_status   = {}
         self._ball_detection = {}
@@ -263,8 +264,10 @@ class DashboardNode(Node):
             return
         self._mqtt_connected = True
         p = self._prefix
-        # Subscribe to all Pi sensor topics
-        for topic in ['camera', 'range', 'imu', 'battery', 'temperature',
+        # Subscribe to all Pi sensor topics.
+        # 'camera' (JPEG) удалён 2026-04 — теперь camera/endpoint discovery,
+        # H.264 поток идёт напрямую TCP к WebSocket /ws/h264 (см. WS endpoint ниже).
+        for topic in ['camera/endpoint', 'range', 'imu', 'battery', 'temperature',
                       'status', 'odom', 'claw/state', 'head/state', 'arm/state',
                       'watchdog', 'voice_command', 'speed_profile/active',
                       'slam_map', 'path_recorder/status', 'path_recorder/path',
@@ -293,8 +296,8 @@ class DashboardNode(Node):
     def _mqtt_on_message(self, client, userdata, msg):
         suffix = msg.topic[len(self._prefix) + 1:]
         try:
-            if suffix == 'camera':
-                self._mqtt_camera(msg.payload)
+            if suffix == 'camera/endpoint':
+                self._mqtt_camera_endpoint(msg.payload)
             elif suffix == 'range':
                 self._mqtt_range(msg.payload)
             elif suffix == 'imu':
@@ -378,17 +381,29 @@ class DashboardNode(Node):
         except Exception as exc:
             self.get_logger().error(f'MQTT msg error [{suffix}]: {exc}')
 
-    def _mqtt_camera(self, payload):
-        flip = int(os.environ.get('CAMERA_FLIP', '-1'))  # -1=rotate180°, 0=vertical, 1=horizontal, 99=none
-        if flip != 99:
-            np_arr = np.frombuffer(bytes(payload), np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if frame is not None:
-                frame = cv2.flip(frame, flip)
-                _, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                payload = enc.tobytes()
+    def _mqtt_camera_endpoint(self, payload):
+        """
+        Discovery: Pi публикует {host, port, codec, ...} retained.
+        Используется для проксирования H.264 TCP → WebSocket /ws/h264.
+        Empty payload = camera offline (Pi выключился).
+        """
+        if not payload:
+            with self._lock:
+                self._h264_endpoint = None
+            self.get_logger().warn('Camera endpoint cleared (Pi camera offline)')
+            return
+        try:
+            data = json.loads(payload)
+        except Exception as e:
+            self.get_logger().error(f'Bad camera/endpoint JSON: {e}')
+            return
         with self._lock:
-            self._latest_frame = bytes(payload)
+            self._h264_endpoint = data
+        self.get_logger().info(
+            f'Camera endpoint: {data.get("host")}:{data.get("port")} '
+            f'({data.get("codec")} {data.get("width")}x{data.get("height")} '
+            f'@{data.get("fps")}fps)'
+        )
 
     def _mqtt_range(self, payload):
         try:
@@ -1083,36 +1098,76 @@ def create_app(ros_node: DashboardNode):
     async def serve_3d():
         return _serve_spa()
 
-    # ── MJPEG video stream ────────────────────────────────────────
-    async def _mjpeg_generator():
-        while True:
-            frame = ros_node.get_frame()
-            if frame:
-                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            await asyncio.sleep(0.033)  # ~30fps cap
+    # ── MJPEG /video_feed УДАЛЁН (2026-04, пункт #9) ──────────────
+    # Раньше отдавал JPEG поток (multipart/x-mixed-replace). Camera_node
+    # больше не публикует JPEG в MQTT — H.264 идёт напрямую TCP → /ws/h264.
+    # Если кто-то хочет просто <img src="..."> — нужен сервер, декодирующий
+    # H.264→JPEG, мы это намеренно не делаем (CPU + смысла нет).
+    # /ws/camera (JPEG WebSocket) тоже удалён — заменён на /ws/h264.
 
-    @app.get('/video_feed')
-    async def video_feed():
-        from starlette.responses import StreamingResponse
-        return StreamingResponse(_mjpeg_generator(),
-                                 media_type='multipart/x-mixed-replace; boundary=frame')
-
-    # ── WebSocket binary camera stream (low-latency) ───────────
+    # ── WebSocket H.264 proxy (Pi TCP → browser WebSocket) ─────────
     from fastapi import WebSocket as FastAPIWebSocket, WebSocketDisconnect
 
-    @app.websocket('/ws/camera')
-    async def ws_camera(ws: FastAPIWebSocket):
+    @app.websocket('/ws/h264')
+    async def ws_h264(ws: FastAPIWebSocket):
+        """
+        Прокси H.264 TCP-потока с Pi в WebSocket для фронта.
+        Браузер использует WebCodecs API + canvas для рендера.
+
+        Каждый WS клиент → отдельный TCP коннект к Pi (Pi уже умеет
+        multiplex через TCPStreamServer и отдаёт init_buffer late-joiner'ам).
+        """
         await ws.accept()
+        # Получаем актуальный endpoint
+        with ros_node._lock:
+            ep = ros_node._h264_endpoint
+        if not ep:
+            await ws.close(code=1011, reason='Camera offline (no endpoint)')
+            return
+
+        host = ep.get('host')
+        port = int(ep.get('port', 8554))
+        if not host:
+            await ws.close(code=1011, reason='Bad endpoint (no host)')
+            return
+
+        # Send endpoint metadata first (codec params, dimensions для VideoDecoder)
+        try:
+            await ws.send_json({
+                'type': 'endpoint',
+                'codec': ep.get('codec', 'h264'),
+                'format': ep.get('format', 'annex-b'),
+                'width': ep.get('width'),
+                'height': ep.get('height'),
+                'fps': ep.get('fps'),
+            })
+        except Exception:
+            return
+
+        # TCP к Pi — async через open_connection
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=5.0)
+        except (OSError, asyncio.TimeoutError) as e:
+            await ws.close(code=1011, reason=f'TCP connect failed: {e}')
+            return
+
         try:
             while True:
-                frame = ros_node.get_frame()
-                if frame:
-                    await ws.send_bytes(frame)
-                await asyncio.sleep(0.033)  # ~30fps cap
+                data = await reader.read(64 * 1024)
+                if not data:
+                    break
+                await ws.send_bytes(data)
         except WebSocketDisconnect:
             pass
         except Exception:
             pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     # ── Samcan USB bridge proxy ────────────────────────────────
     # Хост-процесс samcan_bridge.py крутится на :5005 (см. start_laptop_robot.sh).
@@ -1171,7 +1226,7 @@ def create_app(ros_node: DashboardNode):
                     '/api/sensors', '/api/sensors/ultrasonic', '/api/sensors/imu',
                     '/api/detection', '/api/detection/closest',
                     '/api/fsm', '/api/actuators', '/api/battery', '/api/speed_profile',
-                    '/api/camera/frame', '/api/camera/frame.json',
+                    '/api/camera/endpoint',
                     '/api/map/image', '/api/map/info', '/api/map/list',
                     '/api/slam_map', '/api/path_recorder/status',
                     '/api/path_recorder/path', '/api/path_recorder/list',
@@ -1283,19 +1338,21 @@ def create_app(ros_node: DashboardNode):
         with ros_node._lock:
             return _ok(profile=ros_node._speed_profile)
 
-    @app.get('/api/camera/frame')
-    async def api_camera_frame():
-        frame = ros_node.get_frame()
-        if not frame:
-            return JSONResponse({'ok': False, 'error': 'No frame available yet'}, status_code=503)
-        return Response(content=frame, media_type='image/jpeg')
+    # /api/camera/frame и /frame.json УДАЛЕНЫ (2026-04, пункт #9).
+    # Раньше отдавали JPEG из MQTT (camera_node публиковал JPEG).
+    # Теперь camera_node шлёт H.264 через TCP, JPEG потока нет.
+    # YOLO annotated frame (после детекции) всё ещё доступен — он
+    # компонуется на ноуте и публикуется в samurai/{id}/yolo/annotated.
 
-    @app.get('/api/camera/frame.json')
-    async def api_camera_frame_json():
-        frame = ros_node.get_frame()
-        if not frame:
-            return JSONResponse({'ok': False, 'error': 'No frame available yet'}, status_code=503)
-        return _ok(jpeg_b64=base64.b64encode(frame).decode())
+    @app.get('/api/camera/endpoint')
+    async def api_camera_endpoint():
+        """Discovery: где Pi отдаёт H.264 поток."""
+        with ros_node._lock:
+            ep = ros_node._h264_endpoint
+        if not ep:
+            return JSONResponse(
+                {'ok': False, 'error': 'Camera offline'}, status_code=503)
+        return _ok(**ep)
 
     @app.get('/api/map/image')
     async def api_map_image():
