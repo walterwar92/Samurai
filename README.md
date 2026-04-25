@@ -47,7 +47,7 @@ motor_node     → PCA9685 I2C          mqtt_bridge_compute → MQTT↔ROS2
 imu_node       → MPU6050 I2C          ekf_node            → EKF одометрия
 camera_node    → CSI → JPEG (MQTT)    slam_toolbox        → SLAM-картография
 ultrasonic_node→ HC-SR04 GPIO         nav2_bringup        → навигация
-battery_node   → ADS7830 ADC          yolo_detector_node  → YOLO детекция
+battery_node   → ADS7830 ADC          detector.py         → YOLO/HSV детекция
 temperature_node→ /sys/class/thermal  depth_to_scan_node  → depth→LaserScan
 servo_node     → PCA9685 серво        dashboard_node      → FastAPI :5000
 laser_node     → GPIO17               patrol_node         → автопатруль
@@ -105,7 +105,9 @@ Samurai/
 │
 ├── compute_node/                # Ноды ноутбука
 │   ├── mqtt_bridge_compute.py   #   MQTT↔ROS2 мост
-│   ├── yolo_detector_node.py    #   YOLO детекция
+│   ├── detector.py              #   Объединённый YOLO/HSV детектор (CLI)
+│   ├── detectors/               #   Пакет: backends, sources, publishers,
+│   │                            #          HSV calibrator
 │   ├── depth_to_scan_node.py    #   Depth → LaserScan
 │   ├── dashboard_node.py        #   FastAPI + WebSocket :5000
 │   └── simulator.py             #   Автономный симулятор (Flask)
@@ -338,6 +340,58 @@ unit-файлы в `/etc/systemd/system/`. Подробнее: `./scripts/system
 Для обратной совместимости старые `start_robot_mqtt.sh`, `start_laptop_robot.sh`
 и т. д. сохранены как тонкие обёртки. Они показывают deprecation warning и
 делегируют в `samurai.sh`. **Используй новый CLI** в новых документах/CI.
+
+---
+
+### Детектор объектов (YOLO + HSV)
+
+Один объединённый детектор `compute_node/detector.py` (раньше было 3 разных
+файла с дублированной логикой и расходящимися HSV-диапазонами).
+
+```bash
+# CPU + HSV fallback (default — на ноутбуке без GPU)
+./samurai.sh detector
+
+# GPU YOLO (отдельный GPU-ноут или мощный desktop)
+./samurai.sh detector --gpu --model yolo11n.pt
+
+# Принудительный backend
+./samurai.sh detector --backend hsv         # без YOLO, только blob
+./samurai.sh detector --backend yolo --device cpu
+
+# С явным IP робота
+./samurai.sh detector --pi 192.168.1.50
+```
+
+Опубликует:
+- `samurai/{id}/ball_detection` — лучший мяч (для FSM)
+- `samurai/{id}/detections` — все объекты + count + ts
+- `samurai/{id}/yolo/annotated` — JPEG с bbox'ами для дашборда
+- `samurai/{id}/yolo/status` — online/offline (retain=true)
+
+Detection enable/disable — через MQTT topic `samurai/{id}/detection/enable`
+(payload `on`/`off`). При OFF публикует пустой список + сырой кадр (heartbeat).
+
+### HSV калибратор (для подстройки под освещение)
+
+Старая болезнь YOLO-детектора: HSV-диапазоны цветов калибровались под лампы
+накаливания, при дневном свете — путаница оранжевого с жёлтым. Теперь есть
+интерактивный GUI:
+
+```bash
+# Live с робота
+./samurai.sh detector --calibrate red       # подстроить красный
+./samurai.sh detector --calibrate yellow    # потом жёлтый
+
+# По статичному фото (если робот не доступен)
+./samurai.sh detector --calibrate red --image ball_red.jpg
+```
+
+OpenCV окна с trackbars (H/S/V low + high) и live-preview маски.
+Управление в GUI: `s` — сохранить в `config.yaml`, `n` — следующий цвет,
+`q`/ESC — выход. Сохранение идёт в `config.yaml` секцию `hsv_colours` —
+после этого все детекторы (CPU/GPU/HSV blob) подхватывают новые диапазоны
+автоматически (раньше HSV был хардкоден в каждом из 3 файлов с расхождениями).
 
 ---
 
