@@ -341,6 +341,51 @@ unit-файлы в `/etc/systemd/system/`. Подробнее: `./scripts/system
 
 ---
 
+### MQTT auth (опционально)
+
+По умолчанию робот работает с anonymous MQTT — это удобно для разработки
+в доверенной локальной сети. Для production можно включить authentication.
+
+**Включить:**
+```bash
+# На Pi
+./samurai.sh auth init               # создаёт ~/.samurai/mqtt.passwd
+                                     # (default user/password = samurai/samurai)
+                                     # + обновляет mosquitto.conf c allow_anonymous=false
+
+# Или вручную:
+./samurai.sh auth set robot1 my_secret_password
+
+# Посмотреть/проверить:
+./samurai.sh auth show
+./samurai.sh auth status
+```
+
+**Прокинуть creds на другие устройства:**
+```bash
+# На ноутбуке (compute) — те же creds в файл
+./samurai.sh auth set robot1 my_secret_password
+
+# На Android: Settings → MQTT user/password (поля под "Robot ID")
+
+# На ESP32: в firmware/esp32/src/config.h раскомментировать
+#   #define MQTT_USER "robot1"
+#   #define MQTT_PASS "my_secret_password"
+```
+
+**Приоритет источников creds (для Python-клиентов):**
+1. ENV vars `SAMURAI_MQTT_USER` + `SAMURAI_MQTT_PASS` (для systemd, Docker)
+2. Файл `~/.samurai/mqtt.passwd` (chmod 600)
+3. `config.yaml` секция `mqtt.auth.{username, password}` (только dev — не коммитить!)
+4. Если ничего не настроено — anonymous
+
+**Отключить:**
+```bash
+./samurai.sh auth disable
+```
+
+---
+
 ## MQTT-топики
 
 Все топики имеют префикс `samurai/{robot_id}/` (по умолчанию `samurai/robot1/`).
