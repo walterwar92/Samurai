@@ -8,6 +8,16 @@ FSM state machine, and serves a live web dashboard.
 Usage:
     python simulator.py
     → Open http://localhost:5000
+
+NOTE (2026-04, #9):
+    Симулятор ВРЕМЕННО рассинхронизирован с React frontend по видео.
+    Pi camera_node перешёл на H.264 через TCP. Frontend (CameraFeed) ожидает
+    WebSocket /ws/h264. Симулятор всё ещё отдаёт MJPEG через /video_feed и
+    JPEG через /api/camera/frame — они используются legacy templates/dashboard.html
+    и Android (см. CameraScreen.kt деградация).
+
+    Для теста frontend с симулятором — TODO: добавить PyAV H.264 encoder
+    + TCP сервер + MQTT discovery topic в симулятор. См. issue #9 для плана.
 """
 
 import json
