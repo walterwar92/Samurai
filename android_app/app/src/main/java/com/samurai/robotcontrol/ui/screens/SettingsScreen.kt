@@ -9,6 +9,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.samurai.robotcontrol.ui.ConnectionMode
@@ -20,6 +22,8 @@ fun SettingsScreen(
     serverIp: String,
     serverPort: String,
     robotId: String,
+    mqttUser: String = "",
+    mqttPassword: String = "",
     isConnected: Boolean,
     mqttConnected: Boolean,
     apiConnected: Boolean,
@@ -27,9 +31,12 @@ fun SettingsScreen(
     onServerIpChange: (String) -> Unit,
     onServerPortChange: (String) -> Unit,
     onRobotIdChange: (String) -> Unit,
+    onMqttUserChange: (String) -> Unit = {},
+    onMqttPasswordChange: (String) -> Unit = {},
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
+    var showPassword by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -130,6 +137,47 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                )
+
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "MQTT auth (опционально)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.Gray
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Заполни если на роботе включена аутентификация (./samurai.sh auth init).\n" +
+                            "Пусто = anonymous подключение.",
+                    fontSize = 10.sp,
+                    color = Color.Gray,
+                    lineHeight = 13.sp
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = mqttUser,
+                    onValueChange = onMqttUserChange,
+                    label = { Text("MQTT user") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = mqttPassword,
+                    onValueChange = onMqttPasswordChange,
+                    label = { Text("MQTT password") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
+                    visualTransformation = if (showPassword) VisualTransformation.None
+                                           else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { showPassword = !showPassword }) {
+                            Text(if (showPassword) "Скрыть" else "Показать", fontSize = 11.sp)
+                        }
+                    }
                 )
 
                 Spacer(Modifier.height(12.dp))
