@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, RefreshCw, Usb } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { VperedApi, VperedDiag } from '@/hooks/useVperedState'
+import type { SamcanApi, SamcanDiag } from '@/hooks/useSamcanState'
 
 interface ConnectionDiagnosticsProps {
-  api: VperedApi
+  api: SamcanApi
   /** Скрывать баннер если true (когда реально всё работает). */
   hideWhenConnected?: boolean
 }
@@ -13,10 +13,10 @@ interface ConnectionDiagnosticsProps {
 /**
  * Показывает почему нет связи: какой порт пытался открыть bridge,
  * какая ошибка, и список всех доступных портов — чтобы пользователь
- * мог перезапустить с правильным --vpered-port.
+ * мог перезапустить с правильным --samcan-port.
  */
 export function ConnectionDiagnostics({ api, hideWhenConnected = true }: ConnectionDiagnosticsProps) {
-  const [diag, setDiag] = useState<VperedDiag | null>(null)
+  const [diag, setDiag] = useState<SamcanDiag | null>(null)
   const [loading, setLoading] = useState(false)
 
   const refresh = async () => {
@@ -45,8 +45,8 @@ export function ConnectionDiagnostics({ api, hideWhenConnected = true }: Connect
           <div className="text-xs flex-1">
             <div className="font-semibold text-red-300">Bridge не отвечает</div>
             <div className="text-muted-foreground mt-1">
-              Python-процесс <code>vpered_bridge.py</code> не запущен или падает.
-              Проверь <code>/tmp/vpered_bridge.log</code> и перезапусти
+              Python-процесс <code>samcan_bridge.py</code> не запущен или падает.
+              Проверь <code>/tmp/samcan_bridge.log</code> и перезапусти
               <code> ./start_laptop_robot.sh</code>.
             </div>
           </div>
@@ -119,7 +119,7 @@ export function ConnectionDiagnostics({ api, hideWhenConnected = true }: Connect
               Возможные причины:
               <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
                 <li>Arduino сбросилась при открытии порта — подожди 2 сек, это норма</li>
-                <li>На Uno залит не vpered_uno.ino — проверь что Serial на 9600</li>
+                <li>На Uno залит не samcan_uno.ino — проверь что Serial на 9600</li>
                 <li>Телеметрия выключена в скетче — отправь <code>T</code> чтобы включить</li>
               </ul>
             </div>
@@ -157,7 +157,7 @@ export function ConnectionDiagnostics({ api, hideWhenConnected = true }: Connect
                 Если нужен другой порт, перезапусти:
                 <br />
                 <code className="text-zinc-300 bg-muted/40 px-1.5 py-0.5 rounded">
-                  ./start_laptop_robot.sh --vpered-port {ports[0]?.device || 'COM3'}
+                  ./start_laptop_robot.sh --samcan-port {ports[0]?.device || 'COM3'}
                 </code>
               </div>
             </div>

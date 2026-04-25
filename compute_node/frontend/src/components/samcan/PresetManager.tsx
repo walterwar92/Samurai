@@ -2,10 +2,10 @@ import { useEffect, useState, useCallback } from 'react'
 import { Bookmark, Download, Play, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { VperedApi, VperedPresets } from '@/hooks/useVperedState'
+import type { SamcanApi, SamcanPresets } from '@/hooks/useSamcanState'
 
 interface PresetManagerProps {
-  api: VperedApi
+  api: SamcanApi
   /** Live telemetry (текущие углы из Arduino). */
   liveArm?: number
   liveBase?: number
@@ -18,13 +18,13 @@ interface PresetManagerProps {
 
 /**
  * Панель управления пресетами: park / forward / claw_open / claw_closed.
- * Сохраняет в JSON файл на сервере через /api/vpered/preset/save.
- * Кнопка «Apply» применяет через /api/vpered/preset/apply.
+ * Сохраняет в JSON файл на сервере через /api/samcan/preset/save.
+ * Кнопка «Apply» применяет через /api/samcan/preset/apply.
  */
 export function PresetManager({
   api, liveArm, liveBase, liveClaw, sliderArm, sliderBase, disabled,
 }: PresetManagerProps) {
-  const [presets, setPresets] = useState<VperedPresets>({})
+  const [presets, setPresets] = useState<SamcanPresets>({})
   const [status, setStatus] = useState<string>('')
 
   const refresh = useCallback(async () => {
@@ -139,7 +139,7 @@ export function PresetManager({
       </Button>
 
       <div className="text-[9px] text-muted-foreground">
-        Пресеты хранятся на сервере в <code>vpered_presets.json</code> —
+        Пресеты хранятся на сервере в <code>samcan_presets.json</code> —
         не сбрасываются при перезапуске Arduino или bridge.
       </div>
     </div>

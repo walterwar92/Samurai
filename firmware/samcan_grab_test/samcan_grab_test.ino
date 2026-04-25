@@ -1,5 +1,5 @@
 /*
- * Vpered — grab/arm calibration sketch (Arduino Uno, 2KB SRAM!)
+ * Samcan — grab/arm calibration sketch (Arduino Uno, 2KB SRAM!)
  *
  * All strings wrapped in F() to keep SRAM free.
  *
@@ -209,7 +209,7 @@ void swapClawPolarity() {
 }
 
 void exportPresets() {
-    Serial.println(F("// ---- paste into vpered_uno.ino ----"));
+    Serial.println(F("// ---- paste into samcan_uno.ino ----"));
     Serial.print(F("const int BASE_PARK    = ")); Serial.print(BASE_PARK);    Serial.println(';');
     Serial.print(F("const int ARM_PARK     = ")); Serial.print(ARM_PARK);     Serial.println(';');
     Serial.print(F("const int CLAW_PARK    = ")); Serial.print(CLAW_PARK);    Serial.println(';');

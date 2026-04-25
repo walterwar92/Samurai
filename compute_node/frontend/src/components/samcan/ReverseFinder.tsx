@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { CheckCircle, CircleDot, Pause, Play, SkipForward, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { VperedApi } from '@/hooks/useVperedState'
+import type { SamcanApi } from '@/hooks/useSamcanState'
 
 interface ReverseFinderProps {
-  api: VperedApi
+  api: SamcanApi
   disabled?: boolean
 }
 
@@ -277,7 +277,7 @@ export function ReverseFinder({ api, disabled }: ReverseFinderProps) {
             </span>
           </div>
           <div className="text-[10px] text-emerald-200/80">
-            Впиши в <code className="bg-emerald-950/60 px-1.5 rounded">vpered_uno.ino</code>:
+            Впиши в <code className="bg-emerald-950/60 px-1.5 rounded">samcan_uno.ino</code>:
           </div>
           <code className="block text-[11px] font-mono bg-emerald-950/60 px-2 py-1 rounded text-emerald-200">
             const uint8_t DIR_BACKWARD = {found};  {'// 0b' + toBin(found)}

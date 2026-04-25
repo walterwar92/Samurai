@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-export interface VperedTelemetry {
+export interface SamcanTelemetry {
   th?: number      // theta deg
   om?: number      // omega filt deg/s
   d?: number       // distance cm
@@ -13,11 +13,11 @@ export interface VperedTelemetry {
   c?: number       // claw angle
 }
 
-export interface VperedState {
+export interface SamcanState {
   connected: boolean
   port: string | null
   telemetry_fresh: boolean
-  telemetry: VperedTelemetry
+  telemetry: SamcanTelemetry
   scenarios: string[]
   // диагностика
   last_error?: string
@@ -26,7 +26,7 @@ export interface VperedState {
   age_sec?: number | null
 }
 
-export interface VperedDiag {
+export interface SamcanDiag {
   connected: boolean
   port: string | null
   attempted_port: string | null
@@ -44,7 +44,7 @@ export interface VperedDiag {
   }>
 }
 
-export interface VperedPresets {
+export interface SamcanPresets {
   park?:    { base?: number; arm?: number; claw?: number }
   forward?: { base?: number; arm?: number; claw?: number }
   claw_open?:   number
@@ -54,13 +54,13 @@ export interface VperedPresets {
   [key: string]: unknown
 }
 
-export interface VperedApi {
-  state: VperedState | null
+export interface SamcanApi {
+  state: SamcanState | null
   send: (cmd: string, arg?: number) => Promise<void>
   scenario: (name: string) => Promise<void>
   log: () => Promise<string[]>
-  diag: () => Promise<VperedDiag | null>
-  getPresets: () => Promise<VperedPresets>
+  diag: () => Promise<SamcanDiag | null>
+  getPresets: () => Promise<SamcanPresets>
   savePreset: (
     name: 'park' | 'forward' | 'claw_open' | 'claw_closed',
     fields: { base?: number; arm?: number; claw?: number },
@@ -74,8 +74,8 @@ export interface VperedApi {
 const POLL_OK_MS   = 250
 const POLL_MAX_MS  = 5000
 
-export function useVpered(): VperedApi {
-  const [state, setState] = useState<VperedState | null>(null)
+export function useSamcan(): SamcanApi {
+  const [state, setState] = useState<SamcanState | null>(null)
   const aliveRef = useRef(true)
 
   useEffect(() => {
@@ -93,7 +93,7 @@ export function useVpered(): VperedApi {
       try {
         const ctrl = new AbortController()
         const t = setTimeout(() => ctrl.abort(), 1500)
-        const res = await fetch('/api/vpered/state', { cache: 'no-store', signal: ctrl.signal })
+        const res = await fetch('/api/samcan/state', { cache: 'no-store', signal: ctrl.signal })
         clearTimeout(t)
         if (res.ok) {
           const data = await res.json()
@@ -118,7 +118,7 @@ export function useVpered(): VperedApi {
   }, [])
 
   const send = async (cmd: string, arg?: number) => {
-    await fetch('/api/vpered/cmd', {
+    await fetch('/api/samcan/cmd', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd, arg }),
@@ -126,7 +126,7 @@ export function useVpered(): VperedApi {
   }
 
   const scenario = async (name: string) => {
-    await fetch('/api/vpered/scenario', {
+    await fetch('/api/samcan/scenario', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -135,7 +135,7 @@ export function useVpered(): VperedApi {
 
   const log = async (): Promise<string[]> => {
     try {
-      const res = await fetch('/api/vpered/log?lines=80')
+      const res = await fetch('/api/samcan/log?lines=80')
       const data = await res.json()
       return data.lines || []
     } catch {
@@ -143,36 +143,36 @@ export function useVpered(): VperedApi {
     }
   }
 
-  const diag = async (): Promise<VperedDiag | null> => {
+  const diag = async (): Promise<SamcanDiag | null> => {
     try {
-      const res = await fetch('/api/vpered/diag', { cache: 'no-store' })
+      const res = await fetch('/api/samcan/diag', { cache: 'no-store' })
       if (!res.ok) return null
-      return (await res.json()) as VperedDiag
+      return (await res.json()) as SamcanDiag
     } catch {
       return null
     }
   }
 
-  const getPresets = async (): Promise<VperedPresets> => {
+  const getPresets = async (): Promise<SamcanPresets> => {
     try {
-      const res = await fetch('/api/vpered/presets')
+      const res = await fetch('/api/samcan/presets')
       const data = await res.json()
-      return (data.presets || {}) as VperedPresets
+      return (data.presets || {}) as SamcanPresets
     } catch {
       return {}
     }
   }
 
-  const savePreset: VperedApi['savePreset'] = async (name, fields) => {
-    await fetch('/api/vpered/preset/save', {
+  const savePreset: SamcanApi['savePreset'] = async (name, fields) => {
+    await fetch('/api/samcan/preset/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, ...fields }),
     })
   }
 
-  const applyPreset: VperedApi['applyPreset'] = async (name) => {
-    await fetch('/api/vpered/preset/apply', {
+  const applyPreset: SamcanApi['applyPreset'] = async (name) => {
+    await fetch('/api/samcan/preset/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),

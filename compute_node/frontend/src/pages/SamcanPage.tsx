@@ -7,18 +7,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
-import { useVpered } from '@/hooks/useVperedState'
+import { useSamcan } from '@/hooks/useSamcanState'
 import { cn } from '@/lib/utils'
-import { HeadingCompass } from '@/components/vpered/HeadingCompass'
-import { DistanceRadar } from '@/components/vpered/DistanceRadar'
-import { MotorBars } from '@/components/vpered/MotorBars'
-import { VirtualJoystick } from '@/components/vpered/VirtualJoystick'
-import { TelemetryHistory } from '@/components/vpered/TelemetryHistory'
-import { ArmVisualizer } from '@/components/vpered/ArmVisualizer'
-import { VperedEventLog } from '@/components/vpered/VperedEventLog'
-import { PresetManager } from '@/components/vpered/PresetManager'
-import { ConnectionDiagnostics } from '@/components/vpered/ConnectionDiagnostics'
-import { ReverseFinder } from '@/components/vpered/ReverseFinder'
+import { HeadingCompass } from '@/components/samcan/HeadingCompass'
+import { DistanceRadar } from '@/components/samcan/DistanceRadar'
+import { MotorBars } from '@/components/samcan/MotorBars'
+import { VirtualJoystick } from '@/components/samcan/VirtualJoystick'
+import { TelemetryHistory } from '@/components/samcan/TelemetryHistory'
+import { ArmVisualizer } from '@/components/samcan/ArmVisualizer'
+import { SamcanEventLog } from '@/components/samcan/SamcanEventLog'
+import { PresetManager } from '@/components/samcan/PresetManager'
+import { ConnectionDiagnostics } from '@/components/samcan/ConnectionDiagnostics'
+import { ReverseFinder } from '@/components/samcan/ReverseFinder'
 
 // ════════════════════════════════════════════════════════════
 // SCENARIOS
@@ -35,8 +35,8 @@ const SCENARIOS: { id: string; label: string; descr: string; emoji: string }[] =
 // ════════════════════════════════════════════════════════════
 // PAGE
 // ════════════════════════════════════════════════════════════
-export function VperedPage() {
-  const api = useVpered()
+export function SamcanPage() {
+  const api = useSamcan()
   const { state, send, scenario, log } = api
   const tlm = state?.telemetry || {}
   const connected = !!(state?.connected && state?.telemetry_fresh)
@@ -358,7 +358,7 @@ export function VperedPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-2">
-              <VperedEventLog fetchLog={fetchLog} />
+              <SamcanEventLog fetchLog={fetchLog} />
             </CardContent>
           </Card>
         </div>

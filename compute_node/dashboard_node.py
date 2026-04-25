@@ -1098,24 +1098,24 @@ def create_app(ros_node: DashboardNode):
         except Exception:
             pass
 
-    # ── Vpered USB bridge proxy ────────────────────────────────
-    # Хост-процесс vpered_bridge.py крутится на :5005 (см. start_laptop_robot.sh).
-    # Frontend стучится на /api/vpered/* — пробрасываем в bridge.
+    # ── Samcan USB bridge proxy ────────────────────────────────
+    # Хост-процесс samcan_bridge.py крутится на :5005 (см. start_laptop_robot.sh).
+    # Frontend стучится на /api/samcan/* — пробрасываем в bridge.
     # На Linux Docker (--net=host) хост виден как localhost.
     # На Windows Docker — нужно host.docker.internal. Управляется через
-    # переменную окружения VPERED_BRIDGE_URL.
-    # Дефолт перебивается переменной окружения VPERED_BRIDGE_URL,
+    # переменную окружения SAMCAN_BRIDGE_URL.
+    # Дефолт перебивается переменной окружения SAMCAN_BRIDGE_URL,
     # которую правильно подставляет start_laptop_robot.sh
     # (host.docker.internal:5005 на Windows, localhost:5005 на Linux).
-    VPERED_BRIDGE_URL = os.environ.get('VPERED_BRIDGE_URL', 'http://localhost:5005')
+    SAMCAN_BRIDGE_URL = os.environ.get('SAMCAN_BRIDGE_URL', 'http://localhost:5005')
 
-    @app.api_route('/api/vpered/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE'])
-    async def vpered_proxy(path: str, request: Request):
+    @app.api_route('/api/samcan/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE'])
+    async def samcan_proxy(path: str, request: Request):
         try:
             import httpx
         except ImportError:
             return JSONResponse({'error': 'httpx not installed'}, status_code=500)
-        target = f"{VPERED_BRIDGE_URL}/api/vpered/{path}"
+        target = f"{SAMCAN_BRIDGE_URL}/api/samcan/{path}"
         try:
             body = await request.body()
             headers = {k: v for k, v in request.headers.items()
@@ -1135,7 +1135,7 @@ def create_app(ros_node: DashboardNode):
             )
         except Exception as e:
             return JSONResponse(
-                {'error': 'vpered_bridge unreachable', 'detail': str(e)},
+                {'error': 'samcan_bridge unreachable', 'detail': str(e)},
                 status_code=503,
             )
 

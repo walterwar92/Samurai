@@ -13,7 +13,7 @@ interface VirtualJoystickProps {
 /**
  * Touch/mouse drag-джойстик. Возвращает дискретное направление на основе
  * угла отклонения от центра. Команда отправляется ОДИН раз при смене направления —
- * прошивке Vpered это правильный режим (она держит mode пока не пришлёт STOP).
+ * прошивке Samcan это правильный режим (она держит mode пока не пришлёт STOP).
  */
 export function VirtualJoystick({ onDirChange, size = 220, disabled }: VirtualJoystickProps) {
   const ref = useRef<HTMLDivElement>(null)

@@ -1,19 +1,19 @@
 """
-Vpered Serial Bridge — мост между frontend и Arduino Uno (USB Serial).
+Samcan Serial Bridge — мост между frontend и Arduino Uno (USB Serial).
 
 Запуск:
-    python compute_node/vpered_bridge.py --port COM3
-    python compute_node/vpered_bridge.py --port /dev/ttyUSB0
-    python compute_node/vpered_bridge.py --auto         # авто-поиск порта
+    python compute_node/samcan_bridge.py --port COM3
+    python compute_node/samcan_bridge.py --port /dev/ttyUSB0
+    python compute_node/samcan_bridge.py --auto         # авто-поиск порта
 
 Сервер слушает на :5005. Frontend (vite на :5173) проксирует
-/api/vpered/* сюда (см. vite.config.ts).
+/api/samcan/* сюда (см. vite.config.ts).
 
 REST:
-    POST /api/vpered/cmd        {"cmd": "F"} | {"cmd": "M", "arg": 45}
-    POST /api/vpered/scenario   {"name": "fwd_back" | "square"}
-    GET  /api/vpered/state      → последняя телеметрия + статус соединения
-    GET  /api/vpered/log        → последние N строк из Serial
+    POST /api/samcan/cmd        {"cmd": "F"} | {"cmd": "M", "arg": 45}
+    POST /api/samcan/scenario   {"name": "fwd_back" | "square"}
+    GET  /api/samcan/state      → последняя телеметрия + статус соединения
+    GET  /api/samcan/log        → последние N строк из Serial
 
 Команды Arduino: F B L R S O X G P M<deg> N<deg> D K C T Z H
 """
@@ -38,7 +38,7 @@ from pydantic import BaseModel
 import uvicorn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("vpered-bridge")
+log = logging.getLogger("samcan-bridge")
 
 # ────────────────────────────────────────────────────────────
 # State (process-global, single Arduino)
@@ -90,7 +90,7 @@ state = BridgeState()
 # Persistent presets (JSON file next to config.yaml)
 # ────────────────────────────────────────────────────────────
 
-PRESETS_FILE = Path(__file__).resolve().parent.parent / "vpered_presets.json"
+PRESETS_FILE = Path(__file__).resolve().parent.parent / "samcan_presets.json"
 
 DEFAULT_PRESETS: dict[str, Any] = {
     # углы BASE/ARM для поз
@@ -155,7 +155,7 @@ async def serial_reader_task(port_hint: str | None, baud: int = 9600) -> None:
             state.last_error = (
                 "Не найден ни один COM-порт" if not ports_list
                 else f"Arduino-порт не определён автоматически. Доступны: {', '.join(ports_list)}. "
-                      f"Запусти с --vpered-port <порт>"
+                      f"Запусти с --samcan-port <порт>"
             )
             log.warning(state.last_error)
             await asyncio.sleep(2.0)
@@ -234,7 +234,7 @@ def write_serial(text: str) -> None:
 # FastAPI
 # ────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Vpered Bridge")
+app = FastAPI(title="Samcan Bridge")
 
 app.add_middleware(
     CORSMiddleware,
@@ -259,7 +259,7 @@ VALID_CMDS = set("FBLRSOXGPDKCTZHMNY")
 CMDS_WITH_ARG = {"M", "N", "Y"}
 
 
-@app.post("/api/vpered/cmd")
+@app.post("/api/samcan/cmd")
 async def post_cmd(req: CmdReq) -> dict:
     cmd = req.cmd.strip().upper()
     if not cmd or cmd[0] not in VALID_CMDS:
@@ -295,7 +295,7 @@ async def run_scenario(steps: list[tuple[str, float]]) -> None:
             await asyncio.sleep(delay)
 
 
-@app.post("/api/vpered/scenario")
+@app.post("/api/samcan/scenario")
 async def post_scenario(req: ScenarioReq) -> dict:
     name = req.name.strip().lower()
     steps = SCENARIOS.get(name)
@@ -305,7 +305,7 @@ async def post_scenario(req: ScenarioReq) -> dict:
     return {"ok": True, "scenario": name, "steps": len(steps)}
 
 
-@app.get("/api/vpered/state")
+@app.get("/api/samcan/state")
 async def get_state() -> dict:
     fresh = state.connected and (time.time() - state.last_seen_ts < 2.0)
     return {
@@ -322,7 +322,7 @@ async def get_state() -> dict:
     }
 
 
-@app.get("/api/vpered/diag")
+@app.get("/api/samcan/diag")
 async def get_diag() -> dict:
     """Полная диагностика — доступные порты, последняя ошибка, счётчики."""
     ports = []
@@ -347,12 +347,12 @@ async def get_diag() -> dict:
     }
 
 
-@app.get("/api/vpered/log")
+@app.get("/api/samcan/log")
 async def get_log(lines: int = 50) -> dict:
     return {"lines": state.log_buffer[-lines:]}
 
 
-@app.get("/api/vpered/scenarios")
+@app.get("/api/samcan/scenarios")
 async def get_scenarios() -> dict:
     return {"scenarios": list(SCENARIOS)}
 
@@ -372,12 +372,12 @@ class PresetsPutReq(BaseModel):
     presets: dict[str, Any]
 
 
-@app.get("/api/vpered/presets")
+@app.get("/api/samcan/presets")
 async def get_presets() -> dict:
     return {"presets": presets}
 
 
-@app.put("/api/vpered/presets")
+@app.put("/api/samcan/presets")
 async def put_presets(req: PresetsPutReq) -> dict:
     presets.clear()
     presets.update(req.presets)
@@ -385,7 +385,7 @@ async def put_presets(req: PresetsPutReq) -> dict:
     return {"ok": True, "presets": presets}
 
 
-@app.post("/api/vpered/preset/save")
+@app.post("/api/samcan/preset/save")
 async def save_preset_action(req: PresetSaveReq) -> dict:
     """Сохранить конкретный пресет. Принимает частичное обновление:
     - park / forward: base / arm / claw (что передано)
@@ -426,7 +426,7 @@ async def apply_pose(base: int | None, arm: int | None, claw: int | None, settle
         write_serial(f"M{int(claw)}")  # CLAW тоже через сервокомманду — у нас нет отдельного опкода
 
 
-@app.post("/api/vpered/preset/apply")
+@app.post("/api/samcan/preset/apply")
 async def apply_preset(req: ScenarioReq) -> dict:
     """Применить сохранённый пресет. Поддерживает: park, forward, grab."""
     name = req.name.strip().lower()

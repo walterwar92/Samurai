@@ -1,5 +1,5 @@
 /*
- * Vpered — Arduino Uno controller (USB Serial, 9600 baud)
+ * Samcan — Arduino Uno controller (USB Serial, 9600 baud)
  *
  * Объединённая прошивка: моторы + ПИД-курсодержание + ультразвук +
  * клешня (3 серво) + Serial-протокол управления с компьютера.
@@ -57,7 +57,7 @@
 //
 // КАК ПОДОБРАТЬ DIR_BACKWARD:
 //   1. Подними робота (или поставь на подставку чтобы колёса крутились свободно).
-//   2. Из UI на странице Vpered → панель "Подбор reverse" → набирай байты,
+//   2. Из UI на странице Samcan → панель "Подбор reverse" → набирай байты,
 //      или из Serial шли команды вида "Y163", "Y172", "Y228" и т.д.
 //   3. Каждая команда Y запускает моторы на 1 сек с этим DIR-байтом и BASE PWM.
 //   4. Когда оба колеса крутятся НАЗАД (одинаково и вместе) — впиши значение
@@ -455,7 +455,7 @@ void enterMode(RobotMode m) {
 }
 
 void printHelp() {
-    Serial.println(F("=== VPERED CMDS ==="));
+    Serial.println(F("=== SAMCAN CMDS ==="));
     Serial.println(F("F B L R S    : drive / stop"));
     Serial.println(F("Y<0..255>    : test DIR byte 1s (для подбора DIR_BACKWARD)"));
     Serial.println(F("O X G P      : open / close / grab / park"));
@@ -599,7 +599,7 @@ void setup() {
     Wire.endTransmission();
     delay(100);
 
-    Serial.println(F("=== VPERED v2 ==="));
+    Serial.println(F("=== SAMCAN v2 ==="));
     calibrateGyro();
     Serial.println(F("READY (send 'H' for help)"));
 

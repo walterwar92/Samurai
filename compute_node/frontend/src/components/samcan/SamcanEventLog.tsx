@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
-interface VperedEventLogProps {
+interface SamcanEventLogProps {
   /** Функция получения последних строк лога. */
   fetchLog: () => Promise<string[]>
   /** Интервал обновления, мс. */
@@ -32,7 +32,7 @@ const STYLES: Record<Kind, string> = {
   ok:    'text-emerald-400',
 }
 
-export function VperedEventLog({ fetchLog, intervalMs = 1000 }: VperedEventLogProps) {
+export function SamcanEventLog({ fetchLog, intervalMs = 1000 }: SamcanEventLogProps) {
   const [lines, setLines] = useState<string[]>([])
   const [showTlm, setShowTlm] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)

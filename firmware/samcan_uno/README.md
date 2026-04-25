@@ -1,6 +1,6 @@
-# Vpered — Arduino Uno firmware
+# Samcan — Arduino Uno firmware
 
-Базовая прошивка для робота **Vpered** (второй робот проекта Samurai).
+Базовая прошивка для робота **Samcan** (второй робот проекта Samurai).
 
 ## Железо
 
@@ -106,7 +106,7 @@ Auto-calibrating control polarity...
 
 ### Шаг 1. Разомкнутый цикл (физика vs ПИД)
 
-В `vpered_uno.ino` раскомментируй:
+В `samcan_uno.ino` раскомментируй:
 
 ```cpp
 #define OPEN_LOOP

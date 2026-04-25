@@ -41,8 +41,8 @@ HOTSPOT_MODE=false
 REBUILD_IMAGE=false
 REBUILD_WS=false
 REMOTE_YOLO=false
-NO_VPERED=false
-VPERED_PORT=""
+NO_SAMCAN=false
+SAMCAN_PORT=""
 NO_FRONTEND_BUILD=false
 FORCE_FRONTEND_BUILD=false
 
@@ -54,8 +54,8 @@ while [[ $# -gt 0 ]]; do
         --rebuild-image) REBUILD_IMAGE=true; shift ;;
         --rebuild-ws)    REBUILD_WS=true; shift ;;
         --remote-yolo)   REMOTE_YOLO=true; shift ;;
-        --no-vpered)     NO_VPERED=true; shift ;;
-        --vpered-port)   VPERED_PORT="$2"; shift 2 ;;
+        --no-samcan)     NO_SAMCAN=true; shift ;;
+        --samcan-port)   SAMCAN_PORT="$2"; shift 2 ;;
         --no-frontend-build) NO_FRONTEND_BUILD=true; shift ;;
         --rebuild-frontend)  FORCE_FRONTEND_BUILD=true; shift ;;
         -h|--help)
@@ -67,8 +67,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --rebuild-image     Пересобрать только Docker образ"
             echo "  --rebuild-ws        Пересобрать только ROS2 workspace"
             echo "  --remote-yolo       YOLO на отдельном GPU-ноутбуке"
-            echo "  --no-vpered         Не запускать Vpered USB bridge"
-            echo "  --vpered-port P     Конкретный COM-порт для Vpered"
+            echo "  --no-samcan         Не запускать Samcan USB bridge"
+            echo "  --samcan-port P     Конкретный COM-порт для Samcan"
             echo "  --no-frontend-build Не пересобирать React фронт"
             echo "  --rebuild-frontend  Принудительно пересобрать React фронт"
             exit 0
@@ -348,79 +348,79 @@ build_frontend() {
     fi
 }
 
-# ─── 6.5 Vpered USB bridge (Arduino Uno) ─────────────────────────────────────
-VPERED_PID=""
-VPERED_LOG="/tmp/vpered_bridge.log"
+# ─── 6.5 Samcan USB bridge (Arduino Uno) ─────────────────────────────────────
+SAMCAN_PID=""
+SAMCAN_LOG="/tmp/samcan_bridge.log"
 
-start_vpered_bridge() {
-    if $NO_VPERED; then
-        log_info "Vpered bridge отключён (--no-vpered)"
+start_samcan_bridge() {
+    if $NO_SAMCAN; then
+        log_info "Samcan bridge отключён (--no-samcan)"
         return
     fi
 
-    log_step "Vpered USB bridge (Arduino Uno)"
+    log_step "Samcan USB bridge (Arduino Uno)"
 
     # Проверка зависимостей Python (вне Docker — bridge крутится на хосте,
     # потому что pyserial должен видеть USB-устройство напрямую).
     if ! command -v python &>/dev/null && ! command -v python3 &>/dev/null; then
-        log_warn "Python не найден — пропускаю Vpered bridge"
+        log_warn "Python не найден — пропускаю Samcan bridge"
         return
     fi
     local PY=python; command -v python &>/dev/null || PY=python3
 
     if ! "$PY" -c "import serial, fastapi, uvicorn" &>/dev/null; then
-        log_warn "Vpered зависимости (pyserial/fastapi/uvicorn) не установлены"
+        log_warn "Samcan зависимости (pyserial/fastapi/uvicorn) не установлены"
         log_info "Устанавливаю автоматически: pip install pyserial fastapi uvicorn pydantic"
         "$PY" -m pip install --quiet --user pyserial 'fastapi>=0.110' 'uvicorn[standard]>=0.27' 'pydantic>=2' 2>&1 \
             | tail -3 \
-            || { log_warn "pip install не удался — пропускаю Vpered"; return; }
+            || { log_warn "pip install не удался — пропускаю Samcan"; return; }
     fi
 
     # Проверка что bridge не уже запущен
-    if pgrep -f "vpered_bridge.py" &>/dev/null; then
-        log_warn "Старый vpered_bridge.py обнаружен — убиваю"
-        pkill -f "vpered_bridge.py" || true
+    if pgrep -f "samcan_bridge.py" &>/dev/null; then
+        log_warn "Старый samcan_bridge.py обнаружен — убиваю"
+        pkill -f "samcan_bridge.py" || true
         sleep 0.5
     fi
 
     # Аргументы: либо явный порт, либо --auto
     local args
-    if [[ -n "$VPERED_PORT" ]]; then
-        args="--port $VPERED_PORT"
-        log_info "Указан порт: $VPERED_PORT"
+    if [[ -n "$SAMCAN_PORT" ]]; then
+        args="--port $SAMCAN_PORT"
+        log_info "Указан порт: $SAMCAN_PORT"
     else
         args="--auto"
         log_info "Авто-поиск порта Arduino"
     fi
 
     # Запуск в фоне с логом
-    log_info "Старт vpered_bridge.py → :5005 (лог: $VPERED_LOG)"
-    nohup "$PY" "$SCRIPT_DIR/compute_node/vpered_bridge.py" $args > "$VPERED_LOG" 2>&1 &
-    VPERED_PID=$!
+    log_info "Старт samcan_bridge.py → :5005 (лог: $SAMCAN_LOG)"
+    nohup "$PY" "$SCRIPT_DIR/compute_node/samcan_bridge.py" $args > "$SAMCAN_LOG" 2>&1 &
+    SAMCAN_PID=$!
 
     # Дать ему время стартануть и проверить что процесс жив
     sleep 1.2
-    if kill -0 "$VPERED_PID" 2>/dev/null; then
-        log_ok "Vpered bridge запущен (PID $VPERED_PID, http://localhost:5005)"
+    if kill -0 "$SAMCAN_PID" 2>/dev/null; then
+        log_ok "Samcan bridge запущен (PID $SAMCAN_PID, http://localhost:5005)"
     else
         log_warn "Bridge упал. Лог:"
-        tail -10 "$VPERED_LOG" | sed 's/^/    /'
-        VPERED_PID=""
+        tail -10 "$SAMCAN_LOG" | sed 's/^/    /'
+        SAMCAN_PID=""
     fi
 }
 
-stop_vpered_bridge() {
-    if [[ -n "$VPERED_PID" ]] && kill -0 "$VPERED_PID" 2>/dev/null; then
-        log_info "Останавливаю Vpered bridge (PID $VPERED_PID)..."
-        kill "$VPERED_PID" 2>/dev/null || true
-        wait "$VPERED_PID" 2>/dev/null || true
+stop_samcan_bridge() {
+    if [[ -n "$SAMCAN_PID" ]] && kill -0 "$SAMCAN_PID" 2>/dev/null; then
+        log_info "Останавливаю Samcan bridge (PID $SAMCAN_PID)..."
+        kill "$SAMCAN_PID" 2>/dev/null || true
+        wait "$SAMCAN_PID" 2>/dev/null || true
     fi
     # на всякий — добиваем по имени (если pid потерян)
-    pkill -f "vpered_bridge.py" 2>/dev/null || true
+    pkill -f "samcan_bridge.py" 2>/dev/null || true
 }
 
 # Cleanup при выходе/Ctrl+C
-trap stop_vpered_bridge EXIT INT TERM
+trap stop_samcan_bridge EXIT INT TERM
 
 # ─── 7. Запуск ───────────────────────────────────────────────────────────────
 launch() {
@@ -448,8 +448,8 @@ launch() {
     echo -e "  ${BOLD}│${NC}  ROS_DOMAIN_ID: ${GREEN}${ROS_DOMAIN_ID}${NC}"
     [[ -n "$PEER_IP" ]] && \
     echo -e "  ${BOLD}│${NC}  Unicast DDS:   ${GREEN}peer_ip=$PEER_IP${NC}"
-    [[ -n "$VPERED_PID" ]] && \
-    echo -e "  ${BOLD}│${NC}  Vpered USB:    ${GREEN}http://localhost:5005${NC} (PID $VPERED_PID)"
+    [[ -n "$SAMCAN_PID" ]] && \
+    echo -e "  ${BOLD}│${NC}  Samcan USB:    ${GREEN}http://localhost:5005${NC} (PID $SAMCAN_PID)"
     echo -e "  ${BOLD}└──────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${YELLOW}  ── Запуск ROS2 нод (Ctrl+C для остановки) ──${NC}"
@@ -457,14 +457,14 @@ launch() {
 
     # Docker Desktop (Win/Mac): --net=host работает только на Linux.
     # На Win/Mac нужен -p для проброса портов + bridge network.
-    # Для Vpered bridge proxy: на Linux хост = localhost (благодаря --net=host),
+    # Для Samcan bridge proxy: на Linux хост = localhost (благодаря --net=host),
     # на Windows — host.docker.internal:5005.
     local docker_net_args
-    local vpered_url="http://localhost:5005"
+    local samcan_url="http://localhost:5005"
     if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN|NT ]] || [[ "$(uname -o 2>/dev/null)" == "Msys" ]]; then
         docker_net_args="-p 5000:5000 --add-host=host.docker.internal:host-gateway"
-        vpered_url="http://host.docker.internal:5005"
-        log_ok "Windows: порт 5000 прокинут через -p, Vpered bridge → $vpered_url"
+        samcan_url="http://host.docker.internal:5005"
+        log_ok "Windows: порт 5000 прокинут через -p, Samcan bridge → $samcan_url"
     else
         docker_net_args="--net=host"
     fi
@@ -481,7 +481,7 @@ launch() {
         -e MQTT_PORT="1883" \
         -e ROBOT_ID="robot1" \
         -e CAMERA_FLIP="-1" \
-        -e VPERED_BRIDGE_URL="$vpered_url" \
+        -e SAMCAN_BRIDGE_URL="$samcan_url" \
         "$DOCKER_IMAGE" \
         bash -c "
             source /opt/ros/humble/setup.bash
@@ -501,7 +501,7 @@ main() {
     discover_pi
     configure_network
     build_frontend
-    start_vpered_bridge
+    start_samcan_bridge
     launch
 }
 
