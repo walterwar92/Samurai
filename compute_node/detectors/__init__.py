@@ -21,11 +21,27 @@ from .hsv import HSVClassifier, load_hsv_ranges_from_config
 from .hsv_blob_backend import HSVBlobBackend
 from .distance import DistanceEstimator
 from .world import WorldProjector
+from .frame_sources import FrameSource, MQTTFrameSource
+from .publishers import (
+    DetectionPublisher, MQTTPublisher, HybridPublisher,
+    draw_annotations, encode_jpeg,
+)
 
-# YoloBackend импортируется лениво (нужен ultralytics — не всегда установлен)
+# YoloBackend / ROS2FrameSource / ROS2Publisher — lazy imports
+# (требуют опциональных зависимостей: ultralytics, rclpy)
 def _load_yolo_backend():
     from .yolo_backend import YoloBackend
     return YoloBackend
+
+
+def _load_ros2_frame_source():
+    from .frame_sources import ROS2FrameSource
+    return ROS2FrameSource
+
+
+def _load_ros2_publisher():
+    from .publishers import ROS2Publisher
+    return ROS2Publisher
 
 
 __all__ = [
@@ -39,4 +55,11 @@ __all__ = [
     'HSVBlobBackend',
     'DistanceEstimator',
     'WorldProjector',
+    'FrameSource',
+    'MQTTFrameSource',
+    'DetectionPublisher',
+    'MQTTPublisher',
+    'HybridPublisher',
+    'draw_annotations',
+    'encode_jpeg',
 ]
