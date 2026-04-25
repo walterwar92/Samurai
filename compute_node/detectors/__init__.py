@@ -22,6 +22,12 @@ from .hsv_blob_backend import HSVBlobBackend
 from .distance import DistanceEstimator
 from .world import WorldProjector
 from .frame_sources import FrameSource, MQTTFrameSource
+
+
+# H264TCPFrameSource — lazy import (требует PyAV)
+def _load_h264_source():
+    from .frame_sources import H264TCPFrameSource
+    return H264TCPFrameSource
 from .publishers import (
     DetectionPublisher, MQTTPublisher, HybridPublisher,
     draw_annotations, encode_jpeg,
