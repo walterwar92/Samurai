@@ -41,6 +41,16 @@ import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
 
+# Optional MQTT credentials resolver (ENV/file/config)
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from config_loader import get_mqtt_credentials as _resolve_mqtt_creds
+except ImportError:
+    def _resolve_mqtt_creds():
+        u = os.environ.get('SAMURAI_MQTT_USER', '').strip()
+        p = os.environ.get('SAMURAI_MQTT_PASS', '')
+        return (u, p) if u and p else (None, None)
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s %(message)s',
@@ -70,7 +80,8 @@ class YoloDetectorMqtt:
     def __init__(self, broker: str, port: int, robot_id: str,
                  model_path: str, confidence: float, device: str,
                  publish_annotated: bool = True,
-                 annotated_quality: int = 70):
+                 annotated_quality: int = 70,
+                 mqtt_user: str = None, mqtt_pwd: str = None):
         self._prefix = f'samurai/{robot_id}'
         self._conf = confidence
         self._publish_annotated = publish_annotated
@@ -98,6 +109,13 @@ class YoloDetectorMqtt:
             f'{self._prefix}/yolo/status',
             json.dumps({'online': False, 'source': 'gpu_laptop'}),
             qos=1, retain=True)
+
+        # Optional auth — args override resolver (ENV/file/config)
+        if mqtt_user is None and mqtt_pwd is None:
+            mqtt_user, mqtt_pwd = _resolve_mqtt_creds()
+        if mqtt_user is not None:
+            self._mqtt.username_pw_set(mqtt_user, mqtt_pwd)
+            log.info('MQTT auth: user=%s', mqtt_user)
 
         log.info('Connecting to MQTT broker %s:%d ...', broker, port)
         self._mqtt.connect_async(broker, port)
@@ -361,6 +379,10 @@ def main():
                         help='Disable publishing annotated frames (saves bandwidth)')
     parser.add_argument('--quality', type=int, default=70,
                         help='Annotated JPEG quality (0-100)')
+    parser.add_argument('--mqtt-user', default=None,
+                        help='MQTT username (default: from ENV/~/.samurai/mqtt.passwd/config)')
+    parser.add_argument('--mqtt-pass', default=None,
+                        help='MQTT password (default: from ENV/~/.samurai/mqtt.passwd/config)')
 
     args = parser.parse_args()
 
@@ -374,6 +396,8 @@ def main():
         device=args.device,
         publish_annotated=not args.no_annotated,
         annotated_quality=args.quality,
+        mqtt_user=args.mqtt_user,
+        mqtt_pwd=args.mqtt_pass,
     )
 
     signal.signal(signal.SIGTERM, lambda *_: detector.stop())

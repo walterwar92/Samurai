@@ -61,11 +61,22 @@ import json
 import math
 import os
 import socket
+import sys
 import threading
 import time
 from collections import deque
 
 import paho.mqtt.client as mqtt_client
+
+# Optional config_loader for MQTT credentials (works even if not on path).
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from config_loader import get_mqtt_credentials as _resolve_mqtt_creds
+except ImportError:
+    def _resolve_mqtt_creds():
+        u = os.environ.get('SAMURAI_MQTT_USER', '').strip()
+        p = os.environ.get('SAMURAI_MQTT_PASS', '')
+        return (u, p) if u and p else (None, None)
 
 
 def _get_local_ip() -> str:
@@ -192,11 +203,16 @@ class DashboardNode(Node):
             self._mqtt.on_disconnect = self._mqtt_on_disconnect
             self._mqtt.on_message    = self._mqtt_on_message
             self._mqtt.reconnect_delay_set(min_delay=0.5, max_delay=5)
+            # Optional auth: resolved from ENV/file/config (anonymous if not configured)
+            mqtt_user, mqtt_pwd = _resolve_mqtt_creds()
+            if mqtt_user is not None:
+                self._mqtt.username_pw_set(mqtt_user, mqtt_pwd)
             self._mqtt.connect_async(self._mqtt_broker, self._mqtt_port,
                                      keepalive=15)
             self._mqtt.loop_start()
+            auth_str = f' user={mqtt_user}' if mqtt_user else ' anonymous'
             self.get_logger().info(
-                f'MQTT client connecting → {self._mqtt_broker}:{self._mqtt_port}')
+                f'MQTT client connecting → {self._mqtt_broker}:{self._mqtt_port}{auth_str}')
         else:
             self._mqtt = None
             self.get_logger().warn(
