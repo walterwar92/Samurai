@@ -75,10 +75,12 @@ fallback_nav   → автономность         gesture_node        → же
 
 ```
 Samurai/
-├── start_robot_mqtt.sh          # Запуск Pi (Python + MQTT, основной)
-├── start_laptop_robot.sh        # Запуск ноутбука (Docker + ROS2)
-├── start_laptop_sim.sh          # Запуск симулятора (Flask, без ROS2)
-├── start_robot.sh               # [DEPRECATED] Старый запуск через Docker
+├── samurai.sh                   # Главный CLI: ./samurai.sh <robot|sim|compute|...>
+├── scripts/
+│   ├── lib/                     # Общая библиотека (логи, проверки, locking, mDNS)
+│   ├── cmds/                    # Подкоманды (robot.sh, sim.sh, compute.sh, ...)
+│   └── systemd/                 # Unit-файлы для автозапуска (production)
+├── start_*.sh                   # [DEPRECATED] тонкие обёртки над samurai.sh
 │
 ├── pi_nodes/                    # Все ноды Raspberry Pi (чистый Python)
 │   ├── mqtt_node.py             #   Базовый класс MqttNode
@@ -176,14 +178,16 @@ git clone <repo> ~/Samurai && cd ~/Samurai
 sudo apt install -y mosquitto mosquitto-clients
 sudo systemctl enable --now mosquitto
 
-# Всё остальное start_robot_mqtt.sh установит автоматически:
+# Сделать CLI исполняемым (один раз)
+chmod +x samurai.sh
+
+# Всё остальное samurai CLI установит автоматически при первом запуске:
 # Python зависимости (paho-mqtt, smbus2, gpiozero, PyYAML)
-# I2C включение, avahi-daemon
-chmod +x start_robot_mqtt.sh
-./start_robot_mqtt.sh
+# I2C включение, avahi-daemon, конфиг mosquitto
+./samurai.sh robot
 ```
 
-> Скрипт автоматически проверит и доустановит все зависимости при первом запуске.
+> CLI автоматически проверит и доустановит все зависимости при первом запуске.
 
 ### 2. Ноутбук (вычислительный узел)
 
@@ -197,10 +201,10 @@ sudo usermod -aG docker $USER && newgrp docker
 sudo pacman -S avahi nss-mdns
 sudo systemctl enable --now avahi-daemon
 
-# Запуск — всё остальное скрипт сделает сам:
+# Запуск — всё остальное CLI сделает сам:
 cd ~/Samurai
-chmod +x start_laptop_robot.sh
-./start_laptop_robot.sh
+chmod +x samurai.sh
+./samurai.sh compute
 ```
 
 ### 3. Симулятор (без железа)
@@ -208,7 +212,7 @@ chmod +x start_laptop_robot.sh
 ```bash
 pip install flask flask-cors flask-socketio opencv-python numpy paho-mqtt
 cd ~/Samurai
-./start_laptop_sim.sh
+./samurai.sh sim
 ```
 
 ### 4. Android приложение
@@ -226,39 +230,61 @@ cd ~/Samurai
 
 ## Запуск
 
+Все команды запускаются через единый CLI `samurai.sh`:
+
+```bash
+./samurai.sh                  # справка
+./samurai.sh <команда> [опции]
+./samurai.sh status           # что сейчас работает
+./samurai.sh stop             # остановить всё
+```
+
+| Команда | Что делает | Где запускать |
+|---------|-----------|---------------|
+| `robot` | Pi-ноды (Pure Python + MQTT) | На Pi |
+| `robot --legacy` | Старый Docker+ROS2 (DEPRECATED) | На Pi |
+| `sim` | Симулятор Flask :5000 без железа | На ноуте |
+| `compute` | Compute-стек (Docker + ROS2 + Dashboard :5000) | На ноуте |
+| `detector [--gpu]` | YOLO детектор отдельным процессом | На ноуте/GPU-ноуте |
+| `bridge [PORT]` | Samcan USB bridge :5005 | На ноуте |
+| `build-cpp [pi@host]` | Кросс-компиляция C++ для arm64 | На ноуте |
+| `status` | Что запущено + системные службы | Везде |
+| `stop [target]` | Остановить компонент(ы) | Везде |
+
 ### Реальный робот (основной сценарий)
 
 **Шаг 1 — Raspberry Pi** (SSH или терминал):
 ```bash
 cd ~/Samurai
-./start_robot_mqtt.sh
+./samurai.sh robot
 ```
 
-Скрипт автоматически:
-- Проверит Python, pip, I2C
-- Установит недостающие зависимости
-- Запустит mosquitto (если не запущен)
-- Запустит avahi-daemon
-- Запустит все 13 нод через `robot_launcher.py`
+CLI автоматически:
+- Проверит Python, pip, I2C, mosquitto, avahi
+- Установит недостающие Python-зависимости
+- Запустит все ноды через `pi_nodes.robot_launcher`
 
 **Шаг 2 — Ноутбук**:
 ```bash
 cd ~/Samurai
-./start_laptop_robot.sh
+./samurai.sh compute
 ```
 
-Скрипт автоматически:
+CLI автоматически:
 - Проверит Docker, соберёт образ (первый раз ~15 мин)
 - Соберёт ROS2 workspace (colcon build)
+- Пересоберёт React-фронт (`npm run build`)
 - Найдёт Pi через mDNS (`raspberrypi.local`)
-- Передаст IP Pi в `mqtt_bridge_compute`
-- Запустит контейнер с SLAM, Nav2, YOLO, Dashboard
+- Запустит контейнер: MQTT-bridge + SLAM + Nav2 + YOLO + Dashboard
+- Поднимет Samcan USB bridge на :5005 (если подключён Arduino)
 
-Опции:
+Опции (полный список — `./samurai.sh compute --help`):
 ```bash
-./start_laptop_robot.sh --pi 192.168.1.50   # IP вручную
-./start_laptop_robot.sh --hotspot            # мобильный хотспот
-./start_laptop_robot.sh --rebuild            # пересборка образа + workspace
+./samurai.sh compute --pi 192.168.1.50   # IP вручную
+./samurai.sh compute --hotspot           # мобильный хотспот (unicast DDS)
+./samurai.sh compute --rebuild           # пересборка образа + workspace
+./samurai.sh compute --remote-yolo       # YOLO на отдельном GPU-ноуте
+./samurai.sh compute --no-samcan         # без Samcan bridge
 ```
 
 Dashboard: **http://localhost:5000**
@@ -271,12 +297,47 @@ Dashboard: **http://localhost:5000**
 ### Симулятор (для разработки)
 
 ```bash
-./start_laptop_sim.sh
+./samurai.sh sim
 ```
 
 Откройте: [http://localhost:5000](http://localhost:5000)
 
 Полная эмуляция: арена 3x3 м, мячи, датчики, FSM, REST API.
+
+---
+
+### Production: автозапуск через systemd
+
+После того как всё работает в ручном режиме, можно настроить автоматический
+запуск при загрузке OS + автоперезапуск при крэше:
+
+```bash
+# На Pi (запускается автоматически после ребута)
+sudo ./scripts/systemd/install.sh robot
+sudo systemctl enable --now samurai-robot
+
+# На ноутбуке
+sudo ./scripts/systemd/install.sh compute bridge
+sudo systemctl enable --now samurai-compute samurai-bridge
+
+# Логи
+journalctl -u samurai-robot -f       # live-tail на Pi
+systemctl status samurai-compute     # статус на ноуте
+
+# Удалить
+sudo ./scripts/systemd/install.sh --uninstall
+```
+
+`install.sh` подставляет реальный путь репо и юзера в шаблоны и копирует
+unit-файлы в `/etc/systemd/system/`. Подробнее: `./scripts/systemd/install.sh --help`.
+
+---
+
+### Старые скрипты (start_*.sh)
+
+Для обратной совместимости старые `start_robot_mqtt.sh`, `start_laptop_robot.sh`
+и т. д. сохранены как тонкие обёртки. Они показывают deprecation warning и
+делегируют в `samurai.sh`. **Используй новый CLI** в новых документах/CI.
 
 ---
 
