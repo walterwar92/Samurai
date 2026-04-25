@@ -15,6 +15,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // Samcan bridge должен быть ПЕРВЫМ — иначе /api проксирует всё на :5000
+      '/api/samcan': 'http://localhost:5005',
       '/video_feed': 'http://localhost:5000',
       '/map.png': 'http://localhost:5000',
       '/api': 'http://localhost:5000',

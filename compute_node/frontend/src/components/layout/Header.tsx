@@ -32,13 +32,13 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
     )
   }
 
-  const isVpered = activeRobot === 'vpered'
+  const isSamcan = activeRobot === 'samcan'
 
   return (
     <header className="flex items-center justify-between px-5 py-3 bg-card border-b border-border sticky top-0 z-50">
       <div className="flex items-center gap-4">
         <h1 className="text-lg font-bold tracking-widest text-primary">
-          {isVpered ? 'VPERED' : 'SAMURAI'}
+          {isSamcan ? 'SAMCAN' : 'SAMURAI'}
         </h1>
         {isAdmin && (
           <Badge variant="destructive" className="text-[10px] tracking-wider">
@@ -46,7 +46,7 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
           </Badge>
         )}
         <RobotSelector />
-        {!isVpered && (
+        {!isSamcan && (
           <nav className="flex items-center gap-2 ml-2">
             {navLink('/dashboard', 'Панель')}
             {navLink('/admin', 'Админ')}
@@ -71,10 +71,10 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
           <div
             className={cn(
               'w-2 h-2 rounded-full transition-colors',
-              isVpered ? 'bg-samurai-red' : connected ? 'bg-samurai-green' : 'bg-samurai-red'
+              isSamcan ? 'bg-samurai-red' : connected ? 'bg-samurai-green' : 'bg-samurai-red'
             )}
           />
-          {isVpered ? 'Нет связи (USB)' : connected ? 'Подключено' : 'Отключено'}
+          {isSamcan ? 'Нет связи (USB)' : connected ? 'Подключено' : 'Отключено'}
         </div>
       </div>
     </header>

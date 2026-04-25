@@ -1039,9 +1039,16 @@ def create_app(ros_node: DashboardNode):
     index_html = os.path.join(static_dir, 'index.html')
 
     def _serve_spa():
-        """Serve React SPA index.html, fallback to old HTML templates."""
+        """Serve React SPA index.html, fallback to old HTML templates.
+        Cache-Control: no-cache — index.html ссылается на хешированные
+        assets (index-<hash>.js/.css). При пересборке хеши меняются,
+        и закешированный HTML укажет на удалённые файлы → 404. Потому
+        HTML не кешируем; assets остаются с immutable-кешем."""
         if os.path.isfile(index_html):
-            return FileResponse(index_html)
+            return FileResponse(
+                index_html,
+                headers={'Cache-Control': 'no-cache, no-store, must-revalidate'},
+            )
         return JSONResponse({'error': 'Frontend not built — run npm build in compute_node/frontend/'}, 404)
 
     @app.get('/')
@@ -1090,6 +1097,47 @@ def create_app(ros_node: DashboardNode):
             pass
         except Exception:
             pass
+
+    # ── Samcan USB bridge proxy ────────────────────────────────
+    # Хост-процесс samcan_bridge.py крутится на :5005 (см. start_laptop_robot.sh).
+    # Frontend стучится на /api/samcan/* — пробрасываем в bridge.
+    # На Linux Docker (--net=host) хост виден как localhost.
+    # На Windows Docker — нужно host.docker.internal. Управляется через
+    # переменную окружения SAMCAN_BRIDGE_URL.
+    # Дефолт перебивается переменной окружения SAMCAN_BRIDGE_URL,
+    # которую правильно подставляет start_laptop_robot.sh
+    # (host.docker.internal:5005 на Windows, localhost:5005 на Linux).
+    SAMCAN_BRIDGE_URL = os.environ.get('SAMCAN_BRIDGE_URL', 'http://localhost:5005')
+
+    @app.api_route('/api/samcan/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE'])
+    async def samcan_proxy(path: str, request: Request):
+        try:
+            import httpx
+        except ImportError:
+            return JSONResponse({'error': 'httpx not installed'}, status_code=500)
+        target = f"{SAMCAN_BRIDGE_URL}/api/samcan/{path}"
+        try:
+            body = await request.body()
+            headers = {k: v for k, v in request.headers.items()
+                       if k.lower() not in ('host', 'content-length', 'connection')}
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.request(
+                    method=request.method,
+                    url=target,
+                    params=dict(request.query_params),
+                    content=body,
+                    headers=headers,
+                )
+            return Response(
+                content=r.content,
+                status_code=r.status_code,
+                media_type=r.headers.get('content-type', 'application/json'),
+            )
+        except Exception as e:
+            return JSONResponse(
+                {'error': 'samcan_bridge unreachable', 'detail': str(e)},
+                status_code=503,
+            )
 
     @app.get('/map.png')
     async def map_image_legacy():

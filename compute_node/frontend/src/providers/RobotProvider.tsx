@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 
-export type RobotId = 'samurai' | 'vpered'
+export type RobotId = 'samurai' | 'samcan'
 
 export interface RobotInfo {
   id: RobotId
@@ -36,9 +36,9 @@ export const ROBOTS: Record<RobotId, RobotInfo> = {
       imu: true,
     },
   },
-  vpered: {
-    id: 'vpered',
-    name: 'Vpered',
+  samcan: {
+    id: 'samcan',
+    name: 'Samcan',
     controller: 'Arduino Uno',
     online: false,
     capabilities: {
@@ -71,7 +71,7 @@ const STORAGE_KEY = 'samurai.activeRobot'
 export function RobotProvider({ children }: { children: ReactNode }) {
   const [activeRobot, setActiveRobotState] = useState<RobotId>(() => {
     const stored = localStorage.getItem(STORAGE_KEY)
-    return stored === 'vpered' ? 'vpered' : 'samurai'
+    return stored === 'samcan' ? 'samcan' : 'samurai'
   })
 
   useEffect(() => {

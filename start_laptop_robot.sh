@@ -41,6 +41,10 @@ HOTSPOT_MODE=false
 REBUILD_IMAGE=false
 REBUILD_WS=false
 REMOTE_YOLO=false
+NO_SAMCAN=false
+SAMCAN_PORT=""
+NO_FRONTEND_BUILD=false
+FORCE_FRONTEND_BUILD=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,15 +54,23 @@ while [[ $# -gt 0 ]]; do
         --rebuild-image) REBUILD_IMAGE=true; shift ;;
         --rebuild-ws)    REBUILD_WS=true; shift ;;
         --remote-yolo)   REMOTE_YOLO=true; shift ;;
+        --no-samcan)     NO_SAMCAN=true; shift ;;
+        --samcan-port)   SAMCAN_PORT="$2"; shift 2 ;;
+        --no-frontend-build) NO_FRONTEND_BUILD=true; shift ;;
+        --rebuild-frontend)  FORCE_FRONTEND_BUILD=true; shift ;;
         -h|--help)
             echo "Использование: $0 [--pi IP] [--hotspot] [--rebuild] [--remote-yolo]"
             echo ""
-            echo "  --pi IP          IP Raspberry Pi (вместо авто-обнаружения)"
-            echo "  --hotspot        Режим мобильного хотспота (unicast DDS)"
-            echo "  --rebuild        Пересобрать Docker образ и workspace"
-            echo "  --rebuild-image  Пересобрать только Docker образ"
-            echo "  --rebuild-ws     Пересобрать только ROS2 workspace"
-            echo "  --remote-yolo    YOLO на отдельном GPU-ноутбуке (не запускать локально)"
+            echo "  --pi IP             IP Raspberry Pi (вместо авто-обнаружения)"
+            echo "  --hotspot           Режим мобильного хотспота (unicast DDS)"
+            echo "  --rebuild           Пересобрать Docker образ и workspace"
+            echo "  --rebuild-image     Пересобрать только Docker образ"
+            echo "  --rebuild-ws        Пересобрать только ROS2 workspace"
+            echo "  --remote-yolo       YOLO на отдельном GPU-ноутбуке"
+            echo "  --no-samcan         Не запускать Samcan USB bridge"
+            echo "  --samcan-port P     Конкретный COM-порт для Samcan"
+            echo "  --no-frontend-build Не пересобирать React фронт"
+            echo "  --rebuild-frontend  Принудительно пересобрать React фронт"
             exit 0
             ;;
         *) die "Неизвестный аргумент: $1. Используй --help" ;;
@@ -284,6 +296,132 @@ configure_network() {
     log_ok "MQTT broker: ${BOLD}$MQTT_BROKER:1883${NC}"
 }
 
+# ─── 6.4 React frontend (vite build → compute_node/static) ───────────────────
+build_frontend() {
+    if $NO_FRONTEND_BUILD; then
+        log_info "Сборка фронтенда отключена (--no-frontend-build)"
+        return
+    fi
+
+    log_step "React frontend"
+
+    local fe_dir="$SCRIPT_DIR/compute_node/frontend"
+    local out_index="$SCRIPT_DIR/compute_node/static/index.html"
+
+    if [[ ! -d "$fe_dir" ]]; then
+        log_warn "compute_node/frontend не найден — пропускаю сборку"
+        return
+    fi
+
+    if ! command -v npm &>/dev/null; then
+        log_warn "npm не установлен — фронт не пересобирается"
+        log_warn "Установи Node.js (https://nodejs.org) для авто-сборки UI"
+        if [[ -f "$out_index" ]]; then
+            log_info "Используется старый билд: $out_index"
+        else
+            log_err "Старого билда тоже нет — UI не будет работать"
+        fi
+        return
+    fi
+
+    # По умолчанию пересобираем всегда: 10 сек не жалко, зато гарантируем
+    # актуальный UI. Сравнение mtime после git pull ненадёжно (все файлы
+    # получают одинаковый timestamp). Отключить: --no-frontend-build.
+    log_info "Пересобираю фронт (10-30 сек)... (--no-frontend-build чтобы пропустить)"
+    local need_build=true
+
+    # node_modules — установим если нет
+    if [[ ! -d "$fe_dir/node_modules" ]]; then
+        log_info "node_modules не найден — npm install (1-3 мин)..."
+        (cd "$fe_dir" && npm install --no-audit --no-fund) \
+            || { log_warn "npm install не удался — пропускаю сборку"; return; }
+    fi
+
+    # Vite не чистит outDir когда он вне frontend (.../static), руками удаляем
+    rm -rf "$SCRIPT_DIR/compute_node/static/assets" 2>/dev/null || true
+
+    log_info "vite build (~10-30 сек)..."
+    if (cd "$fe_dir" && npm run build 2>&1 | tail -5); then
+        log_ok "Фронт собран → compute_node/static/"
+    else
+        log_warn "Сборка не удалась — будет использован старый билд"
+    fi
+}
+
+# ─── 6.5 Samcan USB bridge (Arduino Uno) ─────────────────────────────────────
+SAMCAN_PID=""
+SAMCAN_LOG="/tmp/samcan_bridge.log"
+
+start_samcan_bridge() {
+    if $NO_SAMCAN; then
+        log_info "Samcan bridge отключён (--no-samcan)"
+        return
+    fi
+
+    log_step "Samcan USB bridge (Arduino Uno)"
+
+    # Проверка зависимостей Python (вне Docker — bridge крутится на хосте,
+    # потому что pyserial должен видеть USB-устройство напрямую).
+    if ! command -v python &>/dev/null && ! command -v python3 &>/dev/null; then
+        log_warn "Python не найден — пропускаю Samcan bridge"
+        return
+    fi
+    local PY=python; command -v python &>/dev/null || PY=python3
+
+    if ! "$PY" -c "import serial, fastapi, uvicorn" &>/dev/null; then
+        log_warn "Samcan зависимости (pyserial/fastapi/uvicorn) не установлены"
+        log_info "Устанавливаю автоматически: pip install pyserial fastapi uvicorn pydantic"
+        "$PY" -m pip install --quiet --user pyserial 'fastapi>=0.110' 'uvicorn[standard]>=0.27' 'pydantic>=2' 2>&1 \
+            | tail -3 \
+            || { log_warn "pip install не удался — пропускаю Samcan"; return; }
+    fi
+
+    # Проверка что bridge не уже запущен
+    if pgrep -f "samcan_bridge.py" &>/dev/null; then
+        log_warn "Старый samcan_bridge.py обнаружен — убиваю"
+        pkill -f "samcan_bridge.py" || true
+        sleep 0.5
+    fi
+
+    # Аргументы: либо явный порт, либо --auto
+    local args
+    if [[ -n "$SAMCAN_PORT" ]]; then
+        args="--port $SAMCAN_PORT"
+        log_info "Указан порт: $SAMCAN_PORT"
+    else
+        args="--auto"
+        log_info "Авто-поиск порта Arduino"
+    fi
+
+    # Запуск в фоне с логом
+    log_info "Старт samcan_bridge.py → :5005 (лог: $SAMCAN_LOG)"
+    nohup "$PY" "$SCRIPT_DIR/compute_node/samcan_bridge.py" $args > "$SAMCAN_LOG" 2>&1 &
+    SAMCAN_PID=$!
+
+    # Дать ему время стартануть и проверить что процесс жив
+    sleep 1.2
+    if kill -0 "$SAMCAN_PID" 2>/dev/null; then
+        log_ok "Samcan bridge запущен (PID $SAMCAN_PID, http://localhost:5005)"
+    else
+        log_warn "Bridge упал. Лог:"
+        tail -10 "$SAMCAN_LOG" | sed 's/^/    /'
+        SAMCAN_PID=""
+    fi
+}
+
+stop_samcan_bridge() {
+    if [[ -n "$SAMCAN_PID" ]] && kill -0 "$SAMCAN_PID" 2>/dev/null; then
+        log_info "Останавливаю Samcan bridge (PID $SAMCAN_PID)..."
+        kill "$SAMCAN_PID" 2>/dev/null || true
+        wait "$SAMCAN_PID" 2>/dev/null || true
+    fi
+    # на всякий — добиваем по имени (если pid потерян)
+    pkill -f "samcan_bridge.py" 2>/dev/null || true
+}
+
+# Cleanup при выходе/Ctrl+C
+trap stop_samcan_bridge EXIT INT TERM
+
 # ─── 7. Запуск ───────────────────────────────────────────────────────────────
 launch() {
     log_step "Запуск compute нод в Docker"
@@ -310,6 +448,8 @@ launch() {
     echo -e "  ${BOLD}│${NC}  ROS_DOMAIN_ID: ${GREEN}${ROS_DOMAIN_ID}${NC}"
     [[ -n "$PEER_IP" ]] && \
     echo -e "  ${BOLD}│${NC}  Unicast DDS:   ${GREEN}peer_ip=$PEER_IP${NC}"
+    [[ -n "$SAMCAN_PID" ]] && \
+    echo -e "  ${BOLD}│${NC}  Samcan USB:    ${GREEN}http://localhost:5005${NC} (PID $SAMCAN_PID)"
     echo -e "  ${BOLD}└──────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${YELLOW}  ── Запуск ROS2 нод (Ctrl+C для остановки) ──${NC}"
@@ -317,10 +457,14 @@ launch() {
 
     # Docker Desktop (Win/Mac): --net=host работает только на Linux.
     # На Win/Mac нужен -p для проброса портов + bridge network.
+    # Для Samcan bridge proxy: на Linux хост = localhost (благодаря --net=host),
+    # на Windows — host.docker.internal:5005.
     local docker_net_args
+    local samcan_url="http://localhost:5005"
     if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN|NT ]] || [[ "$(uname -o 2>/dev/null)" == "Msys" ]]; then
-        docker_net_args="-p 5000:5000"
-        log_ok "Windows: порт 5000 прокинут через -p"
+        docker_net_args="-p 5000:5000 --add-host=host.docker.internal:host-gateway"
+        samcan_url="http://host.docker.internal:5005"
+        log_ok "Windows: порт 5000 прокинут через -p, Samcan bridge → $samcan_url"
     else
         docker_net_args="--net=host"
     fi
@@ -337,6 +481,7 @@ launch() {
         -e MQTT_PORT="1883" \
         -e ROBOT_ID="robot1" \
         -e CAMERA_FLIP="-1" \
+        -e SAMCAN_BRIDGE_URL="$samcan_url" \
         "$DOCKER_IMAGE" \
         bash -c "
             source /opt/ros/humble/setup.bash
@@ -355,6 +500,8 @@ main() {
     check_avahi
     discover_pi
     configure_network
+    build_frontend
+    start_samcan_bridge
     launch
 }
 

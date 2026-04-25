@@ -8,9 +8,9 @@ export function RobotSelector() {
 
   const pick = (id: RobotId) => {
     setActiveRobot(id)
-    // Vpered пока без дашборда в реальном времени — показываем его страницу
-    if (id === 'vpered') {
-      navigate('/vpered')
+    // Samcan пока без дашборда в реальном времени — показываем его страницу
+    if (id === 'samcan') {
+      navigate('/samcan')
     } else {
       navigate('/dashboard')
     }
