@@ -116,7 +116,7 @@ def generate_launch_description():
         'remote_yolo', default_value='false',
         description=(
             'Если true — YOLO запускается на отдельном GPU-ноутбуке '
-            '(yolo_detector_mqtt.py), локальный YOLO-нод не стартует. '
+            '(./samurai.sh detector --gpu), локальный YOLO-нод не стартует. '
             'Детекции приходят через MQTT → mqtt_bridge_compute → ROS2.'))
 
     # Настройка unicast DDS (выполняется до старта нод)
@@ -170,20 +170,23 @@ def generate_launch_description():
         }.items(),
     )
 
-    # ── YOLO detection node ──────────────────────────────────
-    # Skipped when remote_yolo:=true (YOLO runs on separate GPU laptop)
-    yolo_node = Node(
-        package='robot_pkg',
-        executable='yolo_detector_node',
+    # ── YOLO detection (объединённый detector.py) ────────────
+    # Заменяет старый ROS2 yolo_detector_node (Node executable=...).
+    # Использует --source ros для ROS2 топиков,
+    # пакет compute_node/detectors/ для всей логики.
+    # Skipped when remote_yolo:=true (YOLO runs on separate GPU laptop).
+    yolo_node = ExecuteProcess(
+        cmd=[
+            'python3', '/root/Samurai/compute_node/detector.py',
+            '--source', 'ros',
+            '--backend', 'yolo',
+            '--device', 'cpu',
+            '--model', '/root/Samurai/yolo11n.pt',
+            '--conf', '0.45',
+        ],
         name='yolo_detector',
         output='screen',
         condition=UnlessCondition(LaunchConfiguration('remote_yolo')),
-        parameters=[{
-            'model': '/root/Samurai/yolo11n.pt',
-            'confidence': 0.45,
-            'device': 'cpu',
-            'detect_all_classes': True,
-        }],
     )
 
     # ── Web Dashboard (FastAPI — compute_node version) ─────────

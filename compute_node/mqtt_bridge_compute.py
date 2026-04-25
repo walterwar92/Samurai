@@ -34,6 +34,7 @@ Heartbeat (1 Hz):
 import json
 import math
 import os
+import sys
 
 import rclpy
 from rclpy.node import Node
@@ -45,6 +46,16 @@ from std_msgs.msg import String, Float32, Bool
 from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 
 import paho.mqtt.client as mqtt
+
+# Optional MQTT credentials resolver (ENV/file/config)
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from config_loader import get_mqtt_credentials as _resolve_mqtt_creds
+except ImportError:
+    def _resolve_mqtt_creds():
+        u = os.environ.get('SAMURAI_MQTT_USER', '').strip()
+        p = os.environ.get('SAMURAI_MQTT_PASS', '')
+        return (u, p) if u and p else (None, None)
 
 
 class MqttBridgeCompute(Node):
@@ -68,6 +79,11 @@ class MqttBridgeCompute(Node):
         self._mqtt.on_connect = self._on_mqtt_connect
         self._mqtt.on_message = self._on_mqtt_message
         self._mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
+        # Optional auth (anonymous if not configured)
+        mqtt_user, mqtt_pwd = _resolve_mqtt_creds()
+        if mqtt_user is not None:
+            self._mqtt.username_pw_set(mqtt_user, mqtt_pwd)
+            self.get_logger().info(f'MQTT auth enabled: user={mqtt_user}')
         self._mqtt.connect_async(broker, port)
         self._mqtt.loop_start()
 

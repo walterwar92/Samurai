@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
-# Samcan USB bridge — мост между frontend и Arduino Uno
+# DEPRECATED — этот скрипт стал тонкой обёрткой.
 #
-# Использование:
-#   ./start_samcan_bridge.sh                # auto-detect порта
-#   ./start_samcan_bridge.sh COM3           # явный COM-порт
-#   ./start_samcan_bridge.sh /dev/ttyUSB0   # Linux/macOS
-
-set -e
-
-cd "$(dirname "$0")"
-
-if [ -n "$1" ]; then
-    exec python compute_node/samcan_bridge.py --port "$1"
-else
-    exec python compute_node/samcan_bridge.py --auto
-fi
+# Используй: ./samurai.sh bridge          # auto-detect
+#            ./samurai.sh bridge COM3
+#            ./samurai.sh bridge /dev/ttyUSB0
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo -e "\033[1;33m  [!]\033[0m DEPRECATED: используй \033[1m./samurai.sh bridge\033[0m вместо $0" >&2
+exec "$SCRIPT_DIR/samurai.sh" bridge "$@"

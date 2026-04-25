@@ -34,7 +34,8 @@ setup(
             'mqtt_bridge_node = robot_pkg.mqtt_bridge_node:main',
             'mqtt_bridge_compute = robot_pkg.mqtt_bridge_compute:main',
             'dashboard_node = robot_pkg.dashboard_node:main',
-            'yolo_detector_node = robot_pkg.yolo_detector_node:main',
+            # yolo_detector_node удалён 2026-04-25 — заменён на
+            # compute_node/detector.py (запускается через ExecuteProcess в launch)
             'depth_to_scan_node = robot_pkg.depth_to_scan_node:main',
             'battery_node = robot_pkg.battery_node:main',
             'temperature_node = robot_pkg.temperature_node:main',

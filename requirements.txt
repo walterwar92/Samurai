@@ -29,6 +29,11 @@ opencv-python>=4.8.0
 ultralytics>=8.0.0              # YOLOv8n / YOLO11n (для экспорта в ONNX)
 onnxruntime>=1.17.0             # Быстрее PyTorch CPU на ~50%, RAM -500MB
 numpy>=1.24.0,<2.0              # numpy<2 нужен для совместимости ROS2
+# H.264 video decoding для compute_node/detectors/H264TCPFrameSource (с 2026-04).
+# Camera_node на Pi публикует H.264 поток через TCP вместо JPEG в MQTT.
+# PyAV — Python bindings к ffmpeg, ~50MB, hardware-accelerated decode.
+# На Pi не нужен (там только encoder в picamera2).
+av>=11.0.0
 
 # --- Speech Recognition ---
 vosk>=0.3.45
