@@ -41,6 +41,11 @@ ${BOLD}Команды ноутбука:${NC}
                   --pi IP            IP MQTT-брокера (Pi)
                   --robot-radius M   Inflation радиус (default: 0.15м)
                   --no-simplify      Без LOS-shortcut (raw A* cells)
+  ${GREEN}voice-llm${NC}     LLM voice intent parser (#2) — Qwen 2.5 7B / Ollama
+                  --pi IP            IP MQTT-брокера (Pi)
+                  --backend B        ollama (default) или mock (dev)
+                  --model NAME       Ollama tag (default: qwen2.5:7b)
+                  --ollama-host URL  default: http://localhost:11434
   ${GREEN}bridge${NC}        Samcan USB bridge (Arduino Uno → FastAPI :5005)
                   [PORT]             COM3 / /dev/ttyUSB0 (без — auto)
   ${GREEN}build-cpp${NC}     Кросс-компиляция C++ нод для Pi (arm64)

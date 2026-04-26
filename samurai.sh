@@ -16,6 +16,7 @@
 #   compute     Compute-стек (Docker + ROS2 + SLAM + Nav2 + Dashboard :5000)
 #   detector    YOLO детектор (отдельный процесс, CPU/HSV или GPU)
 #   planner     A* path planner на ноутбуке (#3 — slam_map → goal → path)
+#   voice-llm   LLM voice intent parser (#2 — Qwen 2.5 7B через Ollama)
 #   bridge      Samcan USB bridge (FastAPI :5005)
 #   build-cpp   Кросс-компиляция C++ нод для arm64
 #   status      Что запущено
@@ -58,6 +59,10 @@ case "$cmd" in
     robot|sim|compute|detector|planner|bridge|status|stop|auth)
         exec "$CMDS_DIR/${cmd}.sh" "$@"
         ;;
+    voice-llm)
+        # Дефис → подкоманда с дефисом в имени файла
+        exec "$CMDS_DIR/voice-llm.sh" "$@"
+        ;;
     build-cpp)
         # Дефис в имени → подчёркивание в файле
         exec "$CMDS_DIR/build_cpp.sh" "$@"
@@ -65,7 +70,7 @@ case "$cmd" in
     *)
         echo "ERROR: неизвестная команда '$cmd'" >&2
         echo "" >&2
-        echo "Доступные команды: robot, sim, compute, detector, planner, bridge, build-cpp, auth, status, stop, help" >&2
+        echo "Доступные команды: robot, sim, compute, detector, planner, voice-llm, bridge, build-cpp, auth, status, stop, help" >&2
         echo "Запусти: $0 help" >&2
         exit 1
         ;;
