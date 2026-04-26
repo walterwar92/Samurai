@@ -306,3 +306,100 @@ class DashboardState:
         with self.lock:
             self.map.zones = []
             self.map.zone_counter = 0
+
+    # ── Legacy SocketIO push (для совместимости со старым фронтом) ───
+    def legacy_socketio_state(self) -> dict[str, Any]:
+        """Воспроизводит формат старого DashboardNode.get_state().
+
+        Используется до тех пор пока фронт не переедет на REST polling +
+        WebSocket /ws/state (запланировано в #6 Zustand). После C13/C12
+        этот метод можно будет удалить.
+        """
+        import math
+        with self.lock:
+            r, s, a, d, m, c = (
+                self.robot, self.sensors, self.actuators,
+                self.detection, self.map, self.control,
+            )
+            cam, sys_ = self.camera, self.system
+
+            yaw_rad = r.pose.yaw
+            yaw_deg = round(math.degrees(yaw_rad), 1)
+
+            bd = d.ball_detection_raw if isinstance(d.ball_detection_raw, dict) else {}
+            det_objects = bd.get('objects', bd.get('balls', []))
+
+            i = s.imu
+            ekf = i.ekf
+            return {
+                'status': r.fsm.model_dump(),
+                'detection': bd,
+                'all_detections': det_objects,
+                'range_m': s.ultrasonic.range_m,
+                'imu': {
+                    'yaw': i.yaw, 'pitch': i.pitch, 'roll': i.roll,
+                    'gyro': i.gyro.model_dump(),
+                    'accel': i.accel.model_dump(),
+                },
+                'imu_ypr': [i.yaw, i.pitch, i.roll],
+                'imu_accel_x': i.accel.x,
+                'imu_gyro_z': i.gyro.z,
+                'imu_accel': [i.accel.x, i.accel.y, i.accel.z],
+                'imu_gyro': [i.gyro.x, i.gyro.y, i.gyro.z],
+                'imu_ypr_raw': [i.yaw, i.pitch, i.roll],
+                'imu_ypr_ekf': [ekf.yaw, ekf.pitch, ekf.roll] if ekf else None,
+                'imu_ekf_bias': list(s.imu_ekf_bias) if ekf else None,
+                'imu_has_ekf': ekf is not None,
+                'pose': {**r.pose.model_dump(), 'yaw_deg': yaw_deg},
+                'stationary': r.stationary,
+                'velocity': {
+                    **r.velocity_estimated.model_dump(),
+                    'linear': r.velocity_estimated.linear_x,
+                    'angular': r.velocity_estimated.angular_z,
+                    'speed': abs(r.velocity_estimated.linear_x),
+                },
+                'cmd_velocity': r.velocity_commanded.model_dump(),
+                'map_info': m.info.model_dump() if m.info else {},
+                'scan_points': list(s.scan_points),
+                'voice_log': list(sys_.voice_log),
+                'event_log': list(sys_.event_log)[-30:],
+                'battery': s.battery.model_dump(),
+                'battery_voltage': s.battery.voltage,
+                'battery_percent': s.battery.percent,
+                'cpu_temp': s.temperature.value,
+                'temperature': s.temperature.model_dump(),
+                'watchdog': s.watchdog.model_dump(),
+                'speed_profile': r.speed_profile,
+                'actuators': {
+                    'claw': 'open' if a.claw.open else 'closed',
+                    'claw_open': a.claw.open,
+                },
+                'head': a.head.model_dump(),
+                'arm': a.arm.model_dump(),
+                'arm_presets': list(a.arm_presets),
+                'head_presets': list(a.head_presets),
+                'slam_map': m.slam.model_dump(by_alias=True) if m.slam else None,
+                'path_recorder': dict(c.path_recorder_status) if c.path_recorder_status else None,
+                'recorded_path': list(c.path_recorder_path) if c.path_recorder_path else None,
+                'detection_enabled': d.enabled,
+                'obstacle_avoidance_enabled': c.obstacle_avoidance_enabled,
+                'collision_guard_enabled': c.collision_guard_enabled,
+                'calibration': dict(c.calibration_status) if c.calibration_status else None,
+                'calibration_result': dict(c.calibration_result) if c.calibration_result else None,
+                'calibration_coeffs': {'name': c.calibration_active_profile} if c.calibration_active_profile else None,
+                'calibration_profiles': list(c.calibration_profiles) if c.calibration_profiles else None,
+                'explorer': dict(c.explorer_status) if c.explorer_status else None,
+                'mission': dict(c.mission_status) if c.mission_status else None,
+                'tts_enabled': sys_.tts_enabled,
+                'precision_drive': dict(c.precision_drive_status) if c.precision_drive_status else None,
+                'precision_drive_result': dict(c.precision_drive_result) if c.precision_drive_result else None,
+                'led': a.led.model_dump(),
+                'sim_time': round(time.time() - sys_.start_time, 2),
+                'zones': [z.model_dump() for z in m.zones],
+                'planned_path': list(c.path_recorder_path) if c.path_recorder_path else [],
+                'balls': [b.model_dump() for b in d.balls],
+                'camera': {
+                    'h264_endpoint': cam.h264_endpoint,
+                    'yolo_remote_online': cam.yolo_remote_online,
+                },
+            }
