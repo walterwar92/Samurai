@@ -135,6 +135,23 @@ class PrecisionDriveNode(MqttNode):
         self._imu_lock = threading.Lock()
 
         # ── State machine ────────────────────────────────────────
+        # Shadow FSM tracker validates transitions and auto-logs changes.
+        # self._state remains the canonical string field (other code reads
+        # it for status publishing); _set_state() keeps both in sync and
+        # also publishes a transition event for dashboard observability.
+        from pi_nodes.control.drive_state import StateTracker, DriveState
+        self._DriveState = DriveState
+        self._fsm = StateTracker(
+            initial=DriveState.IDLE,
+            log_info=self.log_info,
+            log_warn=self.log_warn,
+            on_transition=lambda old, new, reason: self.publish(
+                'precision_drive/transitions',
+                {'from': old.value, 'to': new.value, 'reason': reason,
+                 'ts': self.timestamp()},
+                qos=0,
+            ),
+        )
         self._state = 'idle'
         self._prev_state = 'idle'
 
@@ -200,6 +217,28 @@ class PrecisionDriveNode(MqttNode):
 
     # ── Callbacks ────────────────────────────────────────────────
 
+    def _set_state(self, new_state: str, reason: str = '') -> None:
+        """Update self._state and run the FSM tracker for validation + logging.
+
+        Drops illegal transitions to a warning (matches old code that
+        unconditionally assigned). Sentinel values like '_next_leg' that
+        aren't real DriveState members bypass the tracker entirely — they
+        are markers the original code stuffed into _prev_state.
+        """
+        if new_state == self._state:
+            return
+        try:
+            target = self._DriveState(new_state)
+        except ValueError:
+            # Sentinel / unknown value — fall back to plain assignment
+            self._prev_state = self._state
+            self._state = new_state
+            return
+        self._fsm.transition_to(target, reason=reason)
+        # Mirror previous_state (existing code uses both _state and _prev_state)
+        self._prev_state = self._fsm.previous.value
+        self._state = self._fsm.current
+
     def _odom_cb(self, topic, data):
         if not isinstance(data, dict):
             return
@@ -254,14 +293,14 @@ class PrecisionDriveNode(MqttNode):
             return
         if action == 'pause':
             if self._state not in ('idle', 'done', 'paused_user'):
-                self._prev_state = self._state
-                self._state = 'paused_user'
+                self._set_state('paused_user', reason='user pause cmd')
                 self._send_cmd(0.0, 0.0)
-                self.log_info('Paused by user')
             return
         if action == 'resume':
             if self._state == 'paused_user':
-                self._state = self._prev_state
+                self._fsm.restore_previous()
+                self._state = self._fsm.current
+                self._prev_state = self._fsm.previous.value
                 self.log_info('Resumed by user -> %s', self._state)
             return
 
@@ -359,7 +398,7 @@ class PrecisionDriveNode(MqttNode):
         if self._scenario_idx >= len(self._scenario_legs):
             self.log_info('Scenario "%s" completed!', self._scenario_name)
             self._publish_result(True, 'scenario %s done' % self._scenario_name)
-            self._state = 'idle'
+            self._set_state('idle', reason='scenario complete')
             self._scenario_legs = []
             return
 
@@ -409,9 +448,9 @@ class PrecisionDriveNode(MqttNode):
         if heading_err > TURN_TOL_RAD and direction in ('left', 'right'):
             self._target_yaw = self._target_heading
             self._turn_direction = 1.0 if _normalize_angle(self._target_heading - theta) > 0 else -1.0
-            self._state = 'aligning'
+            self._set_state('aligning', reason=f'pre-turn heading_err={math.degrees(heading_err):.1f}deg')
         else:
-            self._state = 'driving'
+            self._set_state('driving', reason='start drive leg')
 
         self.log_info('Drive: %.1f cm %s (heading=%.1f deg)',
                       dist_cm, direction, math.degrees(self._target_heading))
@@ -424,7 +463,7 @@ class PrecisionDriveNode(MqttNode):
         self._turn_direction = 1.0 if angle_rad > 0 else -1.0
         self._arrive_count = 0
         self._leg_start_time = time.monotonic()
-        self._state = 'turning'
+        self._set_state('turning', reason='start turn leg')
         self.log_info('Turn: %.1f deg (target=%.1f deg)',
                       angle_deg, math.degrees(self._target_yaw))
 
@@ -456,11 +495,11 @@ class PrecisionDriveNode(MqttNode):
             self._send_cmd(0.0, 0.0)
             if time.monotonic() - self._settle_start >= self._settle_duration:
                 if self._prev_state == '_next_leg':
-                    self._state = 'idle'  # temp
+                    # Sentinel — bypasses validator (not a real DriveState)
+                    self._state = 'idle'
                     self._start_next_leg()
                 else:
-                    self.log_info('Settled, resuming %s', self._prev_state)
-                    self._state = self._prev_state
+                    self._set_state(self._prev_state, reason='settled, resuming')
             return
         elif state == 'aligning':
             self._do_align()
@@ -580,8 +619,7 @@ class PrecisionDriveNode(MqttNode):
                 self._start_x = self._odom_x
                 self._start_y = self._odom_y
             self._heading_integral = 0.0
-            self._state = 'driving'
-            self.log_info('Aligned (err=%.1f deg), driving', math.degrees(err))
+            self._set_state('driving', reason=f'aligned (err={math.degrees(err):.1f}deg)')
             return
 
         # Proportional speed with minimum
@@ -642,10 +680,8 @@ class PrecisionDriveNode(MqttNode):
         if a_mag < LIFT_GRAVITY_LOW:
             self._lift_low_count += 1
             if self._lift_low_count >= LIFT_SAMPLES:
-                self._prev_state = self._state
-                self._state = 'paused_lift'
+                self._set_state('paused_lift', reason=f'lift (|a|={a_mag:.2f})')
                 self._send_cmd(0.0, 0.0)
-                self.log_warn('LIFT detected (|a|=%.2f m/s^2) — motors stopped', a_mag)
                 return True
         else:
             self._lift_low_count = 0
@@ -663,12 +699,10 @@ class PrecisionDriveNode(MqttNode):
 
         if a_lateral > PUSH_ACCEL_THRESHOLD:
             self._push_last_time = now
-            self._prev_state = self._state
-            self._state = 'settling'
+            self._set_state('settling', reason=f'push (a_lat={a_lateral:.2f})')
             self._settle_start = now
             self._settle_duration = SETTLE_TIME_S
             self._send_cmd(0.0, 0.0)
-            self.log_warn('PUSH detected (a_lat=%.2f m/s^2) — pausing to settle', a_lateral)
             return True
 
         return False
@@ -684,10 +718,9 @@ class PrecisionDriveNode(MqttNode):
 
         if a_mag >= LIFT_GRAVITY_OK:
             self._lift_low_count = 0
-            self._state = 'settling'
+            self._set_state('settling', reason=f'back on ground (|a|={a_mag:.2f})')
             self._settle_start = time.monotonic()
             self._settle_duration = SETTLE_TIME_S
-            self.log_info('Back on ground (|a|=%.2f m/s^2) — settling...', a_mag)
 
     # ── Leg completion ───────────────────────────────────────────
 
@@ -700,23 +733,30 @@ class PrecisionDriveNode(MqttNode):
             self._scenario_idx += 1
             if success:
                 # Short pause between scenario legs
-                self._state = 'settling'
+                self._set_state('settling',
+                                reason=f'leg {self._scenario_idx} done')
                 self._settle_start = time.monotonic()
                 self._settle_duration = SCENARIO_SETTLE_S
+                # Sentinel: tells settling-handler to call _start_next_leg
+                # instead of restoring _prev_state. Bypasses FSM validator.
                 self._prev_state = '_next_leg'
             else:
                 self.log_warn('Scenario "%s" leg %d failed: %s',
                               self._scenario_name, self._scenario_idx, reason)
                 self._publish_result(False, 'leg %d: %s' % (self._scenario_idx, reason))
-                self._state = 'idle'
+                self._set_state('idle', reason='scenario leg failed')
                 self._scenario_legs = []
         else:
             self._publish_result(success, reason)
-            self._state = 'idle'
+            self._set_state('idle', reason=f'leg done: {reason}')
 
     def _abort(self, reason):
         self._send_cmd(0.0, 0.0)
-        self._state = 'idle'
+        # force=True: abort can come from any state and is intentionally legal
+        self._fsm.transition_to(self._DriveState.IDLE, reason=f'abort: {reason}',
+                                force=True)
+        self._state = self._fsm.current
+        self._prev_state = self._fsm.previous.value
         self._scenario_legs = []
         self._heading_integral = 0.0
         self._arrive_count = 0

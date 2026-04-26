@@ -30,9 +30,12 @@ except ImportError:
         return default
 
 try:
-    import smbus2
+    import smbus2  # noqa: F401  — kept for legacy import paths / tests
+    from pi_nodes.hardware.i2c_device import I2CDevice, I2CTimeout
     _HW = True
 except ImportError:
+    I2CDevice = None
+    I2CTimeout = Exception  # so except-clauses still parse
     _HW = False
 
 # IMU filter — no longer requires numpy (pure Python 2D filter)
@@ -141,13 +144,16 @@ class IMUNode(MqttNode):
                     self._bus.close()
                 except Exception:
                     pass
-            bus = smbus2.SMBus(1)
-            bus.write_byte_data(MPU6050_ADDR, PWR_MGMT_1, 0x00)
+            # 50ms timeout per op — IMU has 20ms budget at 50Hz, so a hang
+            # >50ms is already missed deadline territory.
+            bus = I2CDevice(bus_num=1, address=MPU6050_ADDR,
+                            timeout_s=0.05, name='mpu6050')
+            bus.write_byte_data(PWR_MGMT_1, 0x00)
             time.sleep(0.1)
-            bus.write_byte_data(MPU6050_ADDR, DLPF_CFG, 0x03)
-            bus.write_byte_data(MPU6050_ADDR, SMPLRT_DIV, 9)
-            bus.write_byte_data(MPU6050_ADDR, GYRO_CONFIG, 0x00)
-            bus.write_byte_data(MPU6050_ADDR, ACCEL_CONFIG, 0x00)
+            bus.write_byte_data(DLPF_CFG, 0x03)
+            bus.write_byte_data(SMPLRT_DIV, 9)
+            bus.write_byte_data(GYRO_CONFIG, 0x00)
+            bus.write_byte_data(ACCEL_CONFIG, 0x00)
             self._bus = bus
             self._i2c_errors = 0
             self.log_info('MPU6050 initialised @ 0x%02X (DLPF=3, SR=100Hz)',
@@ -175,7 +181,7 @@ class IMUNode(MqttNode):
                                               self._I2C_RECOVER_DELAY)
             return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
         try:
-            raw = self._bus.read_i2c_block_data(MPU6050_ADDR, ACCEL_XOUT_H, 14)
+            raw = self._bus.read_i2c_block_data(ACCEL_XOUT_H, 14)
             ax = struct.unpack('>h', bytes(raw[0:2]))[0] / ACCEL_SCALE * 9.81
             ay = struct.unpack('>h', bytes(raw[2:4]))[0] / ACCEL_SCALE * 9.81
             az = struct.unpack('>h', bytes(raw[4:6]))[0] / ACCEL_SCALE * 9.81
@@ -184,6 +190,17 @@ class IMUNode(MqttNode):
             gz = struct.unpack('>h', bytes(raw[12:14]))[0] / GYRO_SCALE * DEG2RAD
             self._i2c_errors = 0  # reset on success
             return (ax, ay, az, gx, gy, gz)
+        except I2CTimeout as e:
+            # Timeouts are recovered the same way as other errors but logged
+            # specifically so a stuck-bus diagnosis is visible in journalctl.
+            self._i2c_errors += 1
+            if self._i2c_errors == 1:
+                self.log_warn('IMU I2C TIMEOUT: %s', e)
+            if self._i2c_errors >= self._I2C_MAX_ERRORS:
+                self._bus = None
+                self._i2c_recover_time = (time.monotonic() +
+                                          self._I2C_RECOVER_DELAY)
+            return (0.0, 0.0, 9.81, 0.0, 0.0, 0.0)
         except Exception as e:
             self._i2c_errors += 1
             if self._i2c_errors >= self._I2C_MAX_ERRORS:

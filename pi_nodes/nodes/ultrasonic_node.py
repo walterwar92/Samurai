@@ -3,7 +3,11 @@
 ultrasonic_node — HC-SR04 distance sensor.
 
 Publishes:
-    samurai/{robot_id}/range  — {range, ts} @ 20 Hz
+    samurai/{robot_id}/range  — {range, ts, age_s} @ 20 Hz
+
+age_s — seconds since last *valid* sensor reading. 0.0 on healthy sensor;
+grows when read fails repeatedly and the node is publishing stale _last_valid.
+Consumers (FSM, replay) should treat age_s > 1.0 as "sensor likely dead".
 """
 
 import os
@@ -41,8 +45,9 @@ class UltrasonicNode(MqttNode):
         self._last_publish_time = 0.0
         self._fail_count = 0
         self._last_valid = MAX_RANGE
+        self._last_valid_time = 0.0  # monotonic; 0.0 = no valid reading yet
         # Pre-allocated message dict — updated in-place
-        self._msg = {'range': 0.0, 'ts': 0.0}
+        self._msg = {'range': 0.0, 'ts': 0.0, 'age_s': 0.0}
 
         self._init_sensor()
 
@@ -76,6 +81,7 @@ class UltrasonicNode(MqttNode):
     def _publish(self):
         if self._simulated:
             dist = MAX_RANGE
+            self._last_valid_time = self.now_sec()
         else:
             try:
                 dist = self._sensor.distance
@@ -85,6 +91,7 @@ class UltrasonicNode(MqttNode):
                 elif dist > MAX_RANGE:
                     dist = MAX_RANGE
                 self._last_valid = dist
+                self._last_valid_time = self.now_sec()
                 self._fail_count = 0
             except Exception as exc:
                 self._fail_count += 1
@@ -112,6 +119,10 @@ class UltrasonicNode(MqttNode):
         m = self._msg
         m['range'] = round(float(dist), 4)
         m['ts'] = now
+        if self._last_valid_time > 0.0:
+            m['age_s'] = round(self.now_sec() - self._last_valid_time, 3)
+        else:
+            m['age_s'] = -1.0  # never had a valid reading yet
         self.publish('range', m)
 
     def on_shutdown(self):

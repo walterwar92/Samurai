@@ -8,6 +8,7 @@ Publishes:
 
 import json
 import os
+import re
 import sys
 import threading
 
@@ -37,6 +38,23 @@ SAMPLE_RATE = cfg('voice.sample_rate', 16000)
 CHUNK_SIZE = cfg('voice.chunk_size', 4000)
 VAD_FRAME_BYTES = cfg('voice.vad_frame_bytes', 960)
 VAD_AGGRESSIVENESS = cfg('voice.vad_aggressiveness', 2)
+
+# Sanitisation — keep Cyrillic, ASCII letters, digits and spaces. Drop control
+# bytes, punctuation, escape sequences. Defence-in-depth: downstream LLM
+# (compute_node/llm_voice) builds a prompt from this text, so unfiltered
+# user-controlled input is a prompt-injection vector.
+MAX_VOICE_TEXT_LEN = 200
+_VOICE_SAFE_RE = re.compile(r'[^\w\sа-яА-ЯёЁ-]', flags=re.UNICODE)
+_VOICE_WS_RE = re.compile(r'\s+')
+
+
+def sanitize_voice_text(raw: str) -> str:
+    """Return cleaned voice command, or '' if nothing usable remains."""
+    if not isinstance(raw, str):
+        return ''
+    cleaned = _VOICE_SAFE_RE.sub(' ', raw)
+    cleaned = _VOICE_WS_RE.sub(' ', cleaned).strip().lower()
+    return cleaned[:MAX_VOICE_TEXT_LEN]
 
 
 class VoiceNode(MqttNode):
@@ -100,9 +118,13 @@ class VoiceNode(MqttNode):
                     result = json.loads(self._recognizer.Result())
                 except json.JSONDecodeError:
                     continue
-                text = result.get('text', '').strip()
+                raw = result.get('text', '')
+                text = sanitize_voice_text(raw)
                 if text:
-                    self.log_info('Heard: "%s"', text)
+                    if text != raw.strip().lower():
+                        self.log_info('Heard: "%s" (raw=%r)', text, raw)
+                    else:
+                        self.log_info('Heard: "%s"', text)
                     self.publish('voice_command', text, qos=1)
 
     def on_shutdown(self):
