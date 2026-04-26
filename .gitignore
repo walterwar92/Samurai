@@ -96,6 +96,18 @@ logs/
 *.backup
 *.cache
 
+# --- LaTeX build artefacts (#66) ---
+# main.tex и chapters/*.tex остаются в репо; артефакты pdflatex/latexmk — нет.
+*.aux
+*.fls
+*.fdb_latexmk
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+*.synctex.gz
+
 # --- Claude Code ---
 .claude/
 
