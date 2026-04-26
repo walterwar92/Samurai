@@ -17,10 +17,14 @@ export default defineConfig({
     proxy: {
       // Samcan bridge должен быть ПЕРВЫМ — иначе /api проксирует всё на :5000
       '/api/samcan': 'http://localhost:5005',
-      '/video_feed': 'http://localhost:5000',
+      // /video_feed удалён в #9 (2026-04, переход на H.264 через /ws/h264)
       '/map.png': 'http://localhost:5000',
       '/api': 'http://localhost:5000',
       '/socket.io': {
+        target: 'http://localhost:5000',
+        ws: true,
+      },
+      '/ws/h264': {
         target: 'http://localhost:5000',
         ws: true,
       },

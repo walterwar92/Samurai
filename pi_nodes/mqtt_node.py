@@ -26,10 +26,12 @@ import paho.mqtt.client as mqtt
 # Load default robot_id from config.yaml (single source of truth)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
-    from config_loader import cfg as _cfg
+    from config_loader import cfg as _cfg, get_mqtt_credentials as _get_mqtt_creds
     _DEFAULT_ROBOT_ID = _cfg('mqtt.robot_id', 'robot1')
 except ImportError:
     _DEFAULT_ROBOT_ID = 'robot1'
+    def _get_mqtt_creds():
+        return None, None
 
 
 def get_local_ip(timeout: float = 2.0) -> str:
@@ -78,11 +80,19 @@ class MqttNode:
     def __init__(self, name: str, *,
                  broker: str = '127.0.0.1',
                  port: int = 1883,
-                 robot_id: str = _DEFAULT_ROBOT_ID):
+                 robot_id: str = _DEFAULT_ROBOT_ID,
+                 username: Optional[str] = None,
+                 password: Optional[str] = None):
         self.name = name
         self._robot_id = robot_id
         self._broker = broker
         self._port = port
+        # Если username/password не переданы явно — ищем в ENV / файле / config.
+        # None, None → anonymous. См. config_loader.get_mqtt_credentials().
+        if username is None and password is None:
+            username, password = _get_mqtt_creds()
+        self._mqtt_user = username
+        self._mqtt_pwd = password
         self._running = False
         self._timers: list[threading.Thread] = []
         self._lock = threading.Lock()
@@ -284,6 +294,9 @@ class MqttNode:
     def start(self):
         """Connect to broker and start all timers. Call once."""
         self._running = True
+        # Auth — must be set BEFORE connect_async (paho применяет в SUBSCRIBE/CONNECT)
+        if self._mqtt_user is not None:
+            self._client.username_pw_set(self._mqtt_user, self._mqtt_pwd)
         # keepalive=15s — broker detects dead client faster (default was 60s)
         self._client.connect_async(self._broker, self._port, keepalive=15)
         self._client.loop_start()
@@ -293,8 +306,9 @@ class MqttNode:
         self.create_timer(heartbeat_period, self._heartbeat, name=f'{self.name}_heartbeat')
         for t in self._timers:
             t.start()
-        self._log.info('%s started (broker=%s:%d, id=%s)',
-                       self.name, self._broker, self._port, self._robot_id)
+        auth_str = f' user={self._mqtt_user}' if self._mqtt_user else ' anonymous'
+        self._log.info('%s started (broker=%s:%d, id=%s,%s)',
+                       self.name, self._broker, self._port, self._robot_id, auth_str)
 
     def _heartbeat(self):
         """Periodic heartbeat to keep MQTT alive and detect dead connections."""

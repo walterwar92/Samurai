@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# NOTE (2026-04, #9): camera поток теперь H.264 (а не JPEG в samurai/{id}/camera).
+# Этот tool слушает samurai/{id}/yolo/annotated — а это аннотированный JPEG
+# который публикует compute_node/detector.py (ноут). Поэтому tool ВСЁ ЕЩЁ работает,
+# при условии что детектор запущен (`./samurai.sh detector`).
 """
 view_detections.py — Просмотр аннотированного кадра с детекциями объектов.
 
