@@ -70,6 +70,9 @@ _COLOURS_RU = {
 # активным (после этого BT возвращает контроль).
 MANUAL_OVERRIDE_TIMEOUT_S = 1.0
 
+# Минимальная уверенность LLM для исполнения voice/intent (#2, 2026-04).
+_INTENT_MIN_CONFIDENCE = 0.5
+
 # Tick FSM на 10 Hz (как fsm_node)
 TICK_INTERVAL_S = 0.1
 
@@ -95,6 +98,8 @@ class FSMBTNode(MqttNode):
 
         # Подписки — ровно тот же набор что у FSMNode
         self.subscribe('voice_command', self._voice_cb, qos=1)
+        # voice/intent — структурированный intent от compute_node/llm_voice
+        self.subscribe('voice/intent', self._intent_cb, qos=1)
         self.subscribe('ball_detection', self._ball_cb)
         self.subscribe('range', self._range_cb)
         self.subscribe('odom', self._odom_cb)
@@ -181,6 +186,66 @@ class FSMBTNode(MqttNode):
             self.publish('reset_position', 'reset', qos=1)
             self.log_info('Position reset')
             return
+
+    def _intent_cb(self, topic, data):
+        """Структурированный intent от LLM (#2). Если confidence высокий —
+        выполняем action, иначе игнорим (regex-fallback из _voice_cb)."""
+        if not isinstance(data, dict):
+            try:
+                data = json.loads(str(data))
+            except (json.JSONDecodeError, TypeError):
+                return
+        try:
+            confidence = float(data.get('confidence', 0.0))
+        except (ValueError, TypeError):
+            confidence = 0.0
+        if confidence < _INTENT_MIN_CONFIDENCE:
+            return
+
+        action = str(data.get('action', 'idle'))
+        colour = data.get('colour') or ''
+        direction = data.get('direction')
+        raw = str(data.get('raw_text', ''))[:_MAX_CMD_LEN]
+        self.log_info(
+            'LLM intent: action=%s colour=%s dir=%s conf=%.2f raw="%s"',
+            action, colour, direction, confidence, raw,
+        )
+
+        if action == 'grab':
+            self._bb.set_target(colour, 'grab')
+        elif action == 'stop':
+            self._bb.clear_target()
+            self._send_cmd_vel(0.0, 0.0)
+        elif action == 'home':
+            self._bb.grabbed = True  # активирует DeliverHome ветку
+        elif action == 'patrol':
+            self.publish('patrol/command', 'start', qos=1)
+        elif action == 'follow':
+            self.publish('follow_me/command', 'start', qos=1)
+        elif action == 'record_path':
+            self.publish('path_recorder/command', 'record', qos=1)
+        elif action == 'replay_path':
+            self.publish('path_recorder/command', 'replay', qos=1)
+        elif action == 'reset_position':
+            self.publish('reset_position', 'reset', qos=1)
+        elif action == 'call_other_robot':
+            other_id = 'robot2' if self._robot_id == 'robot1' else 'robot1'
+            self.publish_raw(f'samurai/{other_id}/call_robot', {
+                'colour': self._bb.target_colour,
+                'action': self._bb.target_action or 'grab',
+            }, qos=1)
+        elif action == 'move':
+            speeds = {
+                'forward': (0.15, 0.0),
+                'back':    (-0.15, 0.0),
+                'left':    (0.0, 0.5),
+                'right':   (0.0, -0.5),
+            }
+            if direction in speeds:
+                lin, ang = speeds[direction]
+                self._publish_manual(lin, ang)
+        # transition в BT-варианте отсутствует (нет явных state'ов)
+        # action == 'idle' / unknown — игнорим
 
     def _gesture_cb(self, topic, data):
         gesture = str(data).strip()

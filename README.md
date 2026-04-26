@@ -563,6 +563,22 @@ mosquitto_pub -h raspberrypi.local -t 'samurai/robot1/cmd_vel' \
 
 Голосовые команды на русском языке. Источник: Android приложение (Vosk) или `voice_node` на Pi.
 
+С #2 (2026-04) добавлена опциональная LLM-парсилка команд на ноутбуке:
+`compute_node/llm_voice` подписывается на `voice_command`, прогоняет
+текст через **Qwen 2.5 7B** (Ollama) и публикует structured
+`voice/intent` (JSON с action/colour/direction/confidence). FSM на Pi
+выполняет intent если confidence ≥ 0.5; иначе fallback'ит на встроенный
+regex-парсер (как раньше). LLM-нода не обязательна — robot работает
+полностью без неё.
+
+Запуск (на ноуте, после `ollama pull qwen2.5:7b`):
+```bash
+samurai voice-llm                       # auto-discover Pi, Ollama localhost:11434
+samurai voice-llm --backend mock        # dev без Ollama
+samurai voice-llm --model qwen2.5:1.5b  # быстрая модель на CPU
+```
+
+
 ### Автономные команды
 
 | Команда | Действие | FSM переход |
