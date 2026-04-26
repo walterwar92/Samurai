@@ -21,9 +21,9 @@ from unittest.mock import MagicMock, patch, call
 # ---------------------------------------------------------------------------
 
 def _make_board_module():
-    """Возвращает фейковый модуль board с атрибутом D12."""
+    """Возвращает фейковый модуль board с атрибутом D10."""
     mod = types.ModuleType('board')
-    mod.D12 = object()  # любой sentinel-объект
+    mod.D10 = object()  # любой sentinel-объект
     return mod
 
 
@@ -321,7 +321,7 @@ class TestLedDriverHardwareMocked:
     def test_neopixel_constructed_correctly(self):
         drv = self._make(count=8, brightness=0.5)
         self.neopixel_mod.NeoPixel.assert_called_once_with(
-            self.board_mod.D12,
+            self.board_mod.D10,
             8,
             brightness=0.5,
             auto_write=False,
