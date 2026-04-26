@@ -145,6 +145,8 @@ class MotorNode(MqttNode):
         # Collision guard
         self._collision_guard = False
         self._range_m = float('inf')
+        self._range_age_s = -1.0  # from ultrasonic_node payload; -1 = no reading yet
+        self._range_stale_warned = 0.0  # monotonic; throttle stale-sensor warnings
 
         # Priority mux: manual override
         self._manual_linear = 0.0
@@ -356,9 +358,11 @@ class MotorNode(MqttNode):
     def _range_cb(self, topic, data):
         if isinstance(data, dict):
             self._range_m = float(data.get('range', float('inf')))
+            self._range_age_s = float(data.get('age_s', 0.0))
         else:
             try:
                 self._range_m = float(data)
+                self._range_age_s = 0.0  # legacy producer — assume fresh
             except (TypeError, ValueError):
                 pass
 
@@ -504,8 +508,18 @@ class MotorNode(MqttNode):
             ang_cmd = 0.0
 
         # ── Collision guard (highest priority — overrides everything) ──
+        # Stale ultrasonic readings (sensor likely dead) should not block movement
+        # nor be trusted as "no obstacle". Skip the guard and warn periodically.
         if self._collision_guard and lin_cmd > 0:
             r = self._range_m
+            stale = self._range_age_s >= 1.0 or self._range_age_s < 0.0
+            if stale:
+                now_mono = self.now_sec()
+                if now_mono - self._range_stale_warned > 5.0:
+                    self._range_stale_warned = now_mono
+                    self.log_warn('Ultrasonic stale (age=%.1fs) — collision guard skipped',
+                                  self._range_age_s)
+                r = float('inf')
             if r < COLLISION_GUARD_STOP_M:
                 # Full stop + active steering to go around obstacle
                 lin_cmd = 0.0
