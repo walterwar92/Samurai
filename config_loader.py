@@ -5,8 +5,15 @@ Usage:
     from config_loader import cfg, get_mqtt_credentials
     timeout = cfg('network.ip_detection_timeout', default=2.0)
     user, pwd = get_mqtt_credentials()  # None, None если auth выключен
+
+Validation:
+    Pydantic schema (validate_config) checks the most error-prone fields
+    on startup — port numbers, frequencies, common typo targets. Failures
+    are logged but don't crash; callers keep using defaults via cfg().
+    Run `python config_loader.py --validate` to surface issues manually.
 """
 
+import logging
 import os
 from typing import Optional, Tuple
 
@@ -16,7 +23,9 @@ import yaml
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_PATH = os.path.join(_ROOT, 'config.yaml')
 
+_log = logging.getLogger('config_loader')
 _data: dict = {}
+_validation_done = False
 
 
 def _load():
@@ -28,8 +37,107 @@ def _load():
             _data = yaml.safe_load(f) or {}
     except FileNotFoundError:
         pass  # all callers use defaults
-    except yaml.YAMLError:
-        pass
+    except yaml.YAMLError as exc:
+        _log.error('config.yaml is not valid YAML: %s', exc)
+        return
+    # Validate after load. Issues are logged once, not raised — existing
+    # cfg() callers fall back to their defaults if a value is missing/bad.
+    _maybe_validate()
+
+
+# ── Pydantic schema ──────────────────────────────────────────────────────────
+# Partial schema: covers the fields where wrong-typed values have caused real
+# bugs (numeric ports/rates, MQTT broker addresses). Other sections are not
+# enforced — Pydantic accepts unknown fields silently. The tradeoff: full
+# coverage would mean ~200 lines of models for 100+ fields, most of which
+# never go wrong. Partial schema catches the high-value mistakes and avoids
+# the maintenance tax of mirroring every YAML key.
+
+try:
+    from pydantic import BaseModel, ConfigDict, Field, ValidationError
+    _HAS_PYDANTIC = True
+except ImportError:
+    _HAS_PYDANTIC = False
+    BaseModel = object  # type: ignore[assignment,misc]
+    ValidationError = Exception  # type: ignore[assignment,misc]
+
+
+if _HAS_PYDANTIC:
+    class _NetworkSchema(BaseModel):
+        model_config = ConfigDict(extra='allow')
+        ip_detection_timeout: float = Field(default=2.0, gt=0, le=30)
+        dashboard_port: int = Field(default=5000, gt=0, lt=65536)
+        mqtt_port: int = Field(default=1883, gt=0, lt=65536)
+        mqtt_robot_id: str = Field(default='robot1', min_length=1, max_length=64)
+        ros_domain_id: int = Field(default=42, ge=0, le=232)
+
+    class _MqttSchema(BaseModel):
+        model_config = ConfigDict(extra='allow')
+        broker: str = Field(default='127.0.0.1', min_length=1)
+        port: int = Field(default=1883, gt=0, lt=65536)
+        robot_id: str = Field(default='robot1', min_length=1, max_length=64)
+        camera_fps: int = Field(default=20, gt=0, le=120)
+        camera_h264_port: int = Field(default=8554, gt=0, lt=65536)
+        camera_h264_bitrate: int = Field(default=2_000_000, gt=0)
+        keepalive: int = Field(default=15, gt=0, lt=600)
+
+    class _VoiceSchema(BaseModel):
+        model_config = ConfigDict(extra='allow')
+        sample_rate: int = Field(default=16000, gt=0)
+        chunk_size: int = Field(default=4000, gt=0)
+        vad_aggressiveness: int = Field(default=2, ge=0, le=3)
+        max_command_length: int = Field(default=200, gt=0, le=10_000)
+
+    class _DashboardSchema(BaseModel):
+        model_config = ConfigDict(extra='allow')
+        state_push_hz: float = Field(default=10.0, gt=0, le=120)
+        mjpeg_fps: float = Field(default=30.0, gt=0, le=120)
+        voice_log_size: int = Field(default=20, ge=0, le=10_000)
+        event_log_size: int = Field(default=100, ge=0, le=10_000)
+
+    class _WatchdogSchema(BaseModel):
+        model_config = ConfigDict(extra='allow')
+        startup_grace_sec: float = Field(default=15.0, ge=0, le=600)
+        topic_timeout_sec: float = Field(default=3.0, gt=0, le=600)
+        report_interval: float = Field(default=0.5, gt=0, le=60)
+
+    class _ConfigSchema(BaseModel):
+        # extra='allow' keeps the rest of config.yaml untouched — we only
+        # validate sections that have a defined schema.
+        model_config = ConfigDict(extra='allow')
+        network: _NetworkSchema = Field(default_factory=_NetworkSchema)
+        mqtt: _MqttSchema = Field(default_factory=_MqttSchema)
+        voice: _VoiceSchema = Field(default_factory=_VoiceSchema)
+        dashboard: _DashboardSchema = Field(default_factory=_DashboardSchema)
+        watchdog: _WatchdogSchema = Field(default_factory=_WatchdogSchema)
+
+
+def _maybe_validate() -> bool:
+    """Validate _data once. Returns True if no issues found."""
+    global _validation_done
+    if _validation_done or not _data:
+        return True
+    _validation_done = True
+    if not _HAS_PYDANTIC:
+        return True
+    try:
+        _ConfigSchema(**_data)
+        return True
+    except ValidationError as exc:
+        # Log each issue with the dotted path — easy to grep against config.yaml.
+        for err in exc.errors():
+            loc = '.'.join(str(p) for p in err.get('loc', ()))
+            msg = err.get('msg', 'invalid value')
+            _log.error('config.yaml: %s — %s', loc or '<root>', msg)
+        return False
+
+
+def validate_config() -> bool:
+    """Public entry point — validate the loaded config and return True on success."""
+    _load()
+    global _validation_done
+    _validation_done = False  # force re-validation
+    return _maybe_validate()
 
 
 def cfg(key: str, default=None):
@@ -110,3 +218,28 @@ def get_mqtt_credentials() -> Tuple[Optional[str], Optional[str]]:
         return str(cfg_user), str(cfg_pwd)
 
     return None, None
+
+
+if __name__ == '__main__':
+    import argparse
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)s %(name)s: %(message)s',
+    )
+    parser = argparse.ArgumentParser(description='config.yaml utilities')
+    parser.add_argument('--validate', action='store_true',
+                        help='Validate config.yaml against the Pydantic schema '
+                             'and exit non-zero if any issues are found.')
+    args = parser.parse_args()
+
+    if args.validate:
+        ok = validate_config()
+        if ok:
+            print('config.yaml: OK')
+            sys.exit(0)
+        else:
+            sys.exit(1)
+    else:
+        parser.print_help()

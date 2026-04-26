@@ -55,6 +55,7 @@ python-socketio>=5.10.0
 
 # --- Config ---
 PyYAML>=6.0                         # config.yaml loader
+pydantic>=2.0                       # config.yaml schema validation (#42)
 
 # --- Utilities ---
 transforms3d
