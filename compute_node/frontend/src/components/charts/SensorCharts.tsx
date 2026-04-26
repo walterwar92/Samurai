@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import {
   LineChart,
   Line,
@@ -35,7 +36,11 @@ function TimeXAxis() {
   )
 }
 
-export function SensorCharts({ data }: SensorChartsProps) {
+// Memoised: Recharts re-renders are expensive (SVG rebuild for 7 charts).
+// SensorSample[] is owned by useSensorHistory, which only produces a new
+// array when a sample is appended — so referential equality is the right
+// short-circuit here.
+export const SensorCharts = memo(function SensorCharts({ data }: SensorChartsProps) {
   if (data.length < 2) {
     return (
       <Card>
@@ -241,4 +246,4 @@ export function SensorCharts({ data }: SensorChartsProps) {
       </CardContent>
     </Card>
   )
-}
+})

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import {
   Table,
   TableBody,
@@ -17,7 +18,7 @@ interface DetectionTableProps {
   closest: Detection | null
 }
 
-export function DetectionTable({ detections, closest }: DetectionTableProps) {
+export const DetectionTable = memo(function DetectionTable({ detections, closest }: DetectionTableProps) {
   return (
     <Card>
       <CardHeader className="py-2 px-3 flex-row items-center justify-between">
@@ -88,4 +89,4 @@ export function DetectionTable({ detections, closest }: DetectionTableProps) {
       </CardContent>
     </Card>
   )
-}
+})

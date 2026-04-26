@@ -85,6 +85,9 @@ Desktop.ini
 *.logs
 log/
 logs/
+# Exception: source-code component directory named "log" is not a logs dir.
+!compute_node/frontend/src/components/log/
+!compute_node/frontend/src/components/log/**
 
 # --- Temporary Files ---
 *.tmp

@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, memo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { MapToolbar } from './MapToolbar'
 import { useMapCanvas } from '@/hooks/useMapCanvas'
@@ -10,7 +10,7 @@ interface MapCanvasProps {
   state: RobotState | null
 }
 
-export function MapCanvas({ state }: MapCanvasProps) {
+export const MapCanvas = memo(function MapCanvas({ state }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   // Shared transform: useMapCanvas populates it during draw; useZoneDrawing
@@ -84,4 +84,4 @@ export function MapCanvas({ state }: MapCanvasProps) {
       </CardContent>
     </Card>
   )
-}
+})
