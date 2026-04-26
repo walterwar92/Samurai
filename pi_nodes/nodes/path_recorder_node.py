@@ -17,6 +17,7 @@ Publishes:
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -55,6 +56,12 @@ CIRCUMVENT_DRIVE_DIST  = 0.20  # m — how far to drive sideways past obstacle
 CIRCUMVENT_MAX_ATTEMPTS = 5    # give up after this many consecutive detours
 
 PATHS_DIR = os.path.expanduser('~/paths')
+
+# Filename safety: only ASCII letters, digits, underscore, dash. Max 64 chars.
+# Why: `name` arrives over MQTT and is interpolated into a filesystem path
+# (`PATHS_DIR/{name}.json`). Without this, payload `{"name":"../../etc/passwd"}`
+# would let any MQTT publisher write to arbitrary paths.
+_SAFE_NAME_RE = re.compile(r'^[A-Za-z0-9_\-]{1,64}$')
 
 
 class PathRecorderNode(MqttNode):
@@ -446,11 +453,38 @@ class PathRecorderNode(MqttNode):
         self.publish('cmd_vel', {'linear_x': 0.0, 'angular_z': 0.0})
 
     # ── Save / Load ────────────────────────────────────────────
+    @staticmethod
+    def _validate_name(name: str) -> str | None:
+        """Return safe name or None if rejected. Logging is caller's job."""
+        if not isinstance(name, str):
+            return None
+        name = name.strip()
+        if not _SAFE_NAME_RE.match(name):
+            return None
+        return name
+
+    def _safe_filepath(self, name: str) -> str | None:
+        safe = self._validate_name(name)
+        if safe is None:
+            self.log_warn('Path name rejected (must match [A-Za-z0-9_-]{1,64}): %r',
+                          name)
+            return None
+        # Defence-in-depth: even with regex, ensure the resolved path stays
+        # inside PATHS_DIR (covers symlinks and any future regex relaxation).
+        base = os.path.realpath(PATHS_DIR)
+        target = os.path.realpath(os.path.join(base, f'{safe}.json'))
+        if os.path.commonpath([base, target]) != base:
+            self.log_error('Path traversal blocked: %r', name)
+            return None
+        return target
+
     def _save_path(self, name: str):
         os.makedirs(PATHS_DIR, exist_ok=True)
-        filepath = os.path.join(PATHS_DIR, f'{name}.json')
+        filepath = self._safe_filepath(name)
+        if filepath is None:
+            return
         data = {
-            'name': name,
+            'name': self._validate_name(name),
             'waypoints': len(self._path),
             'path': [[round(x, 4), round(y, 4), round(t, 4)]
                      for x, y, t in self._path],
@@ -461,7 +495,9 @@ class PathRecorderNode(MqttNode):
         self.log_info('Path saved: %s (%d waypoints)', filepath, len(self._path))
 
     def _load_path(self, name: str):
-        filepath = os.path.join(PATHS_DIR, f'{name}.json')
+        filepath = self._safe_filepath(name)
+        if filepath is None:
+            return
         if not os.path.exists(filepath):
             self.log_warn('Path file not found: %s', filepath)
             return
