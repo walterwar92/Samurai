@@ -14,10 +14,16 @@ interface MapDrawData {
 
 export function useMapCanvas(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  data: MapDrawData
+  data: MapDrawData,
+  // Caller-owned transform ref. Lets useZoneDrawing read the same ref this
+  // hook populates without forcing the consumer component to call this hook
+  // twice (once before useZoneDrawing to obtain a ref, then again to redraw
+  // with the resulting preview).
+  externalTransformRef?: React.MutableRefObject<MapTransform | null>,
 ) {
   const mapImgRef = useRef(new Image())
-  const transformRef = useRef<MapTransform | null>(null)
+  const internalTransformRef = useRef<MapTransform | null>(null)
+  const transformRef = externalTransformRef ?? internalTransformRef
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -153,12 +159,23 @@ export function useMapCanvas(
     }
   }, [canvasRef, data])
 
-  // Load map image and redraw
+  // Load (or reload) the map image only when the map metadata changes. The
+  // previous version refetched /map.png on every state update, which both
+  // hammered the backend and re-decoded the PNG ~20× per second.
   useEffect(() => {
     const img = mapImgRef.current
     img.onload = draw
     img.src = '/map.png?t=' + Date.now()
-  }, [data.mapInfo, data.pose, draw])
+    // Intentionally NOT depending on `draw` — we don't want to refetch the
+    // map every frame. A fresh `draw` closure is invoked by the redraw
+    // effect below; the loaded image stays cached.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.mapInfo])
+
+  // Redraw when any drawing input changes (pose, scan, preview, zones, …).
+  useEffect(() => {
+    draw()
+  }, [draw])
 
   return { transformRef }
 }
