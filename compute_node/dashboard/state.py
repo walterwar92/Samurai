@@ -193,6 +193,18 @@ class DashboardState:
 
         Формат совместим с тем что возвращал старый DashboardNode._snapshot()
         (для backward-compat фронта во время миграции).
+
+        Lock pattern (#25 review, 2026-04-26):
+        Pydantic models are replaced wholesale by handlers (`r.pose = new_pose`)
+        rather than mutated in place, so capturing references inside the lock and
+        calling model_dump() outside is safe — handlers may swap the slot but
+        won't mutate the object we already hold. Mutable containers (zones,
+        balls, voice_log, event_log) are shallow-copied inside the lock to make
+        their iteration outside the lock equally safe.
+
+        Result: lock is held for ~30 attribute reads + 6 list copies (a few µs)
+        instead of ~30 model_dump() calls (300 µs–1 ms). Writers no longer wait
+        for serialisation to finish on every dashboard tick.
         """
         with self.lock:
             r = self.robot
@@ -204,82 +216,142 @@ class DashboardState:
             cam = self.camera
             sys_ = self.system
 
-            return {
-                'ok': True,
-                'sim_time': time.time() - sys_.start_time,
-                'pose': r.pose.model_dump(),
-                'velocity': {
-                    'estimated': r.velocity_estimated.model_dump(),
-                    'commanded': r.velocity_commanded.model_dump(),
+            # Capture model references and shallow-copy mutable containers.
+            # Everything below this point can run without the lock.
+            pose = r.pose
+            v_est = r.velocity_estimated
+            v_cmd = r.velocity_commanded
+            fsm = r.fsm
+            speed_profile = r.speed_profile
+
+            ultrasonic = s.ultrasonic
+            imu = s.imu
+            battery = s.battery
+            temperature = s.temperature
+            watchdog = s.watchdog
+
+            claw = a.claw
+            head = a.head
+            arm = a.arm
+            led = a.led
+
+            det_result = d.result
+            det_closest = d.closest
+            balls = list(d.balls)             # shallow copy — list might be appended to
+            det_enabled = d.enabled
+            det_backend = d.backend
+            det_fps = d.fps
+            yolo_status = dict(d.yolo_status)
+
+            map_info = m.info
+            zones = list(m.zones)
+            slam = m.slam
+            saved_maps = list(m.saved_maps)
+
+            patrol_status = dict(c.patrol_status)
+            follow_me_status = dict(c.follow_me_status)
+            path_status = dict(c.path_recorder_status)
+            path_path = list(c.path_recorder_path)
+            path_list = list(c.path_recorder_list)
+            pdrive_status = dict(c.precision_drive_status)
+            pdrive_result = dict(c.precision_drive_result)
+            cal_status = dict(c.calibration_status)
+            cal_result = dict(c.calibration_result)
+            cal_active = c.calibration_active_profile
+            cal_profiles = list(c.calibration_profiles)
+            explorer_status = dict(c.explorer_status)
+            mission_status = dict(c.mission_status)
+            mission_list = list(c.mission_list)
+            obstacle_avoidance = c.obstacle_avoidance_enabled
+            collision_guard = c.collision_guard_enabled
+
+            cam_h264 = cam.h264_endpoint
+            yolo_online = cam.yolo_remote_online
+
+            voice_log = list(sys_.voice_log)
+            event_log = list(sys_.event_log)
+            tts_enabled = sys_.tts_enabled
+            multi_robots = list(sys_.multi_robots)
+            mqtt_connected = sys_.mqtt_connected
+            start_time = sys_.start_time
+
+        # ── Lock released — model_dump() now runs concurrently with writers ──
+        return {
+            'ok': True,
+            'sim_time': time.time() - start_time,
+            'pose': pose.model_dump(),
+            'velocity': {
+                'estimated': v_est.model_dump(),
+                'commanded': v_cmd.model_dump(),
+            },
+            'robot_status': fsm.model_dump(),
+            'speed_profile': speed_profile,
+            'sensors': {
+                'ultrasonic': ultrasonic.model_dump(),
+                'imu': imu.model_dump(),
+            },
+            'battery': battery.model_dump(),
+            'temperature': temperature.model_dump(),
+            'watchdog': watchdog.model_dump(),
+            'actuators': {
+                'claw': claw.model_dump(),
+                'head': head.model_dump(),
+                'arm': arm.model_dump(),
+                'led': led.model_dump(),
+            },
+            'detection': {
+                'result': det_result.model_dump(by_alias=True),
+                'closest': det_closest.model_dump(by_alias=True) if det_closest else None,
+                'balls': [b.model_dump() for b in balls],
+                'enabled': det_enabled,
+                'backend': det_backend,
+                'fps': det_fps,
+                'yolo_status': yolo_status,
+            },
+            'map': {
+                'info': map_info.model_dump() if map_info else None,
+                'zones': [z.model_dump() for z in zones],
+                'slam': slam.model_dump() if slam else None,
+                'saved_maps': saved_maps,
+            },
+            'control': {
+                'patrol': patrol_status,
+                'follow_me': follow_me_status,
+                'path_recorder': {
+                    'status': path_status,
+                    'path': path_path,
+                    'list': path_list,
                 },
-                'robot_status': r.fsm.model_dump(),
-                'speed_profile': r.speed_profile,
-                'sensors': {
-                    'ultrasonic': s.ultrasonic.model_dump(),
-                    'imu': s.imu.model_dump(),
+                'precision_drive': {
+                    'status': pdrive_status,
+                    'result': pdrive_result,
                 },
-                'battery': s.battery.model_dump(),
-                'temperature': s.temperature.model_dump(),
-                'watchdog': s.watchdog.model_dump(),
-                'actuators': {
-                    'claw': a.claw.model_dump(),
-                    'head': a.head.model_dump(),
-                    'arm': a.arm.model_dump(),
-                    'led': a.led.model_dump(),
+                'calibration': {
+                    'status': cal_status,
+                    'result': cal_result,
+                    'active': cal_active,
+                    'profiles': cal_profiles,
                 },
-                'detection': {
-                    'result': d.result.model_dump(by_alias=True),
-                    'closest': d.closest.model_dump(by_alias=True) if d.closest else None,
-                    'balls': [b.model_dump() for b in d.balls],
-                    'enabled': d.enabled,
-                    'backend': d.backend,
-                    'fps': d.fps,
-                    'yolo_status': d.yolo_status,
+                'explorer': explorer_status,
+                'mission': {
+                    'status': mission_status,
+                    'list': mission_list,
                 },
-                'map': {
-                    'info': m.info.model_dump() if m.info else None,
-                    'zones': [z.model_dump() for z in m.zones],
-                    'slam': m.slam.model_dump() if m.slam else None,
-                    'saved_maps': m.saved_maps,
-                },
-                'control': {
-                    'patrol': c.patrol_status,
-                    'follow_me': c.follow_me_status,
-                    'path_recorder': {
-                        'status': c.path_recorder_status,
-                        'path': c.path_recorder_path,
-                        'list': c.path_recorder_list,
-                    },
-                    'precision_drive': {
-                        'status': c.precision_drive_status,
-                        'result': c.precision_drive_result,
-                    },
-                    'calibration': {
-                        'status': c.calibration_status,
-                        'result': c.calibration_result,
-                        'active': c.calibration_active_profile,
-                        'profiles': c.calibration_profiles,
-                    },
-                    'explorer': c.explorer_status,
-                    'mission': {
-                        'status': c.mission_status,
-                        'list': c.mission_list,
-                    },
-                    'obstacle_avoidance': c.obstacle_avoidance_enabled,
-                    'collision_guard': c.collision_guard_enabled,
-                },
-                'camera': {
-                    'h264_endpoint': cam.h264_endpoint,
-                    'yolo_remote_online': cam.yolo_remote_online,
-                },
-                'system': {
-                    'voice_log': list(sys_.voice_log),
-                    'event_log': list(sys_.event_log),
-                    'tts_enabled': sys_.tts_enabled,
-                    'multi_robots': sys_.multi_robots,
-                    'mqtt_connected': sys_.mqtt_connected,
-                },
-            }
+                'obstacle_avoidance': obstacle_avoidance,
+                'collision_guard': collision_guard,
+            },
+            'camera': {
+                'h264_endpoint': cam_h264,
+                'yolo_remote_online': yolo_online,
+            },
+            'system': {
+                'voice_log': voice_log,
+                'event_log': event_log,
+                'tts_enabled': tts_enabled,
+                'multi_robots': multi_robots,
+                'mqtt_connected': mqtt_connected,
+            },
+        }
 
     # ── Convenience helpers ────────────────────────────────────────────
     def append_event_log(self, entry: dict):
