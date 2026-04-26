@@ -14,22 +14,98 @@
  */
 const BASE = ''
 
+const DEFAULT_TIMEOUT_MS = 5000
+const DEFAULT_RETRIES = 2          // total attempts = 1 + DEFAULT_RETRIES
+const RETRY_BACKOFF_MS = [200, 500, 1200]
+// Methods safe to retry without risking duplicate side effects.
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS'])
+
+interface RequestOpts {
+  method?: string
+  body?: unknown
+  timeoutMs?: number
+  retries?: number
+  // Override the safe-to-retry default. Use sparingly: only when the caller
+  // knows the POST is idempotent on the server (e.g. setLed, setSpeedProfile).
+  retryOn5xx?: boolean
+  signal?: AbortSignal
+  cache?: RequestCache
+}
+
+/**
+ * Single fetch wrapper with timeout + retry. Used by every helper below.
+ *
+ * Retry policy:
+ *  - Network errors (fetch throws) and 5xx responses are retried.
+ *  - 4xx responses are NOT retried — the server explicitly rejected the
+ *    request, retrying won't help.
+ *  - POST is retried only when retryOn5xx=true (caller asserts idempotency).
+ *  - Backoff: 200ms, 500ms, 1200ms.
+ *  - Each attempt has its own timeout via AbortController.
+ */
+async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
+  const method = (opts.method ?? 'GET').toUpperCase()
+  const retries = opts.retries ?? DEFAULT_RETRIES
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const isIdempotent = IDEMPOTENT_METHODS.has(method) || opts.retryOn5xx === true
+  const maxAttempts = isIdempotent ? retries + 1 : 1
+
+  const headers: Record<string, string> = {}
+  let body: BodyInit | undefined
+  if (opts.body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(opts.body)
+  }
+
+  let lastError: unknown
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+
+    // Daisy-chain caller's external signal so they can cancel this attempt.
+    const externalAbort = () => ctrl.abort()
+    opts.signal?.addEventListener('abort', externalAbort, { once: true })
+
+    try {
+      const res = await fetch(BASE + url, {
+        method,
+        headers,
+        body,
+        cache: opts.cache,
+        signal: ctrl.signal,
+      })
+
+      // 5xx + idempotent → retry. 4xx → return as-is, caller decides.
+      if (res.status >= 500 && res.status < 600 && attempt < maxAttempts - 1) {
+        await sleep(RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)])
+        continue
+      }
+      return res
+    } catch (err) {
+      lastError = err
+      // Caller cancelled — don't swallow into a retry.
+      if (opts.signal?.aborted) throw err
+      if (attempt >= maxAttempts - 1) break
+      await sleep(RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)])
+    } finally {
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', externalAbort)
+    }
+  }
+  throw lastError ?? new Error('request failed')
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 async function post(url: string, body?: object) {
-  const res = await fetch(BASE + url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  return res
+  return request(url, { method: 'POST', body })
 }
 
 /** POST that parses the JSON body — use when you need the response payload. */
 async function postJson(url: string, body?: object) {
-  const res = await fetch(BASE + url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  const res = await request(url, { method: 'POST', body })
   try {
     return await res.json()
   } catch {
@@ -38,13 +114,13 @@ async function postJson(url: string, body?: object) {
 }
 
 async function get(url: string) {
-  const res = await fetch(BASE + url, { cache: 'no-store' })
+  // GET is idempotent → retried automatically by request()
+  const res = await request(url, { method: 'GET', cache: 'no-store' })
   return res.json()
 }
 
 async function del(url: string) {
-  const res = await fetch(BASE + url, { method: 'DELETE' })
-  return res
+  return request(url, { method: 'DELETE' })
 }
 
 export const api = {
