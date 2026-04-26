@@ -51,6 +51,10 @@ class _RobotBlock:
     velocity_commanded: VelocityDetail = field(default_factory=VelocityDetail)
     fsm: RobotStatus = field(default_factory=RobotStatus)
     speed_profile: str = 'normal'  # slow|normal|fast
+    stationary: bool = True
+    # MQTT odom — primary source from Pi. ROS2 /odometry/filtered только если
+    # MQTT odom stale (>2s). Timestamp нужен для приоритета.
+    mqtt_odom_ts: float = 0.0
 
 
 @dataclass
@@ -60,6 +64,10 @@ class _SensorsBlock:
     battery: BatteryStatus = field(default_factory=BatteryStatus)
     temperature: TemperatureData = field(default_factory=TemperatureData)
     watchdog: WatchdogStatus = field(default_factory=WatchdogStatus)
+    # EKF bias (gx, gy, gz) — для admin/IMU debug панели
+    imu_ekf_bias: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # Laser scan overlay для отрисовки на карте
+    scan_points: list = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +91,10 @@ class _DetectionBlock:
     fps: float = 0.0
     annotated_jpeg: Optional[bytes] = None  # последний аннотированный кадр
     yolo_status: dict = field(default_factory=dict)  # online/source/ts
+    # Сырой ball_detection payload от Pi/remote-GPU (для legacy /api/detection,
+    # который возвращает {detection: <raw dict>}). Структура зависит от
+    # источника: {'objects': [...]} или {'balls': [...]}.
+    ball_detection_raw: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -93,6 +105,11 @@ class _MapBlock:
     zones: list[ForbiddenZone] = field(default_factory=list)
     zone_counter: int = 0
     saved_maps: list[str] = field(default_factory=list)
+    # Когда True — карту даёт ROS2 SLAM Toolbox через /map. Когда False —
+    # рендерим PNG из Pi-side ultrasonic SLAM (slam_map_node).
+    ros2_map_active: bool = False
+    # Счётчик обновлений Pi-side SLAM PNG (для cache busting).
+    slam_map_version: int = 0
 
 
 @dataclass
