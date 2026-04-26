@@ -1,5 +1,22 @@
-import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
-import { io, type Socket } from 'socket.io-client'
+/**
+ * SocketProvider — backward-compat shim над Zustand store (#6, 2026-04).
+ *
+ * Раньше провайдер сам держал Socket.IO соединение и выставлял его через
+ * useState/Context. Теперь сокет живёт в `src/stores/robotStore.ts` как
+ * singleton, а этот компонент остался как:
+ *
+ *   1. Wrapper для backward-compat: компоненты, использующие useSocket(),
+ *      продолжают работать без изменений (мигрируем на selectors в Z5).
+ *   2. Lifecycle-driver: вызывает store.connect() при монтировании,
+ *      store.disconnect() при unmount. App.tsx ставит этот провайдер
+ *      на корне.
+ *
+ * После Z5/Z6 SocketProvider можно удалить — connect()/disconnect()
+ * перенести в App.tsx, useSocket() либо удалить, либо оставить как алиас.
+ */
+import { createContext, useContext, useEffect, type ReactNode } from 'react'
+
+import { useRobotStore } from '@/stores/robotStore'
 import type { RobotState } from '@/types/robot'
 
 interface SocketContextValue {
@@ -17,37 +34,23 @@ const SocketContext = createContext<SocketContextValue>({
 })
 
 export function SocketProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<RobotState | null>(null)
-  const [connected, setConnected] = useState(false)
-  const [socket, setSocket] = useState<Socket | null>(null)
+  const state = useRobotStore((s) => s.state)
+  const connected = useRobotStore((s) => s.connected)
+  const send = useRobotStore((s) => s.send)
+  const resetSim = useRobotStore((s) => s.resetSim)
+  const connect = useRobotStore((s) => s.connect)
+  const disconnect = useRobotStore((s) => s.disconnect)
 
+  // Lifecycle: один коннект на жизнь приложения.
   useEffect(() => {
-    const s = io({ transports: ['websocket', 'polling'] })
-
-    s.on('connect', () => setConnected(true))
-    s.on('disconnect', () => setConnected(false))
-    s.on('state_update', (data: RobotState) => setState(data))
-
-    setSocket(s)
-
-    return () => {
-      s.disconnect()
-    }
-  }, [])
-
-  const sendCommand = useCallback(
-    (text: string) => {
-      socket?.emit('send_command', { text })
-    },
-    [socket]
-  )
-
-  const resetSim = useCallback(() => {
-    socket?.emit('reset_sim', {})
-  }, [socket])
+    connect()
+    return () => disconnect()
+  }, [connect, disconnect])
 
   return (
-    <SocketContext.Provider value={{ state, connected, sendCommand, resetSim }}>
+    <SocketContext.Provider
+      value={{ state, connected, sendCommand: send, resetSim }}
+    >
       {children}
     </SocketContext.Provider>
   )
