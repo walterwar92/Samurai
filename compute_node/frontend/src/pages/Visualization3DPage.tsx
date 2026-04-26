@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import { useRobotState } from '@/hooks/useRobotState'
-import { useSocket } from '@/providers/SocketProvider'
+import { useConnected } from '@/stores/selectors'
 import { api } from '@/lib/api'
 import { RobotModel } from '@/components/3d/RobotModel'
 import { PathTrail } from '@/components/3d/PathTrail'
@@ -46,7 +46,7 @@ function CameraTarget({ posX, posY }: { posX: number; posY: number }) {
 
 export function Visualization3DPage() {
   const state = useRobotState()
-  const { connected } = useSocket()
+  const connected = useConnected()
   const [clearSignal, setClearSignal] = useState(0)
   const [useEkf, setUseEkf] = useState(true)
 
