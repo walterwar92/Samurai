@@ -37,6 +37,10 @@ ${BOLD}Команды ноутбука:${NC}
                   --model PATH       Модель YOLO
                   --conf F           Порог уверенности
                   --device cuda|cpu
+  ${GREEN}planner${NC}       A* path planner (#3) — slam_map → goal → path
+                  --pi IP            IP MQTT-брокера (Pi)
+                  --robot-radius M   Inflation радиус (default: 0.15м)
+                  --no-simplify      Без LOS-shortcut (raw A* cells)
   ${GREEN}bridge${NC}        Samcan USB bridge (Arduino Uno → FastAPI :5005)
                   [PORT]             COM3 / /dev/ttyUSB0 (без — auto)
   ${GREEN}build-cpp${NC}     Кросс-компиляция C++ нод для Pi (arm64)

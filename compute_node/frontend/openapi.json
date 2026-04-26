@@ -1983,6 +1983,90 @@
         }
       }
     },
+    "/api/v1/path_planner/goto": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Planner Goto",
+        "description": "Запросить планирование A* до точки (x, y) в мировых координатах.\n\nPath planner живёт на ноутбуке (compute_node/path_planner) и публикует\nрезультат в samurai/{robot_id}/path_planner/path. Этот endpoint\nотправляет goal — нода-планировщик асинхронно посчитает путь.",
+        "operationId": "path_planner_goto_api_v1_path_planner_goto_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathPlannerGoalCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/path_planner/path": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Planner Path",
+        "operationId": "path_planner_path_api_v1_path_planner_path_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathPlannerPathResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/path_planner/status": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Planner Status",
+        "operationId": "path_planner_status_api_v1_path_planner_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathPlannerStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/mission/command": {
       "post": {
         "tags": [
@@ -4728,6 +4812,101 @@
         },
         "type": "object",
         "title": "PathListResponse"
+      },
+      "PathPlannerGoalCommand": {
+        "properties": {
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "PathPlannerGoalCommand",
+        "description": "POST /api/path_planner/goto — цель планирования (мировые м)."
+      },
+      "PathPlannerPathResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "waypoints": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Waypoints"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          }
+        },
+        "type": "object",
+        "title": "PathPlannerPathResponse",
+        "description": "Текущий запланированный путь."
+      },
+      "PathPlannerStatusResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "idle|success|failed|error",
+            "default": "idle"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "planning_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planning Ms"
+          }
+        },
+        "type": "object",
+        "title": "PathPlannerStatusResponse",
+        "description": "Статус последнего запроса к планировщику."
       },
       "PathRecorderCommand": {
         "properties": {

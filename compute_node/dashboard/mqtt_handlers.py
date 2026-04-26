@@ -59,6 +59,8 @@ _SUBSCRIBE_TOPICS = [
     'explorer/status', 'mission/status',
     'precision_drive/status', 'precision_drive/result',
     'collision_guard/state',
+    # Path planner на ноутбуке (#3, 2026-04)
+    'path_planner/path', 'path_planner/status',
     # Remote GPU YOLO детекции (через MQTT)
     'ball_detection', 'detections', 'yolo/annotated', 'yolo/status',
     # Centralized log events с Pi-нод
@@ -520,6 +522,23 @@ class MQTTHandlers:
         with self._state.lock:
             self._state.control.precision_drive_result = d
 
+    def _h_path_planner_path(self, payload: bytes):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        with self._state.lock:
+            self._state.control.path_planner_path = d.get('waypoints', [])
+            self._state.control.path_planner_goal = d.get('goal')
+
+    def _h_path_planner_status(self, payload: bytes):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        with self._state.lock:
+            self._state.control.path_planner_status = d
+
     def _h_collision_guard_state(self, payload: bytes):
         try:
             val = payload.decode('utf-8', errors='ignore').strip().lower()
@@ -617,6 +636,8 @@ MQTTHandlers._dispatch = {
     'mission/status': MQTTHandlers._h_mission_status,
     'precision_drive/status': MQTTHandlers._h_precision_drive_status,
     'precision_drive/result': MQTTHandlers._h_precision_drive_result,
+    'path_planner/path': MQTTHandlers._h_path_planner_path,
+    'path_planner/status': MQTTHandlers._h_path_planner_status,
     'collision_guard/state': MQTTHandlers._h_collision_guard_state,
     'ball_detection': MQTTHandlers._h_ball_detection,
     'detections': MQTTHandlers._h_noop,

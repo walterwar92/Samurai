@@ -164,6 +164,26 @@ class CalibrationCoefficientsResponse(OkResponse):
     coefficients: dict[str, Any] = Field(default_factory=dict)
 
 
+# ── Path planner (#3, 2026-04) ────────────────────────────────────────────
+class PathPlannerGoalCommand(BaseModel):
+    """POST /api/path_planner/goto — цель планирования (мировые м)."""
+    x: float
+    y: float
+
+
+class PathPlannerPathResponse(OkResponse):
+    """Текущий запланированный путь."""
+    waypoints: list[list[float]] = Field(default_factory=list)
+    goal: Optional[list[float]] = None
+
+
+class PathPlannerStatusResponse(OkResponse):
+    """Статус последнего запроса к планировщику."""
+    state: str = Field(default='idle', description='idle|success|failed|error')
+    message: Optional[str] = None
+    planning_ms: Optional[float] = None
+
+
 # ── Mission ───────────────────────────────────────────────────────────────
 class MissionCommand(BaseModel):
     """POST /api/mission/command — высокоуровневые сценарии."""
