@@ -12,6 +12,17 @@ Conventions:
   - Используем Optional[T] вместо T | None для совместимости со старым Python
 """
 
-from .common import OkResponse, ErrorResponse
+from .common import OkResponse, ErrorResponse, CommandAck
+from . import robot, sensors, detection, actuators, maps, control
 
-__all__ = ['OkResponse', 'ErrorResponse']
+__all__ = [
+    'OkResponse',
+    'ErrorResponse',
+    'CommandAck',
+    'robot',
+    'sensors',
+    'detection',
+    'actuators',
+    'maps',
+    'control',
+]
