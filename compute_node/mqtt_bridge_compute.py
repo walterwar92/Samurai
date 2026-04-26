@@ -122,6 +122,14 @@ class MqttBridgeCompute(Node):
         self._tf_broadcaster = TransformBroadcaster(self)
         self._publish_static_transforms()
 
+        # ── Bridge error counters (visible via /bridge/errors MQTT) ──
+        # Track malformed JSON and other handler failures separately so a
+        # flaky publisher (corrupted MQTT bytes, mismatched schema) doesn't
+        # silently disappear into a generic exception log.
+        self._json_error_count: dict[str, int] = {}
+        self._handler_error_count: dict[str, int] = {}
+        self._last_json_error_payload: str = ''
+
         # ── ROS2 Subscribers (ROS2 → MQTT) ───────────────────
         # Compute results → Pi
         self.create_subscription(
@@ -237,8 +245,56 @@ class MqttBridgeCompute(Node):
                 self._handle_remote_annotated(msg.payload)
             elif suffix == 'yolo/status':
                 self._handle_yolo_status(msg.payload)
+        except json.JSONDecodeError as exc:
+            self._record_bridge_error(suffix, 'json', exc, msg.payload)
         except Exception as exc:
-            self.get_logger().error(f'Bridge error [{suffix}]: {exc}')
+            self._record_bridge_error(suffix, 'handler', exc, msg.payload)
+
+    def _record_bridge_error(self, suffix: str, kind: str,
+                             exc: BaseException, payload: bytes) -> None:
+        """Surface bridge errors with payload context.
+
+        Replaces the previous bare `error('Bridge error [X]: ...')` log
+        which dropped the offending payload on the floor — making
+        diagnosis of intermittent MQTT corruption nearly impossible.
+        Counters per (kind, suffix) prevent log floods when a publisher
+        is in a sustained bad state.
+        """
+        counter = self._json_error_count if kind == 'json' else self._handler_error_count
+        counter[suffix] = counter.get(suffix, 0) + 1
+        n = counter[suffix]
+
+        # Truncate payload preview so logs / MQTT republish stays bounded.
+        try:
+            preview = payload.decode('utf-8', errors='replace')[:200]
+        except Exception:
+            preview = repr(payload[:120])
+
+        if kind == 'json':
+            self._last_json_error_payload = preview
+
+        # First 5 + every 100th entry — surfaces intermittent issues without
+        # flooding journalctl when a publisher is permanently broken.
+        if n <= 5 or n % 100 == 0:
+            self.get_logger().error(
+                f'Bridge {kind} error [{suffix}] (#{n}): {exc} | payload={preview!r}')
+
+        # Republish a structured error to MQTT so the dashboard can show a
+        # health signal without scraping ROS2 logs. Best-effort — never let
+        # error reporting itself crash the bridge.
+        try:
+            err_msg = json.dumps({
+                'topic': suffix,
+                'kind': kind,
+                'count': n,
+                'error': str(exc),
+                'payload_preview': preview,
+                'ts': self.get_clock().now().nanoseconds / 1e9,
+            }, separators=(',', ':'))
+            self._mqtt_client.publish(
+                f'{self._prefix}/bridge/errors', err_msg, qos=0)
+        except Exception:
+            pass
 
     # ── MQTT → ROS2 Handlers ─────────────────────────────────
     def _handle_odom(self, payload):
