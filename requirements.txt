@@ -58,3 +58,4 @@ PyYAML>=6.0                         # config.yaml loader
 
 # --- Utilities ---
 transforms3d
+orjson>=3.10.0                      # ~3-5x faster JSON serialization for MQTT publish path
