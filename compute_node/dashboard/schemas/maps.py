@@ -110,6 +110,11 @@ class ZonesResponse(OkResponse):
     zones: list[ForbiddenZone] = Field(default_factory=list)
 
 
+class ZoneCreatedResponse(OkResponse):
+    """Ответ POST /zones — созданная зона + ok-флаг."""
+    zone: ForbiddenZone
+
+
 class SlamMapResponse(OkResponse, SlamMapData):
     pass
 
