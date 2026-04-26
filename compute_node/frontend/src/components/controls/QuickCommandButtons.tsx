@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button'
-import { useSocket } from '@/providers/SocketProvider'
+import { useResetSim, useSend } from '@/stores/selectors'
 import { QUICK_COMMANDS } from '@/lib/constants'
 
 interface QuickCommandButtonsProps {
@@ -7,7 +7,8 @@ interface QuickCommandButtonsProps {
 }
 
 export function QuickCommandButtons({ showReset }: QuickCommandButtonsProps) {
-  const { sendCommand, resetSim } = useSocket()
+  const send = useSend()
+  const resetSim = useResetSim()
 
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -22,7 +23,7 @@ export function QuickCommandButtons({ showReset }: QuickCommandButtonsProps) {
               ? { borderColor: cmd.color, color: cmd.color }
               : undefined
           }
-          onClick={() => sendCommand(cmd.command)}
+          onClick={() => send(cmd.command)}
         >
           {cmd.label}
         </Button>
