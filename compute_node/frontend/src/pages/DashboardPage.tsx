@@ -91,7 +91,7 @@ export function DashboardPage() {
               </Card>
 
               {/* ── СЕНСОРЫ ── */}
-              <SensorPanel state={state} expanded />
+              <SensorPanel expanded />
 
               {/* ── СИСТЕМА ── */}
               <Card>

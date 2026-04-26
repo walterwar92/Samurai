@@ -97,7 +97,7 @@ export function AdminPage() {
               </Card>
 
               {/* ── СЕНСОРЫ ── */}
-              <SensorPanel state={state} expanded />
+              <SensorPanel expanded />
 
               {/* ── СИСТЕМА ── */}
               <Card>

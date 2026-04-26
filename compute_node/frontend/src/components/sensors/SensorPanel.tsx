@@ -1,16 +1,31 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RangeBar } from './RangeBar'
 import { COLOUR_RU, COLOUR_CSS } from '@/lib/constants'
-import type { RobotState } from '@/types/robot'
+import {
+  useClosestDetection,
+  useImuAccel,
+  useImuGyro,
+  useImuYpr,
+  useUltrasonicRange,
+  useVelocity,
+} from '@/stores/selectors'
 
 interface SensorPanelProps {
-  state: RobotState | null
   expanded?: boolean
 }
 
-export function SensorPanel({ state, expanded }: SensorPanelProps) {
-  const imu = state?.imu_ypr || [0, 0, 0]
-  const det = state?.detection
+/**
+ * SensorPanel читает поля state напрямую через гранулярные селекторы,
+ * больше не принимает state prop. Каждое поле триггерит re-render
+ * только когда оно реально меняется (Z5, #6 Zustand).
+ */
+export function SensorPanel({ expanded }: SensorPanelProps) {
+  const range = useUltrasonicRange()
+  const imu = useImuYpr()
+  const gyro = useImuGyro()
+  const accel = useImuAccel()
+  const velocity = useVelocity()
+  const det = useClosestDetection()
 
   return (
     <Card>
@@ -24,7 +39,7 @@ export function SensorPanel({ state, expanded }: SensorPanelProps) {
           <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
             Ультразвук
           </span>
-          <RangeBar value={state?.range_m ?? -1} />
+          <RangeBar value={range} />
         </div>
 
         <div className="grid grid-cols-3 gap-2 text-xs">
@@ -35,10 +50,16 @@ export function SensorPanel({ state, expanded }: SensorPanelProps) {
 
         {expanded && (
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <SensorValue label="Gyro Z" value={`${(state?.imu_gyro_z ?? 0).toFixed(2)}`} />
-            <SensorValue label="Accel X" value={`${(state?.imu_accel_x ?? 0).toFixed(2)}`} />
-            <SensorValue label="Лин. ск." value={`${(state?.velocity?.linear ?? 0).toFixed(2)} м/с`} />
-            <SensorValue label="Угл. ск." value={`${(state?.velocity?.angular ?? 0).toFixed(2)} рад/с`} />
+            <SensorValue label="Gyro Z" value={gyro[2].toFixed(2)} />
+            <SensorValue label="Accel X" value={accel[0].toFixed(2)} />
+            <SensorValue
+              label="Лин. ск."
+              value={`${(velocity?.linear ?? 0).toFixed(2)} м/с`}
+            />
+            <SensorValue
+              label="Угл. ск."
+              value={`${(velocity?.angular ?? 0).toFixed(2)} рад/с`}
+            />
           </div>
         )}
 
