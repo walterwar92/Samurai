@@ -1,0 +1,115 @@
+# Build context exclusions for `docker build`. Trims what's sent to the daemon
+# and embedded into images. Significantly speeds up builds on Windows where the
+# context is mounted via 9p, and keeps secrets / dev-only artefacts out.
+
+# ── VCS ──────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.github
+
+# ── Node / frontend dev artefacts ────────────────────────────
+node_modules
+**/node_modules
+**/dist
+compute_node/frontend/node_modules
+compute_node/frontend/dist
+compute_node/static/assets
+*.tsbuildinfo
+**/.eslintcache
+**/.vite
+
+# ── Python build artefacts ───────────────────────────────────
+__pycache__
+**/__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+*.egg
+.eggs
+build
+dist
+.tox
+.coverage
+.coverage.*
+htmlcov
+.pytest_cache
+.mypy_cache
+.ruff_cache
+pip-wheel-metadata
+
+# ── Virtual environments ─────────────────────────────────────
+.venv
+venv
+env
+ENV
+
+# ── Editors / IDEs ───────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# ── Local secrets and runtime config ─────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+mosquitto_passwd
+mqtt_credentials*
+
+# ── Big binaries / generated assets we don't bake into images ─
+# YOLO weights are downloaded at first run (#40 will move these to LFS)
+yolo*.pt
+yolo*.onnx
+*.pth
+# Captured frames pile up during testing
+frames
+captures
+recordings
+
+# Map/scan data is generated at runtime
+*.pgm
+*.yaml.map
+slam_map_*.png
+
+# Saved paths and calibration profiles are user-state, not build input
+~/paths
+paths/
+
+# ── Documentation / presentations ────────────────────────────
+# Big static docs that shouldn't bloat layers; ROS2/Pi images don't render them
+*.pptx
+docs/
+latex_doc/
+*.pdf
+*.log
+README*.md
+CHANGELOG*.md
+FIRST_RUN.md
+
+# ── Tests don't ship inside production images ────────────────
+tests/
+test_*.py
+*_test.py
+
+# ── Android / iOS source trees not needed for compute images ─
+android_app/
+
+# ── ROS workspace build outputs ──────────────────────────────
+ros_ws/build
+ros_ws/install
+ros_ws/log
+ros_ws/.colcon_build_meta
+
+# ── Worktrees and Claude config ──────────────────────────────
+.claude
+worktrees/
+
+# ── Misc OS artefacts ────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
