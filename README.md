@@ -109,7 +109,14 @@ Samurai/
 │   ├── detectors/               #   Пакет: backends, sources, publishers,
 │   │                            #          HSV calibrator
 │   ├── depth_to_scan_node.py    #   Depth → LaserScan
-│   ├── dashboard_node.py        #   FastAPI + WebSocket :5000
+│   ├── dashboard/               #   FastAPI :5000 (пакет — #7, 2026-04)
+│   │   ├── app.py               #     create_app() factory + /api/v1/
+│   │   ├── state.py             #     DashboardState (RLock + 8 блоков)
+│   │   ├── mqtt_handlers.py     #     paho-mqtt 35 топиков → state
+│   │   ├── ros2_subscribers.py  #     rclpy SLAM/EKF/YOLO → state
+│   │   ├── routers/ (12 файлов) #     APIRouter по доменам (~80 paths)
+│   │   └── schemas/ (8 файлов)  #     Pydantic — 92 модели
+│   ├── frontend/                #   React UI (vite, src/api/ из openapi)
 │   └── simulator.py             #   Автономный симулятор (Flask)
 │
 ├── ros_ws/                      # ROS2 workspace (только ноутбук)
@@ -628,22 +635,49 @@ IDLE ──(команда)──> SEARCHING ──(мяч найден)──> 
 
 Полная документация REST API: [API_REFERENCE.md](API_REFERENCE.md)
 
-Быстрые примеры:
+С 2026-04 (#7) FastAPI dashboard разбит на пакет `compute_node/dashboard/` с
+роутерами по доменам, Pydantic-схемами и автогенерированной OpenAPI:
+
+- **OpenAPI / Swagger UI:** `http://localhost:5000/docs` (интерактивная)
+- **ReDoc:** `http://localhost:5000/redoc`
+- **Сырая схема:** `http://localhost:5000/openapi.json`
+
+Все новые эндпойнты под префиксом `/api/v1/` (старые `/api/...` продолжают
+работать через middleware-alias с заголовком
+`Deprecation: true; sunset="2026-12-31"`).
+
+**TypeScript-клиент** для фронта генерируется автоматически:
+
+```bash
+cd compute_node/frontend
+npm run generate:api          # → src/api/generated/{services,models}/*.ts
+```
+
+Использование в коде фронта:
+
+```ts
+import { RobotService } from '@/api'
+await RobotService.setVelocityApiV1RobotVelocityPost({
+  requestBody: { linear: 0.2, angular: 0.0 },
+})
+```
+
+Быстрые примеры curl:
 
 ```bash
 # Статус робота
-curl http://localhost:5000/api/status
+curl http://localhost:5000/api/v1/status
 
 # Голосовая команда
-curl -X POST http://localhost:5000/api/fsm/command \
+curl -X POST http://localhost:5000/api/v1/fsm/command \
   -H "Content-Type: application/json" \
   -d '{"text": "найди красный мяч"}'
 
 # Ультразвук
-curl http://localhost:5000/api/sensors/ultrasonic
+curl http://localhost:5000/api/v1/sensors/ultrasonic
 
 # Моторы
-curl -X POST http://localhost:5000/api/robot/velocity \
+curl -X POST http://localhost:5000/api/v1/robot/velocity \
   -H "Content-Type: application/json" \
   -d '{"linear": 0.1, "angular": 0.0}'
 ```

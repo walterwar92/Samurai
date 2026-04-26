@@ -63,22 +63,44 @@ class ClawCommand(BaseModel):
 
 
 class HeadCommand(BaseModel):
-    """POST /api/actuators/head."""
+    """POST /api/actuators/head — заполняем только нужное поле, остальные null.
+
+    Семантика на Pi (head_node):
+      angle  → выставить угол серво (0..180)
+      center → "command": "center" (вернуть в home)
+      locked → True: "lock" / False: "unlock"
+      frozen → True: "freeze" / False: "unfreeze"
+    """
     angle: Optional[float] = None
     center: bool = False
     locked: Optional[bool] = None
+    frozen: Optional[bool] = None
 
 
 class ArmJointCommand(BaseModel):
-    """POST /api/actuators/arm — установка одного или нескольких суставов."""
+    """POST /api/actuators/arm — установка суставов или admin-команды.
+
+    j1..j4 → одиночные углы (любая комбинация). joints → весь массив сразу.
+    home/freeze/unfreeze/preset — admin команды на Pi (arm_node).
+    """
     j1: Optional[float] = None
     j2: Optional[float] = None
     j3: Optional[float] = None
     j4: Optional[float] = None
+    joints: Optional[list[float]] = Field(
+        default=None,
+        description='Все 4 угла одним массивом (альтернатива j1..j4)'
+    )
     home: bool = False
-    freeze: Optional[bool] = None
-    unfreeze: Optional[bool] = None
-    preset: Optional[str] = Field(default=None, description='Имя пресета (см. servo_presets.json)')
+    freeze: Optional[bool] = Field(
+        default=None,
+        description='True → "command": "freeze". False → "unfreeze".'
+    )
+    joint_index: Optional[int] = Field(
+        default=None, ge=1, le=4,
+        description='Индекс сустава для freeze/unfreeze (1..4)'
+    )
+    preset: Optional[str] = Field(default=None, description='Имя пресета — load_preset')
 
 
 class LedCommand(BaseModel):
@@ -118,9 +140,12 @@ class PresetListResponse(OkResponse):
 
 
 class PresetSaveCommand(BaseModel):
-    """Сохранить текущую позу как пресет."""
-    name: str
-    angles: Optional[list[float]] = Field(
-        default=None,
-        description='Если задан — сохранить эти углы вместо текущих'
-    )
+    """Сохранить текущую позу как пресет (Pi берёт текущие углы)."""
+    name: str = Field(min_length=1, max_length=64,
+                      pattern=r'^[a-zA-Z0-9_\-]+$')
+
+
+class PresetLoadCommand(BaseModel):
+    """Загрузить пресет по имени."""
+    name: str = Field(min_length=1, max_length=64,
+                      pattern=r'^[a-zA-Z0-9_\-]+$')

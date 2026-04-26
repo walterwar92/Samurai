@@ -4,11 +4,27 @@ mission, explorer schemas.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from .common import OkResponse
+
+
+# ── Shared ────────────────────────────────────────────────────────────────
+class StatusResponse(OkResponse):
+    """Универсальная обёртка для GET .../status — отдаёт сырой dict состояния.
+
+    Используется когда формат статуса от Pi-нод (calibration, mission,
+    explorer, path_recorder, ...) часто меняется и строгая типизация
+    мешает развитию.
+    """
+    status: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToggleCommand(BaseModel):
+    """Универсальный POST .../toggle body."""
+    enabled: bool
 
 
 # ── FSM ────────────────────────────────────────────────────────────────────
@@ -80,6 +96,12 @@ class PathListResponse(OkResponse):
     paths: list[str] = Field(default_factory=list)
 
 
+class PathRecorderPathResponse(OkResponse):
+    """Текущие записанные waypoints (для проигрывания / отрисовки)."""
+    path: list[list[float]] = Field(default_factory=list)
+    waypoints: int = 0
+
+
 # ── Precision drive ───────────────────────────────────────────────────────
 PrecisionScenario = Literal['cross', 'square', 'line', 'zigzag', 'goto']
 
@@ -115,9 +137,31 @@ class CalibrationProfileSaveCommand(BaseModel):
                       pattern=r'^[a-zA-Z0-9_\-]+$')
 
 
+class CalibrationProfileLoadCommand(BaseModel):
+    """POST /api/calibration/profile/load."""
+    name: str = Field(min_length=1, max_length=64,
+                      pattern=r'^[a-zA-Z0-9_\-]+$')
+
+
+class CalibrationProfileDeleteCommand(BaseModel):
+    """POST /api/calibration/profile/delete."""
+    name: str = Field(min_length=1, max_length=64,
+                      pattern=r'^[a-zA-Z0-9_\-]+$')
+
+
+class CalibrationCommand(BaseModel):
+    """POST /api/calibration/command — admin string command (start/stop/reset)."""
+    command: Literal['start', 'stop', 'reset', 'pause', 'resume']
+
+
 class CalibrationProfileListResponse(OkResponse):
     profiles: list[CalibrationProfile] = Field(default_factory=list)
     active: Optional[str] = None
+
+
+class CalibrationCoefficientsResponse(OkResponse):
+    """Активные коэффициенты — формат свободный (зависит от профиля)."""
+    coefficients: dict[str, Any] = Field(default_factory=dict)
 
 
 # ── Mission ───────────────────────────────────────────────────────────────

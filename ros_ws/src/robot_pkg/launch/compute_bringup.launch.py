@@ -189,9 +189,13 @@ def generate_launch_description():
         condition=UnlessCondition(LaunchConfiguration('remote_yolo')),
     )
 
-    # ── Web Dashboard (FastAPI — compute_node version) ─────────
+    # ── Web Dashboard (FastAPI — compute_node.dashboard package) ─────
+    # Заменён в #7 (2026-04): монолитный dashboard_node.py разбит на
+    # compute_node/dashboard/ (~14 routers + Pydantic schemas + APIRouter).
+    # Старый dashboard_node.py удалён в C13. Запуск через -m.
     dashboard_node = ExecuteProcess(
-        cmd=['python3', '/root/Samurai/compute_node/dashboard_node.py'],
+        cmd=['python3', '-m', 'compute_node.dashboard'],
+        cwd='/root/Samurai',
         name='dashboard_node',
         output='screen',
     )
