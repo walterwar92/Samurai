@@ -19,9 +19,12 @@ VBAT_MAX = 4.2   # одна LiPo банка: максимум (полный за
 VDIV_RATIO = 3.0
 
 try:
-    import smbus2
+    import smbus2  # noqa: F401 — keep for legacy paths
+    from pi_nodes.hardware.i2c_device import I2CDevice, I2CTimeout
     _HW = True
 except ImportError:
+    I2CDevice = None
+    I2CTimeout = Exception
     _HW = False
 
 
@@ -53,9 +56,11 @@ class BatteryNode(MqttNode):
                     self._bus.close()
                 except Exception:
                     pass
-            bus = smbus2.SMBus(1)
-            bus.write_byte(self._addr, _CHANNEL_CMDS[self._channel])
-            bus.read_byte(self._addr)
+            # 100ms timeout — battery is read at 1 Hz so latency budget is wide.
+            bus = I2CDevice(bus_num=1, address=self._addr,
+                            timeout_s=0.1, name='ads7830')
+            bus.write_byte(_CHANNEL_CMDS[self._channel])
+            bus.read_byte()
             self._bus = bus
             self._i2c_errors = 0
             self.log_info('ADS7830 found @ 0x%02X, channel %d',
@@ -71,11 +76,19 @@ class BatteryNode(MqttNode):
         adc_voltage = 0.0
         if self._bus is not None:
             try:
-                self._bus.write_byte(self._addr, _CHANNEL_CMDS[self._channel])
-                raw = self._bus.read_byte(self._addr)
+                self._bus.write_byte(_CHANNEL_CMDS[self._channel])
+                raw = self._bus.read_byte()
                 adc_voltage = raw / 255.0 * 3.3
                 voltage = adc_voltage * self._vdiv
                 self._i2c_errors = 0
+            except I2CTimeout as e:
+                self._i2c_errors += 1
+                self.log_warn('ADC I2C timeout (%d): %s', self._i2c_errors, e)
+                if self._i2c_errors >= 3:
+                    self._bus = None
+                    self._i2c_recover_time = (time.monotonic() +
+                                              self._I2C_RECOVER_DELAY)
+                voltage = 0.0
             except Exception as e:
                 self._i2c_errors += 1
                 self.log_warn('ADC read error (%d): %s', self._i2c_errors, e)
