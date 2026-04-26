@@ -40,6 +40,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 from pi_nodes.hardware.motor_driver import MotorDriver
+from pi_nodes.control.collision_policy import CollisionPolicy
+from pi_nodes.control.imu_push_detector import IMUPushDetector, PushParams
 
 try:
     from pi_nodes.filters.accel_position import AccelPositionEstimator
@@ -142,11 +144,16 @@ class MotorNode(MqttNode):
         self._angular = 0.0
         self._last_cmd_time = 0.0
 
-        # Collision guard
+        # Collision guard — extracted to CollisionPolicy class for testability.
+        # avoid_dir / avoid_active live inside the policy now.
         self._collision_guard = False
         self._range_m = float('inf')
         self._range_age_s = -1.0  # from ultrasonic_node payload; -1 = no reading yet
-        self._range_stale_warned = 0.0  # monotonic; throttle stale-sensor warnings
+        self._collision = CollisionPolicy(
+            stop_m=COLLISION_GUARD_STOP_M,
+            slow_m=COLLISION_GUARD_SLOW_M,
+            avoid_angular=COLLISION_AVOID_ANGULAR,
+        )
 
         # Priority mux: manual override
         self._manual_linear = 0.0
@@ -155,30 +162,27 @@ class MotorNode(MqttNode):
         self._active_source = 'none'      # 'manual', 'collision', 'autonomous', 'none'
         self._prev_active_source = ''
 
-        # Collision avoidance — steering direction for circumnavigation
-        self._collision_avoid_dir = 1.0   # +1 = left, -1 = right
-        self._collision_avoid_active = False
-
         # IMU state
         self._imu_yaw_rad = None
         self._imu_calibrated = False
         self._imu_gz = 0.0       # raw gyro Z for angular velocity
         self._imu_last_ts = None  # for actual dt computation
 
-        # ── IMU push detector (passive movement when motors OFF) ──
+        # ── IMU push detector — extracted to IMUPushDetector class. ─────
+        # gravity_body lives here (it comes from IMU calibration MQTT msg
+        # and is used to compute the body-frame linear accel passed in).
         self._imu_gravity_body = None     # [gx, gy, gz] from calibration
         self._imu_raw_lin_bx = 0.0        # gravity-free body-frame accel
         self._imu_raw_lin_by = 0.0
-        self._push_bias_x = 0.0           # EMA bias (world frame)
-        self._push_bias_y = 0.0
-        self._push_bias_ready = False
-        self._push_bias_samples = 0
-        self._push_dev_count = 0           # consecutive deviations
-        self._push_fast_remaining = 0
-        self._push_cont_ticks = 0          # continuous IMU+ ticks
-        self._push_active = False          # direction locked
-        self._push_dir_x = 0.0
-        self._push_dir_y = 0.0
+        self._push = IMUPushDetector(PushParams(
+            speed=IMU_PUSH_SPEED,
+            deviation_threshold=IMU_DEVIATION_THR,
+            confirm_samples=IMU_CONFIRM_SAMPLES,
+            max_move_ticks=IMU_MAX_MOVE_TICKS,
+            bias_alpha_slow=IMU_BIAS_ALPHA_SLOW,
+            bias_alpha_fast=IMU_BIAS_ALPHA_FAST,
+            fast_adapt_ticks=IMU_FAST_ADAPT_TICKS,
+        ))
 
         # Accelerometer position estimator — pass VelocityEKF params from config
         self._pos_estimator = None
@@ -458,15 +462,7 @@ class MotorNode(MqttNode):
         self._vz = 0.0
         if self._pos_estimator is not None:
             self._pos_estimator.reset()
-        # Reset push detector bias
-        self._push_bias_x = 0.0
-        self._push_bias_y = 0.0
-        self._push_bias_ready = False
-        self._push_bias_samples = 0
-        self._push_dev_count = 0
-        self._push_fast_remaining = 0
-        self._push_cont_ticks = 0
-        self._push_active = False
+        self._push.reset()
         self.log_info('Position reset to (0, 0, 0) — new home set')
 
     def _profile_cb(self, topic, data):
@@ -507,41 +503,21 @@ class MotorNode(MqttNode):
         if abs(ang_cmd) < DEADZONE_ANGULAR:
             ang_cmd = 0.0
 
-        # ── Collision guard (highest priority — overrides everything) ──
-        # Stale ultrasonic readings (sensor likely dead) should not block movement
-        # nor be trusted as "no obstacle". Skip the guard and warn periodically.
-        if self._collision_guard and lin_cmd > 0:
-            r = self._range_m
-            stale = self._range_age_s >= 1.0 or self._range_age_s < 0.0
-            if stale:
-                now_mono = self.now_sec()
-                if now_mono - self._range_stale_warned > 5.0:
-                    self._range_stale_warned = now_mono
-                    self.log_warn('Ultrasonic stale (age=%.1fs) — collision guard skipped',
-                                  self._range_age_s)
-                r = float('inf')
-            if r < COLLISION_GUARD_STOP_M:
-                # Full stop + active steering to go around obstacle
-                lin_cmd = 0.0
-                if not manual_active:
-                    # Only auto-steer when not in manual mode
-                    ang_cmd = COLLISION_AVOID_ANGULAR * self._collision_avoid_dir
-                    self._active_source = 'collision'
-                    if not self._collision_avoid_active:
-                        self._collision_avoid_active = True
-                        self.log_info('Collision avoidance: steering %s',
-                                      'left' if self._collision_avoid_dir > 0 else 'right')
-            elif r < COLLISION_GUARD_SLOW_M:
-                factor = (r - COLLISION_GUARD_STOP_M) / (COLLISION_GUARD_SLOW_M - COLLISION_GUARD_STOP_M)
-                lin_cmd *= max(0.0, factor)
-                if not manual_active:
-                    self._active_source = 'collision'
-            else:
-                if self._collision_avoid_active:
-                    self._collision_avoid_active = False
-                    # Alternate direction for next obstacle
-                    self._collision_avoid_dir *= -1.0
-                    self.log_info('Collision avoidance: clear')
+        # ── Collision guard — delegated to CollisionPolicy ──
+        if self._collision_guard:
+            decision = self._collision.apply(
+                linear=lin_cmd,
+                angular=ang_cmd,
+                range_m=self._range_m,
+                range_age_s=self._range_age_s,
+                manual_active=manual_active,
+                now_mono=now,
+                log_warn=self.log_warn,
+            )
+            lin_cmd = decision.linear
+            ang_cmd = decision.angular
+            if decision.source is not None:
+                self._active_source = decision.source
 
         # Drive motors — apply motor_trim for straight-line correction
         lin = max(-self._max_lin, min(self._max_lin, lin_cmd))
@@ -586,69 +562,22 @@ class MotorNode(MqttNode):
         motors_idle = (abs(v_actual) < 0.001
                        and abs(ang) < DEADZONE_ANGULAR)
 
-        # ── IMU push detection (passive movement, motors OFF) ──────
-        push_vx = 0.0
-        push_vy = 0.0
-        if motors_idle and self._imu_gravity_body is not None:
-            # Body→world rotation of raw linear accel
-            bx = self._imu_raw_lin_bx
-            by = self._imu_raw_lin_by
-            wx = bx * cy - by * sy
-            wy = bx * sy + by * cy
-
-            # Deviation from bias
-            dx = wx - self._push_bias_x
-            dy = wy - self._push_bias_y
-            dev = math.sqrt(dx * dx + dy * dy)
-
-            is_push = False
-            if dev > IMU_DEVIATION_THR:
-                self._push_dev_count += 1
-                if self._push_dev_count >= IMU_CONFIRM_SAMPLES:
-                    is_push = True
-            else:
-                self._push_dev_count = 0
-
-            if is_push:
-                self._push_cont_ticks += 1
-                if self._push_cont_ticks > IMU_MAX_MOVE_TICKS:
-                    # GRAV recovery — gravity residual, not real movement
-                    self._push_active = False
-                    alpha = IMU_BIAS_ALPHA_FAST
-                    self._push_bias_x += alpha * (wx - self._push_bias_x)
-                    self._push_bias_y += alpha * (wy - self._push_bias_y)
-                else:
-                    if not self._push_active:
-                        self._push_dir_x = dx / dev
-                        self._push_dir_y = dy / dev
-                        self._push_active = True
-                    push_vx = IMU_PUSH_SPEED * self._push_dir_x
-                    push_vy = IMU_PUSH_SPEED * self._push_dir_y
-                    self._push_fast_remaining = IMU_FAST_ADAPT_TICKS
-            else:
-                self._push_cont_ticks = 0
-                self._push_active = False
-                # Bias update
-                if self._push_bias_samples < 40:
-                    alpha = 0.1
-                    self._push_bias_samples += 1
-                    if self._push_bias_samples >= 40:
-                        self._push_bias_ready = True
-                elif self._push_fast_remaining > 0:
-                    alpha = IMU_BIAS_ALPHA_FAST
-                    self._push_fast_remaining -= 1
-                else:
-                    alpha = IMU_BIAS_ALPHA_SLOW
-                self._push_bias_x += alpha * (wx - self._push_bias_x)
-                self._push_bias_y += alpha * (wy - self._push_bias_y)
-
-            self._x += push_vx * dt
-            self._y += push_vy * dt
+        # ── IMU push detection — delegated to IMUPushDetector ──
+        # Only run when gravity calibration is available (gravity_body is the
+        # body-frame gravity vector saved by IMU calibration).
+        if self._imu_gravity_body is not None:
+            push_vx, push_vy = self._push.update(
+                raw_lin_bx=self._imu_raw_lin_bx,
+                raw_lin_by=self._imu_raw_lin_by,
+                theta=self._theta,
+                motors_idle=motors_idle,
+            )
+            if motors_idle:
+                self._x += push_vx * dt
+                self._y += push_vy * dt
         else:
-            # Motors active — reset push state, don't learn bias (vibration)
-            self._push_dev_count = 0
-            self._push_cont_ticks = 0
-            self._push_active = False
+            push_vx = 0.0
+            push_vy = 0.0
 
         is_stationary = motors_idle and push_vx == 0.0 and push_vy == 0.0
 
