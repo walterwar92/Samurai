@@ -24,13 +24,8 @@ SAMCAN_BRIDGE_URL = os.environ.get('SAMCAN_BRIDGE_URL', 'http://localhost:5005')
 router = APIRouter()
 
 
-@router.api_route(
-    '/{path:path}',
-    methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    tags=['samcan'],
-)
-async def samcan_proxy(path: str, request: Request) -> Response:
-    """Catch-all proxy: пересылаем body, query params, headers; возвращаем как есть."""
+async def _proxy(path: str, request: Request) -> Response:
+    """Общая логика проксирования (используется всеми HTTP методами)."""
     try:
         import httpx
     except ImportError:
@@ -63,3 +58,30 @@ async def samcan_proxy(path: str, request: Request) -> Response:
             {'error': 'samcan_bridge unreachable', 'detail': str(exc)},
             status_code=503,
         )
+
+
+# Отдельные routes per-method чтобы у каждого был уникальный operation_id —
+# openapi-typescript-codegen иначе ломается на duplicate IDs.
+@router.get('/{path:path}', tags=['samcan'], operation_id='samcan_get')
+async def samcan_get(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+@router.post('/{path:path}', tags=['samcan'], operation_id='samcan_post')
+async def samcan_post(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+@router.put('/{path:path}', tags=['samcan'], operation_id='samcan_put')
+async def samcan_put(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+@router.delete('/{path:path}', tags=['samcan'], operation_id='samcan_delete')
+async def samcan_delete(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+@router.patch('/{path:path}', tags=['samcan'], operation_id='samcan_patch')
+async def samcan_patch(path: str, request: Request) -> Response:
+    return await _proxy(path, request)

@@ -1,0 +1,5653 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Samurai Dashboard",
+    "description": "REST + WebSocket API для управления роботом.",
+    "version": "2.0"
+  },
+  "paths": {
+    "/api/v1/robot/pose": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get Pose",
+        "description": "Текущая поза робота (мировые координаты, м/радианы).",
+        "operationId": "get_pose_api_v1_robot_pose_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoseResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/velocity": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get Velocity",
+        "description": "Скорость робота: estimated (одометрия) и commanded (последний cmd_vel).",
+        "operationId": "get_velocity_api_v1_robot_velocity_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VelocityResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Set Velocity",
+        "description": "Послать cmd_vel/manual напрямую на Pi (приоритет выше autonomous).",
+        "operationId": "set_velocity_api_v1_robot_velocity_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VelocityCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/stop": {
+      "post": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Stop",
+        "description": "Немедленный стоп — нулевая скорость напрямую на Pi.",
+        "operationId": "stop_api_v1_robot_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/reset_position": {
+      "post": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Reset Position",
+        "description": "Сбросить одометрию: текущая поза становится (0,0,0) — новый home.",
+        "operationId": "reset_position_api_v1_robot_reset_position_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speed_profile": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get Speed Profile",
+        "operationId": "get_speed_profile_api_v1_speed_profile_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeedProfileResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Set Speed Profile",
+        "description": "Переключить профиль скорости (slow|normal|fast).",
+        "operationId": "set_speed_profile_api_v1_speed_profile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeedProfileCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/emergency_stop": {
+      "post": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Emergency Stop",
+        "description": "Alias для POST /robot/stop, путь /api/emergency_stop.",
+        "operationId": "emergency_stop_api_v1_emergency_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sensors": {
+      "get": {
+        "tags": [
+          "sensors"
+        ],
+        "summary": "Get Sensors",
+        "description": "Bundle: ультразвук + IMU. Для batched-запросов с дашборда.",
+        "operationId": "get_sensors_api_v1_sensors_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SensorsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sensors/ultrasonic": {
+      "get": {
+        "tags": [
+          "sensors"
+        ],
+        "summary": "Get Ultrasonic",
+        "operationId": "get_ultrasonic_api_v1_sensors_ultrasonic_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UltrasonicResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sensors/imu": {
+      "get": {
+        "tags": [
+          "sensors"
+        ],
+        "summary": "Get Imu",
+        "operationId": "get_imu_api_v1_sensors_imu_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImuResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/battery": {
+      "get": {
+        "tags": [
+          "sensors"
+        ],
+        "summary": "Get Battery",
+        "description": "Voltage, percent, status (ok/low/critical).",
+        "operationId": "get_battery_api_v1_battery_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatteryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/temperature": {
+      "get": {
+        "tags": [
+          "sensors"
+        ],
+        "summary": "Get Temperature",
+        "description": "CPU температура Pi.",
+        "operationId": "get_temperature_api_v1_temperature_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemperatureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators": {
+      "get": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Get Actuators",
+        "operationId": "get_actuators_api_v1_actuators_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActuatorsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/claw": {
+      "get": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Get Claw",
+        "operationId": "get_claw_api_v1_actuators_claw_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClawResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Set Claw",
+        "description": "Клешня = arm joint 4 (1-indexed). open=0°, close=180°.",
+        "operationId": "set_claw_api_v1_actuators_claw_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClawCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/head": {
+      "get": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Get Head",
+        "operationId": "get_head_api_v1_actuators_head_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeadResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Set Head",
+        "description": "Один POST → одна команда. Если задано несколько полей — порядок:\nangle → center → locked → frozen (последняя команда побеждает).",
+        "operationId": "set_head_api_v1_actuators_head_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeadCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/head/presets": {
+      "get": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "List Head Presets",
+        "description": "Cached список presets из state. Параллельно публикуем list_presets чтобы\nhead_node освежил кэш через head/presets retained.",
+        "operationId": "list_head_presets_api_v1_actuators_head_presets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/head/preset/save": {
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Save Head Preset",
+        "operationId": "save_head_preset_api_v1_actuators_head_preset_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetSaveCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/head/preset/load": {
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Load Head Preset",
+        "operationId": "load_head_preset_api_v1_actuators_head_preset_load_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetLoadCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/head/preset/{name}": {
+      "delete": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Delete Head Preset",
+        "operationId": "delete_head_preset_api_v1_actuators_head_preset__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/arm": {
+      "get": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Get Arm",
+        "operationId": "get_arm_api_v1_actuators_arm_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArmResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Set Arm",
+        "description": "Поддерживаемые комбинации (порядок проверки):\nhome=true                 → {\"command\": \"home\"}\npreset='X'                → {\"command\": \"load_preset\", \"name\": \"X\"}\nfreeze=true/false         → {\"command\": \"freeze\"|\"unfreeze\", joint?: N}\njoints=[..,..,..,..]      → {\"joints\": [...]}\njN установлен             → {\"joint\": N, \"angle\": jN}",
+        "operationId": "set_arm_api_v1_actuators_arm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArmJointCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/arm/presets": {
+      "get": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "List Arm Presets",
+        "operationId": "list_arm_presets_api_v1_actuators_arm_presets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/arm/preset/save": {
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Save Arm Preset",
+        "operationId": "save_arm_preset_api_v1_actuators_arm_preset_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetSaveCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/arm/preset/load": {
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Load Arm Preset",
+        "operationId": "load_arm_preset_api_v1_actuators_arm_preset_load_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetLoadCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actuators/arm/preset/{name}": {
+      "delete": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Delete Arm Preset",
+        "operationId": "delete_arm_preset_api_v1_actuators_arm_preset__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/led/command": {
+      "post": {
+        "tags": [
+          "actuators"
+        ],
+        "summary": "Led Command",
+        "description": "LED панель WS2812B. Pi-side led_node ждёт {mode, color?, brightness?}.\n\nМаппим animation→mode для backward-compat с led_node.",
+        "operationId": "led_command_api_v1_led_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detection": {
+      "get": {
+        "tags": [
+          "detection"
+        ],
+        "summary": "Get Detection",
+        "description": "Все объекты последнего YOLO кадра.",
+        "operationId": "get_detection_api_v1_detection_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detection/closest": {
+      "get": {
+        "tags": [
+          "detection"
+        ],
+        "summary": "Get Closest",
+        "description": "Ближайший объект, опционально с фильтром по цвету.\n\nСортировка: по distance (если задана), иначе по площади bbox (больше=ближе).",
+        "operationId": "get_closest_api_v1_detection_closest_get",
+        "parameters": [
+          {
+            "name": "color",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Фильтр по цвету (red, blue, ...)",
+              "title": "Color"
+            },
+            "description": "Фильтр по цвету (red, blue, ...)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClosestDetectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detection/status": {
+      "get": {
+        "tags": [
+          "detection"
+        ],
+        "summary": "Detection Status",
+        "operationId": "detection_status_api_v1_detection_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detection/toggle": {
+      "post": {
+        "tags": [
+          "detection"
+        ],
+        "summary": "Toggle Detection",
+        "description": "Включить/выключить YOLO. Публикуем в MQTT и (если ROS2 доступен) в /yolo/enable.",
+        "operationId": "toggle_detection_api_v1_detection_toggle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionToggleCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/balls": {
+      "get": {
+        "tags": [
+          "detection"
+        ],
+        "summary": "Get Balls",
+        "description": "Tracked balls (постоянный ID между кадрами).\n\nСимулятор/трекер заполняет state.detection.balls. На реальном роботе\nобычно пусто (трекинг не реализован) — возвращаем то, что есть.",
+        "operationId": "get_balls_api_v1_balls_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BallsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fsm": {
+      "get": {
+        "tags": [
+          "fsm"
+        ],
+        "summary": "Get Fsm",
+        "description": "Текущее состояние FSM на Pi (state, target_colour, target_action).",
+        "operationId": "get_fsm_api_v1_fsm_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FsmStateResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fsm/command": {
+      "post": {
+        "tags": [
+          "fsm"
+        ],
+        "summary": "Send Fsm Command",
+        "description": "Послать текстовую команду на Pi (через voice_command топик).\n\nPi-side voice_listener распарсит как обычное голосовое выражение.",
+        "operationId": "send_fsm_command_api_v1_fsm_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FsmCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fsm/transition": {
+      "post": {
+        "tags": [
+          "fsm"
+        ],
+        "summary": "Force Fsm Transition",
+        "description": "Admin override: принудительно переключить FSM в указанное состояние.",
+        "operationId": "force_fsm_transition_api_v1_fsm_transition_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FsmTransitionCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/info": {
+      "get": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Get Map Info",
+        "operationId": "get_map_info_api_v1_map_info_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MapInfoResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/list": {
+      "get": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "List Maps",
+        "description": "Список сохранённых SLAM карт из ~/maps/*.yaml.",
+        "operationId": "list_maps_api_v1_map_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MapListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/image": {
+      "get": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Get Map Image",
+        "description": "PNG карты. Приоритет: state.map.png (ROS2 SLAM Toolbox);\nfallback: рендер из Pi-side SLAM (slam_map_node).",
+        "operationId": "get_map_image_api_v1_map_image_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/save": {
+      "post": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Save Map",
+        "description": "Сохранить текущую SLAM карту (ROS2 /map_manager/save). Требует ROS2 stack.",
+        "operationId": "save_map_api_v1_map_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MapSaveCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/load": {
+      "post": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Load Map",
+        "description": "Загрузить сохранённую карту в SLAM (ROS2 /map_manager/load).",
+        "operationId": "load_map_api_v1_map_load_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MapLoadCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/slam_map": {
+      "get": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Get Slam Map",
+        "description": "Pi-side ultrasonic SLAM data (obstacles, trail, robot, objects, info).",
+        "operationId": "get_slam_map_api_v1_slam_map_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlamMapResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/zones": {
+      "get": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Get Zones",
+        "operationId": "get_zones_api_v1_zones_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZonesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Create Zone",
+        "description": "Создать запретную зону (нормализуется чтобы x1<x2, y1<y2).",
+        "operationId": "create_zone_api_v1_zones_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZoneCreateCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneCreatedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/zones/{zone_id}": {
+      "delete": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Delete Zone",
+        "operationId": "delete_zone_api_v1_zones__zone_id__delete",
+        "parameters": [
+          {
+            "name": "zone_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Zone Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/zones/clear": {
+      "post": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Clear Zones",
+        "operationId": "clear_zones_api_v1_zones_clear_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/planned_path": {
+      "get": {
+        "tags": [
+          "maps"
+        ],
+        "summary": "Get Planned Path",
+        "description": "Текущий планируемый путь (от path_planner или path_recorder).\n\nНа текущей реализации path_recorder_path = [[x, y], ...] из Pi.",
+        "operationId": "get_planned_path_api_v1_planned_path_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannedPathResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patrol/command": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Patrol Command",
+        "operationId": "patrol_command_api_v1_patrol_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatrolCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patrol/waypoints": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Patrol Waypoints",
+        "description": "Установить список waypoints для patrol-маршрута.",
+        "operationId": "patrol_waypoints_api_v1_patrol_waypoints_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatrolWaypointsCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/follow_me": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Follow Me",
+        "operationId": "follow_me_api_v1_follow_me_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FollowMeCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/path_recorder/command": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Recorder Command",
+        "operationId": "path_recorder_command_api_v1_path_recorder_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathRecorderCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/path_recorder/status": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Recorder Status",
+        "operationId": "path_recorder_status_api_v1_path_recorder_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/path_recorder/path": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Recorder Path",
+        "operationId": "path_recorder_path_api_v1_path_recorder_path_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathRecorderPathResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/path_recorder/list": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Path Recorder List",
+        "operationId": "path_recorder_list_api_v1_path_recorder_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/precision_drive/command": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Precision Drive Command",
+        "description": "Сценарии точного драйвинга (cross/square/line/zigzag/goto).",
+        "operationId": "precision_drive_command_api_v1_precision_drive_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrecisionDriveCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/precision_drive/status": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Precision Drive Status",
+        "operationId": "precision_drive_status_api_v1_precision_drive_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/command": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Command",
+        "description": "Admin: start/stop/reset калибровки.",
+        "operationId": "calibration_command_api_v1_calibration_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalibrationCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/set": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Set",
+        "description": "Установить scale_fwd/bwd/motor_trim напрямую.",
+        "operationId": "calibration_set_api_v1_calibration_set_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalibrationSetCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/profile/load": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Profile Load",
+        "operationId": "calibration_profile_load_api_v1_calibration_profile_load_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalibrationProfileLoadCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/profile/save": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Profile Save",
+        "operationId": "calibration_profile_save_api_v1_calibration_profile_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalibrationProfileSaveCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/profile/delete": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Profile Delete",
+        "operationId": "calibration_profile_delete_api_v1_calibration_profile_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalibrationProfileDeleteCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/profile/list": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Profile List",
+        "description": "Запросить актуальный список (Pi пушит через calibration/profile/all)\nи одновременно вернуть текущий кэш из state.",
+        "operationId": "calibration_profile_list_api_v1_calibration_profile_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalibrationProfileListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration/coefficients": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Calibration Coefficients",
+        "operationId": "calibration_coefficients_api_v1_calibration_coefficients_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalibrationCoefficientsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mission/command": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Mission Command",
+        "operationId": "mission_command_api_v1_mission_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MissionCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mission/list": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Mission List",
+        "operationId": "mission_list_api_v1_mission_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/explorer/command": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Explorer Command",
+        "operationId": "explorer_command_api_v1_explorer_command_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExplorerCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tts/toggle": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Tts Toggle",
+        "operationId": "tts_toggle_api_v1_tts_toggle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TTSToggleCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tts/speak": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Tts Speak",
+        "operationId": "tts_speak_api_v1_tts_speak_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TTSSpeakCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/obstacle_avoidance/toggle": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Obstacle Avoidance Toggle",
+        "description": "Включить/выключить obstacle avoidance во время path replay.",
+        "operationId": "obstacle_avoidance_toggle_api_v1_obstacle_avoidance_toggle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToggleCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collision_guard/toggle": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Collision Guard Toggle",
+        "description": "Включить/выключить collision guard для manual control.",
+        "operationId": "collision_guard_toggle_api_v1_collision_guard_toggle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToggleCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Status",
+        "description": "Атомарный snapshot всего state — для polling-fallback на фронте.",
+        "operationId": "get_status_api_v1_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusSnapshotResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/log": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Log",
+        "description": "Последние event/voice записи (max 200).",
+        "operationId": "get_log_api_v1_log_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mqtt/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Mqtt Status",
+        "operationId": "get_mqtt_status_api_v1_mqtt_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MqttStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/multi_robot/list": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Multi Robot List",
+        "description": "Stub: возвращает только текущего робота. Multi-prefix MQTT TODO.",
+        "operationId": "multi_robot_list_api_v1_multi_robot_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultiRobotListResponseSystem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/multi_robot/call": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Multi Robot Call",
+        "description": "Послать другому роботу call (для координации по mesh).",
+        "operationId": "multi_robot_call_api_v1_multi_robot_call_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultiRobotCallCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/hardware/presets": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Hardware Presets List",
+        "operationId": "hardware_presets_list_api_v1_hardware_presets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwarePresetListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Hardware Preset Save",
+        "operationId": "hardware_preset_save_api_v1_hardware_presets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HardwarePresetSaveCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwarePresetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/hardware/presets/{name}": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Hardware Preset Get",
+        "operationId": "hardware_preset_get_api_v1_hardware_presets__name__get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwarePresetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Hardware Preset Delete",
+        "operationId": "hardware_preset_delete_api_v1_hardware_presets__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/hardware/apply": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Hardware Preset Apply",
+        "description": "Активировать пресет: запись active + push в MQTT для пере-конфигурации Pi.",
+        "operationId": "hardware_preset_apply_api_v1_hardware_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HardwareApplyCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/hardware/active": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Hardware Active",
+        "operationId": "hardware_active_api_v1_hardware_active_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareActiveResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/camera/endpoint": {
+      "get": {
+        "tags": [
+          "camera"
+        ],
+        "summary": "Get Camera Endpoint",
+        "description": "Куда подключаться за H.264 потоком (host:port + codec params).\n\n503 если Pi-side camera_node не подключён.",
+        "operationId": "get_camera_endpoint_api_v1_camera_endpoint_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraEndpointResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/samcan/{path}": {
+      "get": {
+        "tags": [
+          "samcan"
+        ],
+        "summary": "Samcan Get",
+        "operationId": "samcan_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "samcan"
+        ],
+        "summary": "Samcan Post",
+        "operationId": "samcan_post",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "samcan"
+        ],
+        "summary": "Samcan Put",
+        "operationId": "samcan_put",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "samcan"
+        ],
+        "summary": "Samcan Delete",
+        "operationId": "samcan_delete",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "samcan"
+        ],
+        "summary": "Samcan Patch",
+        "operationId": "samcan_patch",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Serve Root",
+        "operationId": "serve_root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard": {
+      "get": {
+        "summary": " Serve Spa",
+        "description": "index.html ссылается на хешированные assets — не кешируем HTML.",
+        "operationId": "_serve_spa_dashboard_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response  Serve Spa Dashboard Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin": {
+      "get": {
+        "summary": " Serve Spa",
+        "description": "index.html ссылается на хешированные assets — не кешируем HTML.",
+        "operationId": "_serve_spa_admin_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response  Serve Spa Admin Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/3d": {
+      "get": {
+        "summary": " Serve Spa",
+        "description": "index.html ссылается на хешированные assets — не кешируем HTML.",
+        "operationId": "_serve_spa_3d_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response  Serve Spa 3D Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActuatorsResponse": {
+        "properties": {
+          "claw": {
+            "$ref": "#/components/schemas/ClawState"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "arm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArmState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ActuatorsResponse"
+      },
+      "ArmJointCommand": {
+        "properties": {
+          "j1": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "J1"
+          },
+          "j2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "J2"
+          },
+          "j3": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "J3"
+          },
+          "j4": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "J4"
+          },
+          "joints": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joints",
+            "description": "Все 4 угла одним массивом (альтернатива j1..j4)"
+          },
+          "home": {
+            "type": "boolean",
+            "title": "Home",
+            "default": false
+          },
+          "freeze": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freeze",
+            "description": "True → \"command\": \"freeze\". False → \"unfreeze\"."
+          },
+          "joint_index": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 4.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joint Index",
+            "description": "Индекс сустава для freeze/unfreeze (1..4)"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset",
+            "description": "Имя пресета — load_preset"
+          }
+        },
+        "type": "object",
+        "title": "ArmJointCommand",
+        "description": "POST /api/actuators/arm — установка суставов или admin-команды.\n\nj1..j4 → одиночные углы (любая комбинация). joints → весь массив сразу.\nhome/freeze/unfreeze/preset — admin команды на Pi (arm_node)."
+      },
+      "ArmResponse": {
+        "properties": {
+          "j1": {
+            "type": "number",
+            "title": "J1",
+            "default": 0.0
+          },
+          "j2": {
+            "type": "number",
+            "title": "J2",
+            "default": 120.0
+          },
+          "j3": {
+            "type": "number",
+            "title": "J3",
+            "default": 0.0
+          },
+          "j4": {
+            "type": "number",
+            "title": "J4",
+            "default": 0.0
+          },
+          "frozen": {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array",
+            "title": "Frozen"
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "default": true
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ArmResponse"
+      },
+      "ArmState": {
+        "properties": {
+          "j1": {
+            "type": "number",
+            "title": "J1",
+            "default": 0.0
+          },
+          "j2": {
+            "type": "number",
+            "title": "J2",
+            "default": 120.0
+          },
+          "j3": {
+            "type": "number",
+            "title": "J3",
+            "default": 0.0
+          },
+          "j4": {
+            "type": "number",
+            "title": "J4",
+            "default": 0.0
+          },
+          "frozen": {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array",
+            "title": "Frozen"
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ArmState",
+        "description": "Состояние 4-DOF руки. j1..j4 = углы суставов в градусах."
+      },
+      "BallInfo": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "colour": {
+            "type": "string",
+            "enum": [
+              "red",
+              "orange",
+              "yellow",
+              "green",
+              "blue",
+              "white",
+              "black",
+              "unknown"
+            ],
+            "title": "Colour",
+            "default": "unknown"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "grabbed": {
+            "type": "boolean",
+            "title": "Grabbed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "x",
+          "y"
+        ],
+        "title": "BallInfo",
+        "description": "Tracked ball на арене (постоянный ID между кадрами)."
+      },
+      "BallsResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "balls": {
+            "items": {
+              "$ref": "#/components/schemas/BallInfo"
+            },
+            "type": "array",
+            "title": "Balls"
+          }
+        },
+        "type": "object",
+        "title": "BallsResponse"
+      },
+      "BatteryResponse": {
+        "properties": {
+          "voltage": {
+            "type": "number",
+            "title": "Voltage",
+            "description": "Напряжение в вольтах. -1 = нет данных",
+            "default": -1.0
+          },
+          "percent": {
+            "type": "integer",
+            "title": "Percent",
+            "description": "0..100, -1 = нет данных",
+            "default": -1
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Опциональный статус: ok / low / critical"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "BatteryResponse"
+      },
+      "CalibrationCoefficientsResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "coefficients": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Coefficients"
+          }
+        },
+        "type": "object",
+        "title": "CalibrationCoefficientsResponse",
+        "description": "Активные коэффициенты — формат свободный (зависит от профиля)."
+      },
+      "CalibrationCommand": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "reset",
+              "pause",
+              "resume"
+            ],
+            "title": "Command"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "CalibrationCommand",
+        "description": "POST /api/calibration/command — admin string command (start/stop/reset)."
+      },
+      "CalibrationProfile": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "scale_fwd": {
+            "type": "number",
+            "title": "Scale Fwd",
+            "default": 1.0
+          },
+          "scale_bwd": {
+            "type": "number",
+            "title": "Scale Bwd",
+            "default": 1.0
+          },
+          "motor_trim": {
+            "type": "number",
+            "title": "Motor Trim",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CalibrationProfile",
+        "description": "Профиль одометрии для конкретной поверхности."
+      },
+      "CalibrationProfileDeleteCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CalibrationProfileDeleteCommand",
+        "description": "POST /api/calibration/profile/delete."
+      },
+      "CalibrationProfileListResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/CalibrationProfile"
+            },
+            "type": "array",
+            "title": "Profiles"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          }
+        },
+        "type": "object",
+        "title": "CalibrationProfileListResponse"
+      },
+      "CalibrationProfileLoadCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CalibrationProfileLoadCommand",
+        "description": "POST /api/calibration/profile/load."
+      },
+      "CalibrationProfileSaveCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CalibrationProfileSaveCommand",
+        "description": "POST /api/calibration/profile/save."
+      },
+      "CalibrationSetCommand": {
+        "properties": {
+          "scale_fwd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale Fwd"
+          },
+          "scale_bwd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale Bwd"
+          },
+          "motor_trim": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Motor Trim"
+          }
+        },
+        "type": "object",
+        "title": "CalibrationSetCommand",
+        "description": "POST /api/calibration/set."
+      },
+      "CameraEndpointResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "host": {
+            "type": "string",
+            "title": "Host"
+          },
+          "port": {
+            "type": "integer",
+            "title": "Port",
+            "default": 8554
+          },
+          "codec": {
+            "type": "string",
+            "title": "Codec",
+            "default": "h264"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format",
+            "default": "annex-b"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width",
+            "default": 0
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height",
+            "default": 0
+          },
+          "fps": {
+            "type": "integer",
+            "title": "Fps",
+            "default": 25
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extra",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "host"
+        ],
+        "title": "CameraEndpointResponse",
+        "description": "H.264 discovery: host/port/codec параметры для VideoDecoder в браузере."
+      },
+      "ClawCommand": {
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "close"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "angle": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle",
+            "description": "Прямой угол (если state не задан)"
+          }
+        },
+        "type": "object",
+        "title": "ClawCommand",
+        "description": "POST /api/actuators/claw."
+      },
+      "ClawResponse": {
+        "properties": {
+          "open": {
+            "type": "boolean",
+            "title": "Open",
+            "default": false
+          },
+          "angle": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle",
+            "description": "Текущий угол в градусах"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ClawResponse"
+      },
+      "ClawState": {
+        "properties": {
+          "open": {
+            "type": "boolean",
+            "title": "Open",
+            "default": false
+          },
+          "angle": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle",
+            "description": "Текущий угол в градусах"
+          }
+        },
+        "type": "object",
+        "title": "ClawState",
+        "description": "Состояние клешни."
+      },
+      "ClosestDetectionResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "detection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Detection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ClosestDetectionResponse"
+      },
+      "CommandAck": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "CommandAck",
+        "description": "Подтверждение команды (без возвращаемых данных)."
+      },
+      "Detection": {
+        "properties": {
+          "class": {
+            "type": "string",
+            "title": "Class",
+            "description": "YOLO class name (sports ball, person, ...)",
+            "default": "object"
+          },
+          "colour": {
+            "type": "string",
+            "enum": [
+              "red",
+              "orange",
+              "yellow",
+              "green",
+              "blue",
+              "white",
+              "black",
+              "unknown"
+            ],
+            "title": "Colour",
+            "default": "unknown"
+          },
+          "x": {
+            "type": "integer",
+            "title": "X",
+            "default": 0
+          },
+          "y": {
+            "type": "integer",
+            "title": "Y",
+            "default": 0
+          },
+          "w": {
+            "type": "integer",
+            "title": "W",
+            "default": 0
+          },
+          "h": {
+            "type": "integer",
+            "title": "H",
+            "default": 0
+          },
+          "conf": {
+            "type": "number",
+            "title": "Conf",
+            "default": 0.0
+          },
+          "distance": {
+            "type": "number",
+            "title": "Distance",
+            "description": "Метры. -1 = bbox слишком мал",
+            "default": -1.0
+          },
+          "dist_method": {
+            "type": "string",
+            "enum": [
+              "mono",
+              "ultra",
+              "blend",
+              "none"
+            ],
+            "title": "Dist Method",
+            "default": "none"
+          },
+          "world_x": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "World X",
+            "description": "Мировая X координата (м), если поза робота известна"
+          },
+          "world_y": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "World Y"
+          }
+        },
+        "type": "object",
+        "title": "Detection",
+        "description": "Один объект из детектора (compute_node/detector.py)."
+      },
+      "DetectionResponse": {
+        "properties": {
+          "objects": {
+            "items": {
+              "$ref": "#/components/schemas/Detection"
+            },
+            "type": "array",
+            "title": "Objects"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "ts": {
+            "type": "number",
+            "title": "Ts",
+            "default": 0.0
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "DetectionResponse"
+      },
+      "DetectionStatusResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend",
+            "description": "yolo | hsv (active backend в detector.py)"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "DetectionStatusResponse"
+      },
+      "DetectionToggleCommand": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "DetectionToggleCommand",
+        "description": "POST /api/detection/toggle — включить/выключить YOLO на ноуте."
+      },
+      "ExplorerCommand": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "title": "Command"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "frontier",
+                  "spiral",
+                  "zigzag"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy",
+            "default": "frontier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "ExplorerCommand",
+        "description": "POST /api/explorer/command."
+      },
+      "FollowMeCommand": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "title": "Command"
+          },
+          "target_distance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Distance",
+            "description": "Метры"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "FollowMeCommand",
+        "description": "POST /api/follow_me."
+      },
+      "ForbiddenZone": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "x1": {
+            "type": "number",
+            "title": "X1"
+          },
+          "y1": {
+            "type": "number",
+            "title": "Y1"
+          },
+          "x2": {
+            "type": "number",
+            "title": "X2"
+          },
+          "y2": {
+            "type": "number",
+            "title": "Y2"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "x1",
+          "y1",
+          "x2",
+          "y2"
+        ],
+        "title": "ForbiddenZone",
+        "description": "Запретная зона (рисуется на dashboard, учитывается path planner'ом)."
+      },
+      "FsmCommand": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "FsmCommand",
+        "description": "POST /api/fsm/command — текстовая команда (как голосовая)."
+      },
+      "FsmStateResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": "IDLE"
+          },
+          "target_colour": {
+            "type": "string",
+            "title": "Target Colour",
+            "default": ""
+          },
+          "target_action": {
+            "type": "string",
+            "title": "Target Action",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "FsmStateResponse"
+      },
+      "FsmTransitionCommand": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "IDLE",
+              "SEARCHING",
+              "TARGETING",
+              "APPROACHING",
+              "GRABBING",
+              "CALLING",
+              "RETURNING",
+              "PATROLLING",
+              "FOLLOWING",
+              "PATH_REPLAY"
+            ],
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "FsmTransitionCommand",
+        "description": "POST /api/fsm/transition — принудительный переход (admin)."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HardwareActiveResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          }
+        },
+        "type": "object",
+        "title": "HardwareActiveResponse"
+      },
+      "HardwareApplyCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "HardwareApplyCommand",
+        "description": "POST /api/hardware/apply — применить пресет."
+      },
+      "HardwarePresetListResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "presets": {
+            "items": {
+              "$ref": "#/components/schemas/HardwarePresetSummary"
+            },
+            "type": "array",
+            "title": "Presets"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          }
+        },
+        "type": "object",
+        "title": "HardwarePresetListResponse"
+      },
+      "HardwarePresetResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "preset": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Preset"
+          }
+        },
+        "type": "object",
+        "title": "HardwarePresetResponse"
+      },
+      "HardwarePresetSaveCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "description": "Произвольная конфигурация для сохранения"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "HardwarePresetSaveCommand",
+        "description": "POST /api/hardware/presets — сохранить пресет (имя обязательно)."
+      },
+      "HardwarePresetSummary": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "HardwarePresetSummary",
+        "description": "Краткая инфа о пресете для list-endpoint."
+      },
+      "HeadCommand": {
+        "properties": {
+          "angle": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle"
+          },
+          "center": {
+            "type": "boolean",
+            "title": "Center",
+            "default": false
+          },
+          "locked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked"
+          },
+          "frozen": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen"
+          }
+        },
+        "type": "object",
+        "title": "HeadCommand",
+        "description": "POST /api/actuators/head — заполняем только нужное поле, остальные null.\n\nСемантика на Pi (head_node):\n  angle  → выставить угол серво (0..180)\n  center → \"command\": \"center\" (вернуть в home)\n  locked → True: \"lock\" / False: \"unlock\"\n  frozen → True: \"freeze\" / False: \"unfreeze\""
+      },
+      "HeadResponse": {
+        "properties": {
+          "angle": {
+            "type": "number",
+            "title": "Angle",
+            "default": 90.0
+          },
+          "frozen": {
+            "type": "boolean",
+            "title": "Frozen",
+            "default": false
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "default": true
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "HeadResponse"
+      },
+      "HeadState": {
+        "properties": {
+          "angle": {
+            "type": "number",
+            "title": "Angle",
+            "default": 90.0
+          },
+          "frozen": {
+            "type": "boolean",
+            "title": "Frozen",
+            "default": false
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "HeadState",
+        "description": "Состояние head-серво (pan камеры)."
+      },
+      "ImuData": {
+        "properties": {
+          "yaw": {
+            "type": "number",
+            "title": "Yaw",
+            "default": 0.0
+          },
+          "pitch": {
+            "type": "number",
+            "title": "Pitch",
+            "default": 0.0
+          },
+          "roll": {
+            "type": "number",
+            "title": "Roll",
+            "default": 0.0
+          },
+          "gyro": {
+            "$ref": "#/components/schemas/Vec3"
+          },
+          "accel": {
+            "$ref": "#/components/schemas/Vec3"
+          },
+          "ekf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImuYpr"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Углы из EKF фильтра (если включен imu.ekf.enabled в config)"
+          }
+        },
+        "type": "object",
+        "title": "ImuData",
+        "description": "Полный IMU-снимок с MPU6050."
+      },
+      "ImuResponse": {
+        "properties": {
+          "yaw": {
+            "type": "number",
+            "title": "Yaw",
+            "default": 0.0
+          },
+          "pitch": {
+            "type": "number",
+            "title": "Pitch",
+            "default": 0.0
+          },
+          "roll": {
+            "type": "number",
+            "title": "Roll",
+            "default": 0.0
+          },
+          "gyro": {
+            "$ref": "#/components/schemas/Vec3"
+          },
+          "accel": {
+            "$ref": "#/components/schemas/Vec3"
+          },
+          "ekf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImuYpr"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Углы из EKF фильтра (если включен imu.ekf.enabled в config)"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ImuResponse"
+      },
+      "ImuYpr": {
+        "properties": {
+          "yaw": {
+            "type": "number",
+            "title": "Yaw",
+            "default": 0.0
+          },
+          "pitch": {
+            "type": "number",
+            "title": "Pitch",
+            "default": 0.0
+          },
+          "roll": {
+            "type": "number",
+            "title": "Roll",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "ImuYpr",
+        "description": "Углы Эйлера в радианах. EKF и raw версии."
+      },
+      "LedCommand": {
+        "properties": {
+          "animation": {
+            "type": "string",
+            "title": "Animation"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "brightness": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 255.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brightness"
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "animation"
+        ],
+        "title": "LedCommand",
+        "description": "POST /api/led/command."
+      },
+      "LogEntry": {
+        "properties": {
+          "ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ts"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time",
+            "description": "HH:MM:SS"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type",
+            "description": "voice|api_command|system"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "LogEntry",
+        "description": "Одна запись event/voice лога."
+      },
+      "LogResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "log": {
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            },
+            "type": "array",
+            "title": "Log"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "LogResponse"
+      },
+      "MapInfo": {
+        "properties": {
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "resolution": {
+            "type": "number",
+            "title": "Resolution",
+            "description": "Метров на ячейку (default 0.05)"
+          },
+          "origin_x": {
+            "type": "number",
+            "title": "Origin X",
+            "default": 0.0
+          },
+          "origin_y": {
+            "type": "number",
+            "title": "Origin Y",
+            "default": 0.0
+          },
+          "size_m": {
+            "type": "number",
+            "title": "Size M",
+            "default": 10.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "width",
+          "height",
+          "resolution"
+        ],
+        "title": "MapInfo",
+        "description": "OccupancyGrid метаданные."
+      },
+      "MapInfoResponse": {
+        "properties": {
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "resolution": {
+            "type": "number",
+            "title": "Resolution",
+            "description": "Метров на ячейку (default 0.05)"
+          },
+          "origin_x": {
+            "type": "number",
+            "title": "Origin X",
+            "default": 0.0
+          },
+          "origin_y": {
+            "type": "number",
+            "title": "Origin Y",
+            "default": 0.0
+          },
+          "size_m": {
+            "type": "number",
+            "title": "Size M",
+            "default": 10.0
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "width",
+          "height",
+          "resolution"
+        ],
+        "title": "MapInfoResponse"
+      },
+      "MapListResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "maps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Maps"
+          }
+        },
+        "type": "object",
+        "title": "MapListResponse"
+      },
+      "MapLoadCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "MapLoadCommand",
+        "description": "POST /api/map/load."
+      },
+      "MapSaveCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name",
+            "description": "Безопасное имя без / и спецсимволов"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "MapSaveCommand",
+        "description": "POST /api/map/save."
+      },
+      "MissionCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Args"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "MissionCommand",
+        "description": "POST /api/mission/command — высокоуровневые сценарии."
+      },
+      "MissionListResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "missions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missions"
+          }
+        },
+        "type": "object",
+        "title": "MissionListResponse"
+      },
+      "MqttStatusResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected",
+            "default": false
+          },
+          "broker": {
+            "type": "string",
+            "title": "Broker",
+            "default": ""
+          },
+          "port": {
+            "type": "integer",
+            "title": "Port",
+            "default": 1883
+          },
+          "robot_id": {
+            "type": "string",
+            "title": "Robot Id",
+            "default": "robot1"
+          }
+        },
+        "type": "object",
+        "title": "MqttStatusResponse"
+      },
+      "MultiRobotCallCommand": {
+        "properties": {
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "colour": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Colour"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "grab",
+              "burn"
+            ],
+            "title": "Action",
+            "default": "grab"
+          }
+        },
+        "type": "object",
+        "required": [
+          "target_id"
+        ],
+        "title": "MultiRobotCallCommand",
+        "description": "POST /api/multi_robot/call — вызвать второго робота."
+      },
+      "MultiRobotInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected",
+            "default": false
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": "unknown"
+          },
+          "battery": {
+            "type": "integer",
+            "title": "Battery",
+            "default": -1
+          },
+          "last_seen_ms": {
+            "type": "integer",
+            "title": "Last Seen Ms",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "MultiRobotInfo",
+        "description": "Состояние одного робота в кластере."
+      },
+      "MultiRobotListResponseSystem": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "robots": {
+            "items": {
+              "$ref": "#/components/schemas/MultiRobotInfo"
+            },
+            "type": "array",
+            "title": "Robots"
+          }
+        },
+        "type": "object",
+        "title": "MultiRobotListResponseSystem",
+        "description": "Альтернатива control.MultiRobotListResponse — формат старого dashboard_node."
+      },
+      "PathListResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Paths"
+          }
+        },
+        "type": "object",
+        "title": "PathListResponse"
+      },
+      "PathRecorderCommand": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "record",
+              "stop",
+              "replay",
+              "pause",
+              "resume"
+            ],
+            "title": "Command"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-zA-Z0-9_\\-]*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Имя пути для load/save (только safe chars)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "PathRecorderCommand",
+        "description": "POST /api/path_recorder/command."
+      },
+      "PathRecorderPathResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "path": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Path"
+          },
+          "waypoints": {
+            "type": "integer",
+            "title": "Waypoints",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "PathRecorderPathResponse",
+        "description": "Текущие записанные waypoints (для проигрывания / отрисовки)."
+      },
+      "PatrolCommand": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "pause",
+              "resume"
+            ],
+            "title": "Command"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "PatrolCommand",
+        "description": "POST /api/patrol/command."
+      },
+      "PatrolWaypoint": {
+        "properties": {
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "theta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Theta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "PatrolWaypoint"
+      },
+      "PatrolWaypointsCommand": {
+        "properties": {
+          "waypoints": {
+            "items": {
+              "$ref": "#/components/schemas/PatrolWaypoint"
+            },
+            "type": "array",
+            "title": "Waypoints"
+          }
+        },
+        "type": "object",
+        "required": [
+          "waypoints"
+        ],
+        "title": "PatrolWaypointsCommand",
+        "description": "POST /api/patrol/waypoints."
+      },
+      "PlannedPathResponse": {
+        "properties": {
+          "waypoints": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Waypoints",
+            "description": "[[x, y], ...] в мировых координатах"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "PlannedPathResponse"
+      },
+      "PoseResponse": {
+        "properties": {
+          "x": {
+            "type": "number",
+            "title": "X",
+            "default": 0.0
+          },
+          "y": {
+            "type": "number",
+            "title": "Y",
+            "default": 0.0
+          },
+          "yaw": {
+            "type": "number",
+            "title": "Yaw",
+            "description": "Курс в радианах",
+            "default": 0.0
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "PoseResponse",
+        "description": "Composite OK + RobotPose поля для /api/robot/pose."
+      },
+      "PrecisionDriveCommand": {
+        "properties": {
+          "scenario": {
+            "type": "string",
+            "enum": [
+              "cross",
+              "square",
+              "line",
+              "zigzag",
+              "goto"
+            ],
+            "title": "Scenario"
+          },
+          "target_x": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target X"
+          },
+          "target_y": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Y"
+          },
+          "target_theta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Theta"
+          },
+          "distance_cm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Cm"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario"
+        ],
+        "title": "PrecisionDriveCommand",
+        "description": "POST /api/precision_drive/command."
+      },
+      "PresetInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "angles": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Angles"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "PresetInfo",
+        "description": "Один пресет позы (head или arm)."
+      },
+      "PresetListResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "presets": {
+            "items": {
+              "$ref": "#/components/schemas/PresetInfo"
+            },
+            "type": "array",
+            "title": "Presets"
+          }
+        },
+        "type": "object",
+        "title": "PresetListResponse"
+      },
+      "PresetLoadCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "PresetLoadCommand",
+        "description": "Загрузить пресет по имени."
+      },
+      "PresetSaveCommand": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_\\-]+$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "PresetSaveCommand",
+        "description": "Сохранить текущую позу как пресет (Pi берёт текущие углы)."
+      },
+      "SensorsResponse": {
+        "properties": {
+          "ultrasonic": {
+            "$ref": "#/components/schemas/UltrasonicData"
+          },
+          "imu": {
+            "$ref": "#/components/schemas/ImuData"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SensorsResponse"
+      },
+      "SlamMapResponse": {
+        "properties": {
+          "obstacles": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Obstacles",
+            "description": "[[wx, wy], ...] координаты occupied ячеек"
+          },
+          "trail": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Trail",
+            "description": "[[x, y], ...] последние ~500 точек одометрии"
+          },
+          "robot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Robot",
+            "description": "{x, y, theta}"
+          },
+          "detected_objects": {
+            "items": {
+              "$ref": "#/components/schemas/SlamObject"
+            },
+            "type": "array",
+            "title": "Detected Objects"
+          },
+          "info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MapInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stats": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Stats",
+            "description": "{occupied, free, unknown, detected_objects}"
+          },
+          "ts": {
+            "type": "number",
+            "title": "Ts",
+            "default": 0.0
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SlamMapResponse"
+      },
+      "SlamObject": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "class": {
+            "type": "string",
+            "title": "Class",
+            "default": "unknown"
+          },
+          "colour": {
+            "type": "string",
+            "title": "Colour",
+            "default": "unknown"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "conf": {
+            "type": "number",
+            "title": "Conf",
+            "default": 0.0
+          },
+          "dist": {
+            "type": "number",
+            "title": "Dist",
+            "default": -1.0
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 1
+          },
+          "ts": {
+            "type": "number",
+            "title": "Ts",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "x",
+          "y"
+        ],
+        "title": "SlamObject",
+        "description": "Объект из реестра slam_map_node."
+      },
+      "SpeedProfileCommand": {
+        "properties": {
+          "profile": {
+            "type": "string",
+            "enum": [
+              "slow",
+              "normal",
+              "fast"
+            ],
+            "title": "Profile"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "title": "SpeedProfileCommand"
+      },
+      "SpeedProfileResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "slow",
+              "normal",
+              "fast"
+            ],
+            "title": "Profile",
+            "default": "normal"
+          }
+        },
+        "type": "object",
+        "title": "SpeedProfileResponse"
+      },
+      "StatusResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "status": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "title": "StatusResponse",
+        "description": "Универсальная обёртка для GET .../status — отдаёт сырой dict состояния.\n\nИспользуется когда формат статуса от Pi-нод (calibration, mission,\nexplorer, path_recorder, ...) часто меняется и строгая типизация\nмешает развитию."
+      },
+      "StatusSnapshotResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "sim_time": {
+            "type": "number",
+            "title": "Sim Time",
+            "default": 0.0
+          },
+          "pose": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Pose"
+          },
+          "velocity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Velocity"
+          },
+          "robot_status": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Robot Status"
+          },
+          "speed_profile": {
+            "type": "string",
+            "title": "Speed Profile",
+            "default": "normal"
+          },
+          "sensors": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Sensors"
+          },
+          "battery": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Battery"
+          },
+          "temperature": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Temperature"
+          },
+          "watchdog": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Watchdog"
+          },
+          "actuators": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Actuators"
+          },
+          "detection": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detection"
+          },
+          "map": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Map"
+          },
+          "control": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Control"
+          },
+          "camera": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Camera"
+          },
+          "system": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "System"
+          }
+        },
+        "type": "object",
+        "title": "StatusSnapshotResponse",
+        "description": "GET /api/status — атомарный snapshot всего state.\n\nСтруктура динамическая (см. DashboardState.snapshot()), фронт берёт\nнужные поля. Не типизируем строго — снапшот часто меняется."
+      },
+      "TTSSpeakCommand": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TTSSpeakCommand"
+      },
+      "TTSToggleCommand": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "TTSToggleCommand"
+      },
+      "TemperatureResponse": {
+        "properties": {
+          "value": {
+            "type": "number",
+            "title": "Value",
+            "description": "Температура. -1 = нет данных",
+            "default": -1.0
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit",
+            "default": "C"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "TemperatureResponse"
+      },
+      "ToggleCommand": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "ToggleCommand",
+        "description": "Универсальный POST .../toggle body."
+      },
+      "UltrasonicData": {
+        "properties": {
+          "range_m": {
+            "type": "number",
+            "title": "Range M",
+            "description": "Дистанция в метрах. -1 = sensor error",
+            "default": 2.0
+          },
+          "age_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age S",
+            "description": "Возраст показания (сек) — если > 1.0, считать stale"
+          }
+        },
+        "type": "object",
+        "title": "UltrasonicData",
+        "description": "HC-SR04 показание дистанции."
+      },
+      "UltrasonicResponse": {
+        "properties": {
+          "range_m": {
+            "type": "number",
+            "title": "Range M",
+            "description": "Дистанция в метрах. -1 = sensor error",
+            "default": 2.0
+          },
+          "age_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age S",
+            "description": "Возраст показания (сек) — если > 1.0, считать stale"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "UltrasonicResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "Vec3": {
+        "properties": {
+          "x": {
+            "type": "number",
+            "title": "X",
+            "default": 0.0
+          },
+          "y": {
+            "type": "number",
+            "title": "Y",
+            "default": 0.0
+          },
+          "z": {
+            "type": "number",
+            "title": "Z",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "Vec3",
+        "description": "3D вектор (для accel, gyro)."
+      },
+      "VelocityCommand": {
+        "properties": {
+          "linear": {
+            "type": "number",
+            "title": "Linear",
+            "description": "Линейная скорость м/с (X в локальной СК)",
+            "default": 0.0
+          },
+          "angular": {
+            "type": "number",
+            "title": "Angular",
+            "description": "Угловая скорость рад/с",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "VelocityCommand",
+        "description": "POST /api/robot/velocity body."
+      },
+      "VelocityDetail": {
+        "properties": {
+          "linear_x": {
+            "type": "number",
+            "title": "Linear X",
+            "default": 0.0
+          },
+          "linear_y": {
+            "type": "number",
+            "title": "Linear Y",
+            "default": 0.0
+          },
+          "angular_z": {
+            "type": "number",
+            "title": "Angular Z",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "VelocityDetail",
+        "description": "Линейная X/Y и угловая Z составляющие скорости."
+      },
+      "VelocityResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "estimated": {
+            "$ref": "#/components/schemas/VelocityDetail"
+          },
+          "commanded": {
+            "$ref": "#/components/schemas/VelocityDetail"
+          }
+        },
+        "type": "object",
+        "title": "VelocityResponse",
+        "description": "GET /api/robot/velocity → estimated + commanded блоки."
+      },
+      "ZoneCreateCommand": {
+        "properties": {
+          "x1": {
+            "type": "number",
+            "title": "X1"
+          },
+          "y1": {
+            "type": "number",
+            "title": "Y1"
+          },
+          "x2": {
+            "type": "number",
+            "title": "X2"
+          },
+          "y2": {
+            "type": "number",
+            "title": "Y2"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x1",
+          "y1",
+          "x2",
+          "y2"
+        ],
+        "title": "ZoneCreateCommand",
+        "description": "POST /api/zones."
+      },
+      "ZoneCreatedResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "zone": {
+            "$ref": "#/components/schemas/ForbiddenZone"
+          }
+        },
+        "type": "object",
+        "required": [
+          "zone"
+        ],
+        "title": "ZoneCreatedResponse",
+        "description": "Ответ POST /zones — созданная зона + ok-флаг."
+      },
+      "ZonesResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "zones": {
+            "items": {
+              "$ref": "#/components/schemas/ForbiddenZone"
+            },
+            "type": "array",
+            "title": "Zones"
+          }
+        },
+        "type": "object",
+        "title": "ZonesResponse"
+      }
+    }
+  }
+}

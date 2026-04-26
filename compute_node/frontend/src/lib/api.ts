@@ -1,3 +1,17 @@
+/**
+ * Legacy API wrapper — fetch к /api/* (без /v1/).
+ *
+ * DEPRECATED. Backend (#7, 2026-04) ввёл /api/v1/ + автогенерированный
+ * TypeScript-клиент в `src/api/`. Старые `/api/*` URL'ы продолжают
+ * работать через deprecated-alias middleware (HTTP header
+ * `Deprecation: true; sunset="2026-12-31"`), но новые компоненты
+ * должны использовать сервисы:
+ *
+ *   import { RobotService, MapsService } from '@/api'
+ *   await RobotService.setVelocityApiV1RobotVelocityPost({ requestBody: { linear, angular } })
+ *
+ * Эта обёртка будет удалена в #6 (Zustand миграция фронта).
+ */
 const BASE = ''
 
 async function post(url: string, body?: object) {
