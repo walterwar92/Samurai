@@ -13,61 +13,76 @@
  *   useRobotStore               — полный state + actions (избегайте, лучше селектор)
  *   useRobotState() (legacy)    — selector(s => s.state) для обратной совместимости
  *
- * Этот файл (Z1) — пустой скелет: state-данные, типы actions. SocketIO
- * подключается в Z2 (action `connect`/`disconnect`). Гранулярные селекторы
- * добавляются в Z4.
+ * SocketIO: один singleton-сокет на жизнь приложения, создаётся в connect().
+ * Backend (compute_node/dashboard) emit'ит 'state_update' каждые 100 ms.
  */
+import { io, type Socket } from 'socket.io-client'
 import { create } from 'zustand'
 
 import type { RobotState } from '@/types/robot'
 
-// ── Initial state ──────────────────────────────────────────────────────
+// ── Module-level singleton socket ──────────────────────────────────────
 //
-// `state` — последний `state_update` от backend через SocketIO. null если
-// ещё не пришёл (на старте приложения / при reconnect).
-//
-// `connected` — статус сокета (для индикатора в Header).
+// SocketIO держим вне store: store хранит только данные/статус, а сокет —
+// IO-ресурс. Это упрощает SSR и тестирование (mock IO без mock store).
+let socket: Socket | null = null
 
 interface RobotStoreState {
   /** Последний snapshot от backend (через SocketIO state_update). */
   state: RobotState | null
-  /** Подключение к SocketIO */
+  /** Подключён ли SocketIO к серверу. */
   connected: boolean
 
   // ── Actions ────────────────────────────────────────────────────────
-  /** Инициализировать SocketIO (одно подключение на жизнь приложения). */
+  /**
+   * Инициализировать SocketIO. Идемпотентно: повторные вызовы no-op
+   * (нужно чтобы StrictMode double-invoke не открывал второй коннект).
+   */
   connect: () => void
   /** Закрыть SocketIO (вызывается при unmount App.tsx). */
   disconnect: () => void
-  /**
-   * Послать voice-подобную команду на бэк (`send_command` event).
-   * Тонкая обёртка над socket.emit — backend интерпретирует как голосовую.
-   */
+  /** Послать voice-подобную команду (`send_command` event). */
   send: (text: string) => void
   /** Reset симулятора (no-op в robot-mode). */
   resetSim: () => void
 }
 
-export const useRobotStore = create<RobotStoreState>((set, _get) => ({
+export const useRobotStore = create<RobotStoreState>((set) => ({
   state: null,
   connected: false,
 
-  // ── Stub actions (заполнятся в Z2) ─────────────────────────────────
   connect: () => {
-    // SocketIO connection created in Z2. На текущей фазе только обнуляем
-    // connected в false при двойном вызове.
-    set({ connected: false })
+    if (socket !== null) return  // Idempotent
+    const s = io({ transports: ['websocket', 'polling'] })
+    s.on('connect', () => set({ connected: true }))
+    s.on('disconnect', () => set({ connected: false }))
+    s.on('state_update', (data: RobotState) => set({ state: data }))
+    socket = s
   },
 
   disconnect: () => {
+    if (socket === null) return
+    socket.disconnect()
+    socket = null
     set({ state: null, connected: false })
   },
 
-  send: (_text: string) => {
-    // Будет publish в socket.emit('send_command', { text }) в Z2
+  send: (text: string) => {
+    socket?.emit('send_command', { text })
   },
 
   resetSim: () => {
-    // Будет socket.emit('reset_sim', {}) в Z2
+    socket?.emit('reset_sim', {})
   },
 }))
+
+/**
+ * Удобные actions без хука. Используем когда нужно вызвать action
+ * вне React-компонента (например в module-level helper).
+ */
+export const robotActions = {
+  connect: () => useRobotStore.getState().connect(),
+  disconnect: () => useRobotStore.getState().disconnect(),
+  send: (text: string) => useRobotStore.getState().send(text),
+  resetSim: () => useRobotStore.getState().resetSim(),
+}
