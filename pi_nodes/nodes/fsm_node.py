@@ -34,6 +34,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
 
 _MAX_CMD_LEN = 200
+# Минимальная уверенность LLM для исполнения voice/intent (#2, 2026-04).
+# Ниже порога игнорируем intent — regex-парсинг voice_command отработает
+# как обычно (LLM offline / не уверена).
+_INTENT_MIN_CONFIDENCE = 0.5
 
 _P_CALLING = re.compile(r'вызови.{0,20}машин')
 _P_GRAB    = re.compile(r'получи|возьми|найди')
@@ -94,6 +98,11 @@ class FSMNode(MqttNode):
 
         # Subscribers
         self.subscribe('voice_command', self._voice_cb, qos=1)
+        # voice/intent — структурированный intent от compute_node/llm_voice
+        # (Qwen 2.5 7B через Ollama). Дублирует voice_command, но точнее
+        # парсит сложные фразы. Если confidence < threshold → игнорим
+        # (regex от _voice_cb отработает).
+        self.subscribe('voice/intent', self._intent_cb, qos=1)
         self.subscribe('ball_detection', self._ball_cb)
         self.subscribe('range', self._range_cb)
         self.subscribe('call_robot', self._call_recv_cb, qos=1)
@@ -207,6 +216,74 @@ class FSMNode(MqttNode):
             self._transition(target)
         else:
             self.log_warn('Unknown transition target: %s', target)
+
+    def _intent_cb(self, topic, data):
+        """Структурированный intent от LLM (compute_node/llm_voice, #2).
+
+        Подписан параллельно с voice_command. Если confidence высокий —
+        выполняет action. Иначе игнорируем (regex от voice_command
+        уже отработал).
+        """
+        if not isinstance(data, dict):
+            try:
+                data = json.loads(str(data))
+            except (json.JSONDecodeError, TypeError):
+                return
+        try:
+            confidence = float(data.get('confidence', 0.0))
+        except (ValueError, TypeError):
+            confidence = 0.0
+        if confidence < _INTENT_MIN_CONFIDENCE:
+            return  # тихо — пусть regex-fallback из _voice_cb отработает
+
+        action = str(data.get('action', 'idle'))
+        colour = data.get('colour') or ''
+        direction = data.get('direction')
+        raw = str(data.get('raw_text', ''))[:_MAX_CMD_LEN]
+        self.log_info(
+            'LLM intent: action=%s colour=%s dir=%s conf=%.2f raw="%s"',
+            action, colour, direction, confidence, raw,
+        )
+
+        if action == 'grab':
+            self._target_action = 'grab'
+            self._target_colour = colour
+            self._transition(State.SEARCHING)
+        elif action == 'stop':
+            self._transition(State.IDLE)
+            self._pub_cmd_vel(0.0, 0.0)
+            self._pub_cmd_vel_manual(0.0, 0.0)
+        elif action == 'home':
+            self._transition(State.RETURNING)
+        elif action == 'patrol':
+            self._transition(State.PATROLLING)
+        elif action == 'follow':
+            self._transition(State.FOLLOWING)
+        elif action == 'record_path':
+            self.publish('path_recorder/command', 'record', qos=1)
+        elif action == 'replay_path':
+            self._transition(State.PATH_REPLAY)
+        elif action == 'reset_position':
+            self.publish('reset_position', 'reset', qos=1)
+        elif action == 'call_other_robot':
+            self._transition(State.CALLING)
+        elif action == 'move':
+            speeds = {
+                'forward': (0.15, 0.0),
+                'back':    (-0.15, 0.0),
+                'left':    (0.0, 0.5),
+                'right':   (0.0, -0.5),
+            }
+            if direction in speeds:
+                lin, ang = speeds[direction]
+                self._pub_cmd_vel_manual(lin, ang)
+        elif action == 'transition':
+            target = str(data.get('target_state', '')).strip().upper()
+            if target in _ALL_STATES:
+                if target == State.IDLE:
+                    self._pub_cmd_vel(0.0, 0.0)
+                self._transition(target)
+        # action == 'idle' / unknown — игнорируем
 
     def _extract_colour(self, text: str) -> str:
         text_norm = text.replace('ё', 'е')
