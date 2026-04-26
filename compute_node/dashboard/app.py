@@ -142,6 +142,7 @@ def create_app(
     app.include_router(control.path_recorder_router, prefix='/api/v1/path_recorder')
     app.include_router(control.precision_router, prefix='/api/v1/precision_drive')
     app.include_router(control.calibration_router, prefix='/api/v1/calibration')
+    app.include_router(control.path_planner_router, prefix='/api/v1/path_planner')
     app.include_router(control.mission_router, prefix='/api/v1/mission')
     app.include_router(control.explorer_router, prefix='/api/v1/explorer')
     app.include_router(control.tts_router, prefix='/api/v1/tts')

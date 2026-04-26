@@ -15,6 +15,9 @@ import type { FollowMeCommand } from '../models/FollowMeCommand';
 import type { MissionCommand } from '../models/MissionCommand';
 import type { MissionListResponse } from '../models/MissionListResponse';
 import type { PathListResponse } from '../models/PathListResponse';
+import type { PathPlannerGoalCommand } from '../models/PathPlannerGoalCommand';
+import type { PathPlannerPathResponse } from '../models/PathPlannerPathResponse';
+import type { PathPlannerStatusResponse } from '../models/PathPlannerStatusResponse';
 import type { PathRecorderCommand } from '../models/PathRecorderCommand';
 import type { PathRecorderPathResponse } from '../models/PathRecorderPathResponse';
 import type { PatrolCommand } from '../models/PatrolCommand';
@@ -298,6 +301,53 @@ export class ControlService {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/v1/calibration/coefficients',
+        });
+    }
+    /**
+     * Path Planner Goto
+     * Запросить планирование A* до точки (x, y) в мировых координатах.
+     *
+     * Path planner живёт на ноутбуке (compute_node/path_planner) и публикует
+     * результат в samurai/{robot_id}/path_planner/path. Этот endpoint
+     * отправляет goal — нода-планировщик асинхронно посчитает путь.
+     * @returns CommandAck Successful Response
+     * @throws ApiError
+     */
+    public static pathPlannerGotoApiV1PathPlannerGotoPost({
+        requestBody,
+    }: {
+        requestBody: PathPlannerGoalCommand,
+    }): CancelablePromise<CommandAck> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/path_planner/goto',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Path Planner Path
+     * @returns PathPlannerPathResponse Successful Response
+     * @throws ApiError
+     */
+    public static pathPlannerPathApiV1PathPlannerPathGet(): CancelablePromise<PathPlannerPathResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/path_planner/path',
+        });
+    }
+    /**
+     * Path Planner Status
+     * @returns PathPlannerStatusResponse Successful Response
+     * @throws ApiError
+     */
+    public static pathPlannerStatusApiV1PathPlannerStatusGet(): CancelablePromise<PathPlannerStatusResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/path_planner/status',
         });
     }
     /**

@@ -132,6 +132,13 @@ class _ControlBlock:
     mission_list: list[str] = field(default_factory=list)
     obstacle_avoidance_enabled: bool = True
     collision_guard_enabled: bool = True
+    # Path planner (#3, 2026-04) — A* нода на ноутбуке.
+    # path_planner_path: список waypoints [[x,y], ...] последнего планирования.
+    # path_planner_status: dict {state, message?, planning_ms?}
+    # path_planner_goal: текущая цель [x, y] или None если не задана.
+    path_planner_path: list = field(default_factory=list)
+    path_planner_status: dict = field(default_factory=dict)
+    path_planner_goal: Optional[list] = None
 
 
 @dataclass

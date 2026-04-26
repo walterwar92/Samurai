@@ -58,6 +58,9 @@ from ..schemas.control import (
     MissionCommand,
     MissionListResponse,
     PathListResponse,
+    PathPlannerGoalCommand,
+    PathPlannerPathResponse,
+    PathPlannerStatusResponse,
     PathRecorderCommand,
     PathRecorderPathResponse,
     PatrolCommand,
@@ -256,6 +259,46 @@ async def calibration_coefficients(state: StateDep) -> CalibrationCoefficientsRe
         if not coeffs:
             coeffs = {'name': active} if active else {}
     return CalibrationCoefficientsResponse(coefficients=coeffs)
+
+
+# ── Path planner (#3, 2026-04) ──────────────────────────────────────────
+path_planner_router = APIRouter()
+
+
+@path_planner_router.post('/goto', response_model=CommandAck, tags=['control'])
+async def path_planner_goto(
+    cmd: PathPlannerGoalCommand, mqtt: MQTTDep
+) -> CommandAck:
+    """Запросить планирование A* до точки (x, y) в мировых координатах.
+
+    Path planner живёт на ноутбуке (compute_node/path_planner) и публикует
+    результат в samurai/{robot_id}/path_planner/path. Этот endpoint
+    отправляет goal — нода-планировщик асинхронно посчитает путь.
+    """
+    mqtt.publish('path_planner/goal', {'x': cmd.x, 'y': cmd.y}, qos=1)
+    return CommandAck()
+
+
+@path_planner_router.get('/path', response_model=PathPlannerPathResponse,
+                         tags=['control'])
+async def path_planner_path(state: StateDep) -> PathPlannerPathResponse:
+    with state.lock:
+        return PathPlannerPathResponse(
+            waypoints=list(state.control.path_planner_path),
+            goal=state.control.path_planner_goal,
+        )
+
+
+@path_planner_router.get('/status', response_model=PathPlannerStatusResponse,
+                         tags=['control'])
+async def path_planner_status(state: StateDep) -> PathPlannerStatusResponse:
+    with state.lock:
+        st = dict(state.control.path_planner_status)
+    return PathPlannerStatusResponse(
+        state=st.get('state', 'idle'),
+        message=st.get('message'),
+        planning_ms=st.get('planning_ms'),
+    )
 
 
 # ── Mission ─────────────────────────────────────────────────────────────
