@@ -50,6 +50,9 @@ NODE_REGISTRY = {
     'head':         'pi_nodes.nodes.head_node.HeadNode',
     'arm':          'pi_nodes.nodes.arm_node.ArmNode',
     'fsm':          'pi_nodes.nodes.fsm_node.FSMNode',
+    # Behaviour-Tree альтернатива fsm (#1, 2026-04). Не запускать одновременно
+    # с 'fsm' — оба публикуют cmd_vel. Включается только через --nodes.
+    'fsm_bt':       'pi_nodes.nodes.fsm_bt_node.FSMBTNode',
     'watchdog':     'pi_nodes.nodes.watchdog_node.WatchdogNode',
     'voice':        'pi_nodes.nodes.voice_node.VoiceNode',
     'fallback_nav': 'pi_nodes.nodes.fallback_nav_node.FallbackNavNode',
