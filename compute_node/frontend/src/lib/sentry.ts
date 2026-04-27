@@ -22,17 +22,34 @@ interface SentryInitOpts {
   tracesSampleRate?: number
 }
 
+// Minimal shape we use from @sentry/react. Defining it locally lets us avoid
+// taking a hard dependency on the SDK's type declarations — TypeScript would
+// otherwise refuse to compile when the SDK isn't installed (the default), and
+// CI doesn't install it. Runtime behaviour stays identical: when the dynamic
+// import succeeds, we get the real module that satisfies this interface.
+interface SentryModule {
+  init(opts: {
+    dsn: string
+    environment?: string
+    tracesSampleRate?: number
+    sendDefaultPii?: boolean
+  }): void
+}
+
 export async function initSentry(opts: SentryInitOpts = {}): Promise<void> {
   const dsn = opts.dsn ?? import.meta.env.VITE_SENTRY_DSN
   if (!dsn) return
 
-  let mod: typeof import('@sentry/react') | undefined
+  let mod: SentryModule | undefined
   try {
     // Dynamic import — bundler can split this into a chunk that's only
     // fetched when VITE_SENTRY_DSN is non-empty at build time. Wrapped in
     // try/catch so a missing dep at runtime degrades to "no Sentry"
-    // instead of a hard crash.
-    mod = await import('@sentry/react')
+    // instead of a hard crash. The module name is built at runtime via a
+    // string variable so neither tsc nor vite tries to resolve it at build
+    // time when the package is absent.
+    const sentryPkg = '@sentry/react'
+    mod = (await import(/* @vite-ignore */ sentryPkg)) as SentryModule
   } catch {
     // SDK not installed; quietly do nothing.
     // eslint-disable-next-line no-console

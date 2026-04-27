@@ -11,9 +11,9 @@ interface PatrolPanelProps {
 export function PatrolPanel({ patrol }: PatrolPanelProps) {
   const [waypoints, setWaypoints] = useState<{ x: number; y: number; yaw: number }[]>([])
 
-  const addWaypoint = (x: number, y: number) => {
-    setWaypoints((prev) => [...prev, { x, y, yaw: 0 }])
-  }
+  // NOTE: addWaypoint() previously called from a click-on-map handler; the
+  // map UI now goes through useZoneDrawing instead. The setter is still used
+  // by removeWaypoint and the future sendWaypoints flow.
 
   const removeWaypoint = (idx: number) => {
     setWaypoints((prev) => prev.filter((_, i) => i !== idx))

@@ -47,13 +47,6 @@ const SCENARIOS = [
   { id: 'zigzag',  label: 'Зигзаг',  icon: '⚡', desc: 'Зигзаг 4 отрезка' },
 ]
 
-const DIRECTIONS = [
-  { id: 'forward',  label: '▲',  title: 'Вперёд' },
-  { id: 'left',     label: '◄',  title: 'Влево' },
-  { id: 'backward', label: '▼',  title: 'Назад' },
-  { id: 'right',    label: '►',  title: 'Вправо' },
-]
-
 const DISTANCES = [10, 20, 30, 50, 100]
 
 /* ── State helpers ── */

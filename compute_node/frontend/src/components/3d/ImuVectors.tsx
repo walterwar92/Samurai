@@ -5,6 +5,11 @@ import * as THREE from 'three'
 interface ImuVectorsProps {
   posX: number
   posY: number
+  /**
+   * Robot yaw (rad) — currently not used in vector orientation (vectors are
+   * drawn in world frame), but kept in the API for future use when the
+   * accel/gyro arrows should rotate with the robot body.
+   */
   yaw: number
   accel: [number, number, number]  // [ax, ay, az] m/s²
   gyro: [number, number, number]   // [gx, gy, gz] rad/s
@@ -12,12 +17,11 @@ interface ImuVectorsProps {
   showGyro?: boolean
 }
 
-const DEG2RAD = Math.PI / 180
 const ACCEL_SCALE = 0.02   // visual scale for accel vector
 const GYRO_SCALE = 0.05    // visual scale for gyro rings
 
 export function ImuVectors({
-  posX, posY, yaw,
+  posX, posY,
   accel, gyro,
   showAccel = true, showGyro = true,
 }: ImuVectorsProps) {
