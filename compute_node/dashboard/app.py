@@ -37,6 +37,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+# Optional Sentry integration (#73). Only initialised when SENTRY_DSN env
+# var is set — keeps a fresh dev clone free of any 3rd-party telemetry,
+# but a single env var is enough to turn it on in production.
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    _HAS_SENTRY = True
+except ImportError:
+    _HAS_SENTRY = False
+
 # slowapi is optional — without it, dashboard runs unchanged. With it,
 # write-heavy POST/PUT/DELETE endpoints get a global rate limit so a runaway
 # script or buggy client can't DoS the robot's command pipeline.
@@ -70,6 +81,49 @@ log = logging.getLogger(__name__)
 
 # Sunset для deprecated /api/* endpoints — фронт должен мигрировать до этой даты.
 DEPRECATION_SUNSET = '2026-12-31'
+
+
+def _maybe_init_sentry() -> None:
+    """Wire up Sentry error reporting if SENTRY_DSN is set (#73).
+
+    Default-disabled. Enable by exporting:
+        SENTRY_DSN=https://...@sentry.io/123
+        SENTRY_ENV=prod                  # optional, default 'dev'
+        SENTRY_TRACES_SAMPLE_RATE=0.1    # optional perf sampling
+    """
+    if not _HAS_SENTRY:
+        return
+    dsn = os.environ.get('SENTRY_DSN', '').strip()
+    if not dsn:
+        return
+    env = os.environ.get('SENTRY_ENV', 'dev')
+    try:
+        traces_sample_rate = float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0'))
+    except ValueError:
+        traces_sample_rate = 0.0
+    try:
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=env,
+            traces_sample_rate=traces_sample_rate,
+            # Capture unhandled exceptions but suppress noisy INFO/DEBUG.
+            integrations=[
+                FastApiIntegration(),
+                LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+            ],
+            # Don't accidentally exfiltrate PII (joystick coordinates, MQTT
+            # payloads, etc.) — Sentry's default sends some user-identifying
+            # data; turn it off by default.
+            send_default_pii=False,
+        )
+        log.info('Sentry initialised (env=%s, traces=%.2f)', env, traces_sample_rate)
+    except Exception as exc:  # noqa: BLE001
+        log.warning('Sentry init failed: %s', exc)
+
+
+# Initialise once at import time (idempotent — sentry_sdk.init is safe to
+# call again, but the env var is read once).
+_maybe_init_sentry()
 
 
 def _find_static_dir() -> Optional[str]:

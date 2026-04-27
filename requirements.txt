@@ -59,6 +59,8 @@ python-multipart>=0.0.9         # Для form-data в FastAPI
 pyserial>=3.5                   # Samcan USB bridge (Arduino Uno)
 httpx>=0.27                     # Dashboard → Samcan bridge proxy
 slowapi>=0.1.9                  # Dashboard write rate limiting (#58)
+# sentry-sdk опционален: установлен → активируется через SENTRY_DSN env (#73).
+sentry-sdk[fastapi]>=2.0; python_version >= "3.10"
 # flask и flask-socketio оставлены для совместимости (simulator.py)
 flask>=3.0.0
 flask-cors
