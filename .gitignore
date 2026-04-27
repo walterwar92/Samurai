@@ -113,6 +113,9 @@ logs/
 # Platform-specific (arm64 vs x86_64 wheel hashes) — never commit.
 requirements.lock
 
+# --- MkDocs build output (#67) ---
+site/
+
 # --- Claude Code ---
 .claude/
 

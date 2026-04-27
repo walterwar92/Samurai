@@ -1,0 +1,76 @@
+# MkDocs configuration (#67)
+#
+# Build:    pip install mkdocs mkdocs-material && mkdocs serve
+# Output:   ./site/  (gitignored)
+# Deploy:   `mkdocs gh-deploy` to push to gh-pages branch on GitHub
+#
+# The 15-chapter LaTeX technical report (latex_doc/) stays as the canonical
+# academic source — MkDocs is for browsable, search-friendly developer docs.
+# Migration of LaTeX chapters → MkDocs is a separate effort tracked in
+# memory/improvements_backlog.md (#67 follow-ups).
+
+site_name: Samurai Robot
+site_description: Documentation for the Samurai tracked robot project
+site_url: https://walterwar92.github.io/Samurai/
+repo_url: https://github.com/walterwar92/Samurai
+repo_name: walterwar92/Samurai
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: red
+      accent: red
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - scheme: default
+      primary: red
+      accent: red
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.highlight:
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Hardware:
+      - USB on Windows: usb-connect-windows.md
+  - Reference:
+      - Architecture: architecture.md
+      - First-time setup: first-run.md
