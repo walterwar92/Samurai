@@ -144,7 +144,24 @@ def cfg(key: str, default=None):
     """
     Dot-notation lookup, e.g. cfg('network.dashboard_port', 5000).
     Falls back to *default* if config.yaml is missing or key not found.
+
+    Environment-variable override (#55):
+        Any setting can be overridden by an env var built from the dotted key:
+            mqtt.broker → SAMURAI_MQTT_BROKER
+            network.dashboard_port → SAMURAI_NETWORK_DASHBOARD_PORT
+            voice.vad_aggressiveness → SAMURAI_VOICE_VAD_AGGRESSIVENESS
+        Useful for one-off overrides at startup (`SAMURAI_MQTT_PORT=1884
+        ./samurai.sh robot`) and for systemd unit overrides without
+        editing config.yaml.
+
+    Type coercion:
+        The ENV value is a string. We try int → float → bool → str in that
+        order. Booleans accept true/false/yes/no/on/off (case-insensitive).
     """
+    env_key = 'SAMURAI_' + key.upper().replace('.', '_').replace('-', '_')
+    env_val = os.environ.get(env_key)
+    if env_val is not None:
+        return _coerce_env_value(env_val)
     _load()
     parts = key.split('.')
     node = _data
@@ -153,6 +170,31 @@ def cfg(key: str, default=None):
             return default
         node = node[p]
     return node
+
+
+def _coerce_env_value(raw: str):
+    """Best-effort coercion of an ENV string into int/float/bool/str."""
+    s = raw.strip()
+    if s == '':
+        return s
+    # int
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    # float
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    # bool
+    lower = s.lower()
+    if lower in ('true', 'yes', 'on'):
+        return True
+    if lower in ('false', 'no', 'off'):
+        return False
+    # fallback — string as-is
+    return s
 
 
 # ── MQTT credentials resolver ────────────────────────────────────────────────
