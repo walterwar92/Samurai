@@ -114,6 +114,18 @@ EOF
     chown -R "$user:$user" /var/lib/samurai
     log_ok "Создана /var/lib/samurai (owner=$user)"
 
+    # Установить logrotate-правило (если logrotate доступен)
+    local logrotate_src="$SCRIPT_DIR/samurai.logrotate"
+    if [[ -f "$logrotate_src" ]] && command -v logrotate >/dev/null 2>&1; then
+        # sed подставит реальный user (по умолчанию шаблон ссылается на pi)
+        sed "s/create 0644 pi pi/create 0644 $user $user/" \
+            "$logrotate_src" > /etc/logrotate.d/samurai
+        chmod 644 /etc/logrotate.d/samurai
+        log_ok "Установлен /etc/logrotate.d/samurai (rotate 7d, maxsize 50M)"
+    elif [[ -f "$logrotate_src" ]]; then
+        log_info "logrotate не установлен — пропуск config (manual-run logs не ротируются)"
+    fi
+
     # Какие unit'ы устанавливать
     local targets=()
     if [[ $# -eq 0 ]]; then
