@@ -36,6 +36,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+# slowapi is optional — without it, dashboard runs unchanged. With it,
+# write-heavy POST/PUT/DELETE endpoints get a global rate limit so a runaway
+# script or buggy client can't DoS the robot's command pipeline.
+try:
+    from slowapi import Limiter
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+    _HAS_SLOWAPI = True
+except ImportError:
+    Limiter = None  # type: ignore[assignment,misc]
+    RateLimitExceeded = Exception  # type: ignore[assignment,misc]
+    get_remote_address = None  # type: ignore[assignment]
+    _HAS_SLOWAPI = False
+
 from .mqtt_handlers import MQTTHandlers
 from .routers import (
     actuators,
@@ -100,6 +114,57 @@ def create_app(
         allow_methods=['*'],
         allow_headers=['*'],
     )
+
+    # ── Rate limiting (write verbs only) ──────────────────────────────
+    # Defence against runaway clients (buggy script, stuck retry loop) and
+    # a soft DoS protection on the command pipeline. Reads (GET) are NOT
+    # limited — the dashboard polls them aggressively by design.
+    #
+    # Implementation uses slowapi's MovingWindowRateLimiter directly rather
+    # than the framework's decorator/exception path because we want a
+    # global rule across all write endpoints, not per-route limits.
+    #
+    # Override via env vars:
+    #   SAMURAI_RATELIMIT_WRITES — e.g. "30/minute" (default)
+    #   SAMURAI_RATELIMIT=off    — disable entirely
+    if _HAS_SLOWAPI and os.environ.get('SAMURAI_RATELIMIT', 'on').lower() != 'off':
+        from limits import parse as _parse_limit
+        from limits.storage import MemoryStorage
+        from limits.strategies import MovingWindowRateLimiter
+
+        write_limit_str = os.environ.get('SAMURAI_RATELIMIT_WRITES', '30/minute')
+        try:
+            _limit_item = _parse_limit(write_limit_str)
+        except Exception as exc:
+            log.warning('Invalid SAMURAI_RATELIMIT_WRITES=%r (%s) — using 30/minute',
+                        write_limit_str, exc)
+            _limit_item = _parse_limit('30/minute')
+            write_limit_str = '30/minute'
+
+        _rate_storage = MemoryStorage()
+        _rate_strategy = MovingWindowRateLimiter(_rate_storage)
+
+        @app.middleware('http')
+        async def _rate_limit_writes(request: Request, call_next):
+            if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and \
+                    request.url.path.startswith('/api/'):
+                key = get_remote_address(request) or 'anonymous'
+                # `hit` returns True if the request fits inside the window,
+                # False if the limit has been exceeded.
+                if not _rate_strategy.hit(_limit_item, key):
+                    return JSONResponse(
+                        status_code=429,
+                        content={'error': 'rate limit exceeded',
+                                 'detail': f'limit={write_limit_str}'},
+                        headers={'Retry-After': '5'},
+                    )
+            return await call_next(request)
+
+        log.info('Rate limit active: %s on POST/PUT/PATCH/DELETE /api/*',
+                 write_limit_str)
+    elif not _HAS_SLOWAPI:
+        log.warning('slowapi not installed — rate limiting disabled. '
+                    'Run: pip install slowapi')
 
     # ── Deprecated /api/* → /api/v1/* alias middleware ────────────────
     # Старые URL переписываются на v1, ответ помечается Deprecation header.
