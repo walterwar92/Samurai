@@ -90,3 +90,4 @@ nav:
       - 'IMU calibration & filtering': algorithms/imu-calibration.md
       - 'SLAM map (log-odds occupancy)': algorithms/slam-map.md
       - 'PWM motor (PCA9685, slow-decay)': algorithms/pwm-motor.md
+      - 'Accelerometer position estimator': algorithms/accel-position.md
