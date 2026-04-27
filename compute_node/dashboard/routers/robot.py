@@ -22,8 +22,12 @@ import time
 
 from fastapi import APIRouter
 
+from pydantic import BaseModel, Field
+from typing import Literal
+
 from ..schemas.common import CommandAck
 from ..schemas.robot import (
+    OdometrySources,
     PoseResponse,
     SpeedProfileCommand,
     SpeedProfileResponse,
@@ -89,6 +93,52 @@ async def stop(state: StateDep, mqtt: MQTTDep) -> CommandAck:
         'ts': time.time(), 'source': 'dashboard', 'level': 'INFO',
         'text': 'emergency stop',
     })
+    return CommandAck()
+
+
+# ── Odometry sources / fusion ─────────────────────────────────────────
+class OdometrySourceCommand(BaseModel):
+    """POST /api/v1/robot/odometry/source body."""
+    source: Literal['wheel', 'imu', 'complementary', 'ekf']
+
+
+class OdometryAlphaCommand(BaseModel):
+    """POST /api/v1/robot/odometry/alpha body — complementary filter weight.
+    1.0 = wheel only, 0.0 = IMU only."""
+    alpha: float = Field(ge=0.0, le=1.0)
+
+
+class OdometrySourcesResponse(OdometrySources):
+    """GET /api/v1/robot/odometry/sources — все источники в текущем тике."""
+    pass
+
+
+@router.get('/odometry/sources', response_model=OdometrySourcesResponse,
+            tags=['robot'])
+async def get_odometry_sources(state: StateDep) -> OdometrySourcesResponse:
+    """Все источники позиции (wheel/imu) + активный режим — для дашборда."""
+    with state.lock:
+        s = state.robot.odom_sources
+    return OdometrySourcesResponse(**s.model_dump())
+
+
+@router.post('/odometry/source', response_model=CommandAck, tags=['robot'])
+async def set_odometry_source(
+    cmd: OdometrySourceCommand,
+    mqtt: MQTTDep,
+) -> CommandAck:
+    """Переключить активный источник fused-позиции на лету."""
+    mqtt.publish('odometry/source', cmd.source, qos=1)
+    return CommandAck()
+
+
+@router.post('/odometry/alpha', response_model=CommandAck, tags=['robot'])
+async def set_odometry_alpha(
+    cmd: OdometryAlphaCommand,
+    mqtt: MQTTDep,
+) -> CommandAck:
+    """Выставить alpha для complementary mode (0..1)."""
+    mqtt.publish('odometry/fusion/alpha', {'alpha': cmd.alpha}, qos=1)
     return CommandAck()
 
 

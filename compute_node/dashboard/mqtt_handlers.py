@@ -29,7 +29,7 @@ import paho.mqtt.client as mqtt_client
 
 from .schemas.actuators import ArmState, ClawState, HeadState, LedState
 from .schemas.maps import MapInfo, SlamMapData, SlamObject
-from .schemas.robot import RobotPose, RobotStatus, VelocityDetail
+from .schemas.robot import OdometrySources, RobotPose, RobotStatus, VelocityDetail
 from .schemas.sensors import (
     BatteryStatus,
     ImuData,
@@ -298,6 +298,13 @@ class MQTTHandlers:
         vx = d.get('vx', 0.0)
         vz = d.get('vz', 0.0)
         stationary = d.get('stationary', False)
+        # x/y из payload — в сантиметрах, конвертируем в метры для UI.
+        # Дополнительные поля (x_wheel, x_imu, ...) — diagnostic для
+        # сравнения wheel/IMU/complementary/EKF на дашборде (этап 1A).
+        x_wheel_cm = d.get('x_wheel', d.get('x', 0.0))
+        y_wheel_cm = d.get('y_wheel', d.get('y', 0.0))
+        x_imu_cm = d.get('x_imu', 0.0)
+        y_imu_cm = d.get('y_imu', 0.0)
         with self._state.lock:
             self._state.robot.pose = RobotPose(
                 x=round(x, 3), y=round(y, 3), yaw=round(theta, 3))
@@ -308,6 +315,16 @@ class MQTTHandlers:
             )
             self._state.robot.stationary = bool(stationary)
             self._state.robot.mqtt_odom_ts = time.time()
+            self._state.robot.odom_sources = OdometrySources(
+                x_wheel=round(x_wheel_cm / 100.0, 4),
+                y_wheel=round(y_wheel_cm / 100.0, 4),
+                x_imu=round(x_imu_cm / 100.0, 4),
+                y_imu=round(y_imu_cm / 100.0, 4),
+                vx_imu=round(d.get('vx_imu', 0.0), 3),
+                vy_imu=round(d.get('vy_imu', 0.0), 3),
+                stationary_imu=bool(d.get('stationary_imu', True)),
+                source=str(d.get('source', 'wheel')),
+            )
 
     def _h_claw_state(self, payload: bytes):
         try:

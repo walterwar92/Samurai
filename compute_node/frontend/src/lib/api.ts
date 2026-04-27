@@ -227,6 +227,18 @@ export const api = {
   resetPosition: () =>
     post('/api/robot/reset_position'),
 
+  // Odometry source / fusion (etap 1B/1C)
+  // Pi-side motor_node.PositionFusion can run in 4 modes — switch live to
+  // compare wheel/IMU/complementary/EKF on the same recorded run.
+  setOdometrySource: (source: 'wheel' | 'imu' | 'complementary' | 'ekf') =>
+    post('/api/v1/robot/odometry/source', { source }),
+
+  setOdometryAlpha: (alpha: number) =>
+    post('/api/v1/robot/odometry/alpha', { alpha }),
+
+  getOdometrySources: () =>
+    get('/api/v1/robot/odometry/sources'),
+
   // Path recorder
   pathRecorderCommand: (command: string) =>
     post('/api/path_recorder/command', { command }),
