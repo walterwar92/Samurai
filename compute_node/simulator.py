@@ -154,66 +154,41 @@ class SimArena(_ExternalSimArena):  # type: ignore[misc]
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimRobot — 2D robot physics
+# SimRobot — extracted to compute_node/sim_robot.py (#44 phase 3).
+# Re-exported with constructor pinned to legacy module-level constants
+# so existing call sites work unchanged.
 # ═════════════════════════════════════════════════════════════════
 
-class SimRobot:
+from compute_node.sim_robot import SimRobot as _ExternalSimRobot  # noqa: E402
+
+
+class SimRobot(_ExternalSimRobot):  # type: ignore[misc]
+    """Backward-compat shim that pins the constructor to the simulator's
+    module-level constants (ROBOT_RADIUS, MAX_LINEAR, MAX_ANGULAR,
+    COLLISION_GUARD_*) so existing `SimRobot(arena)` call sites keep
+    their original physics. The legacy `_range_m_ref` attribute is
+    preserved as a setter that mirrors into the new `range_provider`."""
+
     def __init__(self, arena: SimArena):
-        self.arena = arena
-        self.x = ARENA_W / 2.0
-        self.y = ARENA_H / 2.0
-        self.theta = 0.0  # heading (radians)
-        self.v_linear = 0.0
-        self.v_angular = 0.0
-        self.claw_open = False
-        self.head_angle = 0.0           # servo ch4 — голова (зафиксирована 0°)
-        self.arm_joints = [0.0, 120.0, 0.0, 0.0]    # ch0-ch3 home позиции
-        self._prev_v_linear = 0.0
-        self.max_speed = MAX_LINEAR  # updated by speed_profile
-        self.collision_guard = False
-        self._range_m_ref = None  # set by sim loop to SimSensors ref
+        super().__init__(
+            arena,
+            robot_radius=ROBOT_RADIUS,
+            max_linear=MAX_LINEAR,
+            max_angular=MAX_ANGULAR,
+            collision_stop=COLLISION_GUARD_STOP_M,
+            collision_slow=COLLISION_GUARD_SLOW_M,
+        )
 
-    def set_velocity(self, linear: float, angular: float):
-        # Collision guard — limit forward motion when obstacle ahead
-        if self.collision_guard and linear > 0 and self._range_m_ref is not None:
-            r = self._range_m_ref.range_m
-            if r < COLLISION_GUARD_STOP_M:
-                linear = 0.0
-            elif r < COLLISION_GUARD_SLOW_M:
-                factor = (r - COLLISION_GUARD_STOP_M) / (COLLISION_GUARD_SLOW_M - COLLISION_GUARD_STOP_M)
-                linear *= max(0.0, factor)
-        self.v_linear = max(-self.max_speed, min(self.max_speed, linear))
-        self.v_angular = max(-MAX_ANGULAR, min(MAX_ANGULAR, angular))
+    @property
+    def _range_m_ref(self):
+        # Old shape was a SimSensors instance with .range_m. Keep it
+        # accessible if anyone reads the field directly.
+        return self._range_provider() if self._range_provider else None
 
-    def stop(self):
-        self.v_linear = 0.0
-        self.v_angular = 0.0
-
-    def tick(self, dt: float):
-        self._prev_v_linear = self.v_linear
-        # Save previous position for zone collision
-        prev_x, prev_y = self.x, self.y
-        # Integrate velocities
-        self.x += self.v_linear * math.cos(self.theta) * dt
-        self.y += self.v_linear * math.sin(self.theta) * dt
-        self.theta += self.v_angular * dt
-        # Normalise theta
-        self.theta = math.atan2(math.sin(self.theta), math.cos(self.theta))
-        # Wall collision — clamp inside arena
-        margin = ROBOT_RADIUS
-        self.x = max(margin, min(self.arena.width - margin, self.x))
-        self.y = max(margin, min(self.arena.height - margin, self.y))
-        # Forbidden zone collision — push robot back
-        for z in self.arena.forbidden_zones:
-            zx1 = z['x1'] - margin
-            zy1 = z['y1'] - margin
-            zx2 = z['x2'] + margin
-            zy2 = z['y2'] + margin
-            if zx1 <= self.x <= zx2 and zy1 <= self.y <= zy2:
-                self.x = prev_x
-                self.y = prev_y
-                self.v_linear = 0.0
-                break
+    @_range_m_ref.setter
+    def _range_m_ref(self, sensors_obj):
+        # Wrap the sensors object as a callable returning itself.
+        self._range_provider = (lambda s=sensors_obj: s) if sensors_obj else None
 
 
 # ═════════════════════════════════════════════════════════════════

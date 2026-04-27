@@ -42,6 +42,7 @@ jobs:
             tests/test_schemas.py \
             tests/test_pathfinding.py \
             tests/test_sim_arena.py \
+            tests/test_sim_robot.py \
             -v --tb=short
 
   mqtt-integration:
