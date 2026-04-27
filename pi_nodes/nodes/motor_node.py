@@ -63,7 +63,9 @@ try:
 except ImportError:
     cfg = lambda k, d=None: d
 
-WHEEL_BASE = 0.17
+# Physical constant — config-driven so a different chassis doesn't require a
+# code change. Default matches the gusenitsa rig (Adeept HAT V3.1).
+WHEEL_BASE = cfg('wheel_calibration.wheel_base', 0.17)
 
 # ── IMU passive push detection (motors OFF) ────────────────────
 # Когда моторы выключены, IMU детектирует физическое перемещение.
@@ -76,9 +78,11 @@ IMU_BIAS_ALPHA_SLOW  = cfg('imu_push.bias_alpha_slow', 0.02)
 IMU_BIAS_ALPHA_FAST  = cfg('imu_push.bias_alpha_fast', 0.15)
 IMU_FAST_ADAPT_TICKS = cfg('imu_push.fast_adapt_ticks', 20)
 
-# Collision guard — stops forward motion when obstacle too close
-COLLISION_GUARD_STOP_M  = 0.20   # full stop distance
-COLLISION_GUARD_SLOW_M  = 0.40   # start slowing down
+# Collision guard — stops forward motion when obstacle too close.
+# Tunable via config so a smaller arena or sensor with different optimal
+# trip distance doesn't require a code change.
+COLLISION_GUARD_STOP_M = cfg('motor.collision_guard_stop_m', 0.20)
+COLLISION_GUARD_SLOW_M = cfg('motor.collision_guard_slow_m', 0.40)
 
 # Wheel odometry scale correction — defaults (overridden by active profile).
 _DEFAULT_SCALE_FWD  = cfg('wheel_calibration.scale_linear_fwd', 1.235)
@@ -108,8 +112,8 @@ CMD_VEL_TIMEOUT = cfg('odometry.cmd_vel_timeout', 0.5)
 # After this time without manual commands, autonomous control resumes.
 MANUAL_OVERRIDE_TIMEOUT = cfg('motor.manual_override_timeout', 0.5)
 
-# Collision avoidance — instead of just stopping, attempt to steer around
-COLLISION_AVOID_ANGULAR = 0.6   # rad/s — turn speed when avoiding obstacle
+# Collision avoidance — instead of just stopping, attempt to steer around.
+COLLISION_AVOID_ANGULAR = cfg('motor.collision_avoid_angular', 0.6)
 
 
 class MotorNode(MqttNode):
