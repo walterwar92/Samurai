@@ -132,67 +132,25 @@ from compute_node.pathfinding import (  # noqa: E402, F401
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimArena — 2D world with walls, balls, and forbidden zones
+# SimArena — extracted to compute_node/sim_arena.py (#44 cont.)
+# Re-exported here so existing imports keep working.
 # ═════════════════════════════════════════════════════════════════
 
-class SimArena:
+from compute_node.sim_arena import SimArena as _ExternalSimArena  # noqa: E402
+
+
+class SimArena(_ExternalSimArena):  # type: ignore[misc]
+    """Bound to the simulator's defaults so call sites that did
+    `SimArena()` with no args still get the legacy 3×3 m, 2 cm-ball,
+    BGR-colour-keyed configuration."""
+
     def __init__(self):
-        self.width = ARENA_W
-        self.height = ARENA_H
-        self.balls = []
-        self.forbidden_zones = []  # list of {id, x1, y1, x2, y2}
-        self._zone_counter = 0
-        self._spawn_balls()
-
-    def _spawn_balls(self):
-        colours = list(COLOUR_BGR.keys())
-        positions = [
-            (0.8, 0.6), (2.2, 0.8), (1.5, 2.0), (0.5, 2.3), (2.5, 1.8),
-        ]
-        for i, colour in enumerate(colours):
-            x, y = positions[i]
-            self.balls.append({
-                'x': x, 'y': y,
-                'colour': colour,
-                'radius': BALL_RADIUS,
-                'grabbed': False,
-            })
-
-    def add_zone(self, x1, y1, x2, y2):
-        """Add a forbidden zone (rectangle). Returns zone id."""
-        self._zone_counter += 1
-        zone = {
-            'id': self._zone_counter,
-            'x1': min(x1, x2), 'y1': min(y1, y2),
-            'x2': max(x1, x2), 'y2': max(y1, y2),
-        }
-        self.forbidden_zones.append(zone)
-        return zone
-
-    def remove_zone(self, zone_id):
-        """Remove a forbidden zone by id. Returns True if found."""
-        for i, z in enumerate(self.forbidden_zones):
-            if z['id'] == zone_id:
-                self.forbidden_zones.pop(i)
-                return True
-        return False
-
-    def clear_zones(self):
-        """Remove all forbidden zones."""
-        self.forbidden_zones.clear()
-
-    def point_in_zone(self, x, y):
-        """Check if a world point is inside any forbidden zone."""
-        for z in self.forbidden_zones:
-            if z['x1'] <= x <= z['x2'] and z['y1'] <= y <= z['y2']:
-                return True
-        return False
-
-    def reset(self):
-        for b in self.balls:
-            b['grabbed'] = False
-        self._spawn_balls()
-        # Note: forbidden zones are preserved on reset
+        super().__init__(
+            width=ARENA_W,
+            height=ARENA_H,
+            ball_radius=BALL_RADIUS,
+            colours=tuple(COLOUR_BGR.keys()),
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
