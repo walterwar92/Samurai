@@ -125,11 +125,22 @@ export interface WatchdogNodeStatus {
   last_seen?: number
 }
 
-export interface RobotState {
-  status: RobotStatus
-  detection: Detection | null
-  all_detections: Detection[]
-  range_m: number
+// ── Composable RobotState slices (#47) ────────────────────────────────
+// RobotState was a flat union with ~50 fields. Components only need a
+// subset (IMU widget reads imu_*, FSM badge reads status, MapCanvas reads
+// pose+scan_points+zones+map_info). Splitting into smaller interfaces
+// lets useRobotStore selectors return just the slice a component needs,
+// which:
+//   - improves React.memo's shallow-equal check (smaller object → fewer
+//     spurious re-renders),
+//   - makes test fixtures terser (a fake IMU panel doesn't need to mock
+//     speed_profile, calibration, etc.),
+//   - documents which fields belong together.
+// Backward compat: RobotState is the intersection of all slices, so every
+// component that already reads `state.imu_ypr` or `state.pose` keeps
+// compiling unchanged.
+
+export interface RobotImuState {
   imu_ypr: [number, number, number]
   imu_gyro_z: number
   imu_accel_x: number
@@ -139,75 +150,60 @@ export interface RobotState {
   imu_ypr_ekf: [number, number, number] | null
   imu_ekf_bias: [number, number, number] | null
   imu_has_ekf: boolean
+}
+
+export interface RobotPoseState {
   pose: RobotPose
   stationary: boolean
   velocity: RobotVelocity
-  actuators: Actuators
-  map_info: MapInfo
-  scan_points: [number, number][]
-  voice_log: LogEntry[]
-  zones: ForbiddenZone[]
-  planned_path: [number, number][]
+  speed_profile: string
+}
+
+export interface RobotDetectionState {
+  detection: Detection | null
+  all_detections: Detection[]
+  balls: BallInfo[]
   remembered_ball: RememberedPosition | null
   last_known_target: RememberedPosition | null
-  balls: BallInfo[]
-  sim_time: number
-  arena_size: ArenaSize
+  qr_detection: QrDetection | null
+  detection_enabled: boolean
   lost_frames: number
-  // New fields
+}
+
+export interface RobotMapState {
+  map_info: MapInfo
+  scan_points: [number, number][]
+  zones: ForbiddenZone[]
+  planned_path: [number, number][]
+  slam_map: SlamMapData | null
+  arena_size: ArenaSize
+}
+
+export interface RobotSensorsState {
+  range_m: number
   battery_voltage: number
   battery_percent: number
   cpu_temp: number
   watchdog: Record<string, { alive: boolean; last_seen_sec: number }> | null
-  patrol: PatrolStatus | null
-  path_recorder: PathRecorderStatus | null
-  recorded_path: [number, number][] | null
-  follow_me: FollowMeStatus | null
-  qr_detection: QrDetection | null
-  gesture: string
-  speed_profile: string
+}
+
+export interface RobotActuatorsState {
+  actuators: Actuators
   head: HeadState | null
   arm: ArmState | null
   arm_presets: string[]
   head_presets: string[]
-  // SLAM map data from Pi ultrasonic
-  slam_map: SlamMapData | null
-  detection_enabled: boolean
+}
+
+export interface RobotControlState {
+  patrol: PatrolStatus | null
+  path_recorder: PathRecorderStatus | null
+  recorded_path: [number, number][] | null
+  follow_me: FollowMeStatus | null
   obstacle_avoidance_enabled: boolean
   collision_guard_enabled: boolean
-  // Calibration
-  calibration: { state?: string; type?: string; progress?: number } | null
-  calibration_result: {
-    type?: string
-    scale_factor?: number
-    recommendation?: string
-    odom_distance?: number
-    actual_distance?: number
-    odom_angle_deg?: number
-  } | null
-  // Calibration coefficients & profiles
-  calibration_coeffs: {
-    profile: string
-    scale_fwd: number
-    scale_bwd: number
-    motor_trim: number
-  } | null
-  calibration_profiles: {
-    profiles: Record<string, {
-      scale_fwd: number
-      scale_bwd: number
-      motor_trim: number
-      description: string
-    }>
-    active: string
-  } | null
-  // Explorer
   explorer: { state?: string; strategy?: string; progress?: number; covered_cells?: number } | null
-  // Mission
   mission: { state?: string; name?: string; events_count?: number; progress?: number } | null
-  // TTS
-  tts_enabled: boolean
-  // Precision drive
   precision_drive: {
     state?: string
     scenario?: string
@@ -225,7 +221,50 @@ export interface RobotState {
     scenario?: string
     ts?: number
   } | null
+  calibration: { state?: string; type?: string; progress?: number } | null
+  calibration_result: {
+    type?: string
+    scale_factor?: number
+    recommendation?: string
+    odom_distance?: number
+    actual_distance?: number
+    odom_angle_deg?: number
+  } | null
+  calibration_coeffs: {
+    profile: string
+    scale_fwd: number
+    scale_bwd: number
+    motor_trim: number
+  } | null
+  calibration_profiles: {
+    profiles: Record<string, {
+      scale_fwd: number
+      scale_bwd: number
+      motor_trim: number
+      description: string
+    }>
+    active: string
+  } | null
 }
+
+export interface RobotSystemState {
+  status: RobotStatus
+  voice_log: LogEntry[]
+  sim_time: number
+  gesture: string
+  tts_enabled: boolean
+}
+
+// Aggregate type — preserves the flat shape every existing component reads.
+export interface RobotState
+  extends RobotImuState,
+    RobotPoseState,
+    RobotDetectionState,
+    RobotMapState,
+    RobotSensorsState,
+    RobotActuatorsState,
+    RobotControlState,
+    RobotSystemState {}
 
 export interface SlamMapObstacle {
   0: number  // x
