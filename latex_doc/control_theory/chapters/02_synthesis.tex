@@ -1,0 +1,316 @@
+% ============================================================
+%  Глава 2 — Синтез регуляторов: модальный + ЛКР
+% ============================================================
+\chapter{Синтез регуляторов: модальный и оптимальный}
+\label{ch:synthesis}
+
+В этой главе строится статический регулятор $\vect{u} = -\mat{K}\,\vect{x}$,
+размещающий полюса замкнутой системы в желаемых точках.
+Излагаются два подхода (по разделам 3.1 и 3.3 учебника):
+\textbf{модальный} (выбор полюсов вручную) и
+\textbf{оптимальный ЛКР} (минимизация интегрального критерия).
+
+\section{Постановка задачи стабилизации}
+\label{sec:stabilization}
+
+Дана линейная стационарная модель (по результатам главы~\ref{ch:model}):
+\begin{equation}
+  \dot{\vect{x}}(t) = \mat{A}\,\vect{x}(t) + \mat{B}\,\vect{u}(t),
+  \qquad \vect{x}(0) = \vect{x}^0.
+  \label{eq:plant_continuous}
+\end{equation}
+
+Требуется построить регулятор статической обратной связи:
+\begin{equation}
+  \boxed{\vect{u}(t) = -\mat{K}\,\vect{x}(t),}
+  \label{eq:state_feedback}
+\end{equation}
+такой, что замкнутая система $\dot{\vect{x}} = (\mat{A}-\mat{B}\mat{K})\vect{x}$
+асимптотически устойчива, и переходный процесс удовлетворяет требованиям
+по длительности и перерегулированию.
+
+\section{Модальный регулятор (pole placement)}
+\label{sec:modal}
+
+\subsection{Идея метода}
+
+Зададим желаемые собственные значения замкнутой системы
+$\{\lambda_i^{\text{уст}}\}_{i=1}^n$ и подберём $\mat{K}$ так,
+чтобы спектр $\sigma(\mat{A}-\mat{B}\mat{K})$ совпал с этим множеством.
+
+Согласно п.~3.1.3 учебника, для гарантии экспоненциального переходного
+процесса заданной длительности $t_n$ выбираются вещественные собственные
+значения, удовлетворяющие
+\begin{equation}
+  \min_i |\lambda_i^{\text{уст}}| \;\geq\; \frac{t_n}{3}.
+  \label{eq:eigval_bound}
+\end{equation}
+
+\subsection{Каноническая форма Фробениуса}
+
+Для одномерного входа ($r=1$) модальный регулятор синтезируется через
+приведение к канонической форме (п.~3.1.2 учебника):
+\begin{equation}
+  \mat{A}_f = \begin{pmatrix}
+    0 & 1 & 0 & \cdots & 0\\
+    0 & 0 & 1 & \cdots & 0\\
+    \vdots&&&\ddots&\vdots\\
+    -a_n & -a_{n-1} & \cdots & & -a_1
+  \end{pmatrix},
+  \quad
+  \vect{b}_f = \begin{pmatrix}0\\0\\ \vdots \\0\\1\end{pmatrix}.
+  \label{eq:frobenius_form}
+\end{equation}
+
+Преобразование подобия $\mat{Q} = \mat{S}_y\mat{T}$, где
+\begin{equation}
+  \mat{T} = \begin{pmatrix}
+    a_{n-1} & a_{n-2} & \cdots & a_1 & 1\\
+    a_{n-2} & a_{n-3} & \cdots & 1 & 0\\
+    \vdots & & & & \vdots \\
+    1 & 0 & \cdots & & 0
+  \end{pmatrix},
+  \label{eq:T_matrix}
+\end{equation}
+$a_i$ --- коэффициенты характеристического полинома исходной матрицы
+$\chi_n(\lambda) = \det(\lambda \mat{I} - \mat{A}) = \lambda^n + a_1\lambda^{n-1}+\ldots+a_n$.
+
+Параметры регулятора в исходном базисе (формула 3.4 учебника):
+\begin{equation}
+  \boxed{\mat{K} = \big(\mat{Q}^{\T}\big)^{-1}(\vect{a} - \vect{a}_{\text{уст}}),}
+  \label{eq:modal_gain}
+\end{equation}
+где $\vect{a}_{\text{уст}} = (a_n^{\text{уст}}, a_{n-1}^{\text{уст}}, \ldots, a_1^{\text{уст}})\T$ ---
+коэффициенты желаемого характеристического полинома
+$\prod_{i=1}^n(\lambda - \lambda_i^{\text{уст}})$.
+
+\subsection{Многомерный вход}
+
+При $r > 1$ (как у нашего робота: $u_v$ и $u_\omega$) канонизация по
+\eqref{eq:frobenius_form} напрямую неприменима. На практике используют
+функцию \texttt{place(A,B,p)} пакета Control System Toolbox, реализующую
+алгоритм Tits--Yang (численно устойчивый). Для нашей задачи в MATLAB:
+\begin{filebox}[title={\filepath{matlab/design\_modal.m}}]
+\begin{lstlisting}[style=matlabstyle]
+poles_des = [-2; -3; -4; -8; -10];   % желаемые полюса
+K_modal   = place(Ad, Bd, exp(poles_des * Ts));   % дискретный
+\end{lstlisting}
+\end{filebox}
+
+\section{Оптимальный регулятор (ЛКР)}
+\label{sec:lqr}
+
+Подход модального синтеза требует ручного выбора полюсов, что
+не масштабируется при многомерном состоянии. \textbf{Линейно-квадратичный
+регулятор} (ЛКР) автоматически минимизирует интегральный критерий качества
+(п.~3.3 учебника):
+
+\begin{formulabox}[title={Критерий качества}]
+\begin{equation}
+  J = \int_0^\infty \big(\,\vect{x}\T\,\mat{Q}\,\vect{x} + \vect{u}\T\,\mat{R}\,\vect{u}\,\big)\,dt,
+  \qquad \mat{Q} = \mat{Q}\T \succeq 0, \quad \mat{R} = \mat{R}\T \succ 0.
+  \label{eq:lqr_cost}
+\end{equation}
+\end{formulabox}
+
+Здесь $\mat{Q}$ штрафует отклонение состояния (точность),
+$\mat{R}$ --- расход управления (энергию). Подбор соотношения $\mat{Q}/\mat{R}$
+определяет компромисс «точность $\leftrightarrow$ затраты».
+
+\subsection{Уравнение Риккати}
+
+Оптимальное управление (формула 3.10 учебника) имеет вид
+\begin{equation}
+  \vect{u}^*(t) = -\mat{R}^{-1}\mat{B}\T\mat{P}\,\vect{x}(t) = -\mat{K}\,\vect{x}(t),
+  \label{eq:lqr_optimal}
+\end{equation}
+где $\mat{P}$ --- симметричная положительно определённая матрица,
+удовлетворяющая алгебраическому уравнению Риккати (CARE):
+
+\begin{formulabox}[title={Непрерывное уравнение Риккати}]
+\begin{equation}
+  \mat{A}\T\mat{P} + \mat{P}\mat{A} - \mat{P}\mat{B}\mat{R}^{-1}\mat{B}\T\mat{P} = -\mat{Q}.
+  \label{eq:care}
+\end{equation}
+\end{formulabox}
+
+\textbf{Дискретный аналог} (DARE):
+\begin{equation}
+  \mat{A}\T\mat{P}\mat{A} - \mat{P} - \mat{A}\T\mat{P}\mat{B}\bar{\mat{R}}^{-1}\mat{B}\T\mat{P}\mat{A} = -\mat{Q},
+  \quad \bar{\mat{R}} = \mat{R} + \mat{B}\T\mat{P}\mat{B},
+  \label{eq:dare}
+\end{equation}
+матрица регулятора $\mat{K}_d = \bar{\mat{R}}^{-1}\mat{B}\T\mat{P}\mat{A}_d$.
+
+\subsection{Условия существования решения}
+
+По п.~3.3 учебника, единственное положительно определённое $\mat{P}$
+существует при выполнении трёх условий:
+\begin{enumerate}
+  \item Объект $(\mat{A},\mat{B})$ управляем
+        ($\operatorname{rank}\mat{S}_y = n$);
+  \item $\mat{R} \succ 0$;
+  \item $\mat{Q} \succ 0$, либо $\mat{Q} = \mat{H}\T\mat{H}$ при наблюдаемой паре $(\mat{A}\T, \mat{H}\T)$.
+\end{enumerate}
+
+Для робота все три условия выполнены при $v_0 > 0$.
+
+\subsection{Выбор весовых матриц}
+
+Согласно рекомендации [13] из учебника (п.~3.3 после формулы 3.12),
+естественный выбор:
+\begin{equation}
+  \mat{R} = \mat{I}_r,
+  \qquad
+  \tilde{\mat{Q}} = \operatorname{diag}\!\left(\tfrac{1}{(y^{\text{ст}})^2},\,\tfrac{1}{(t_{\max}/3)^2}\right),
+  \label{eq:weight_choice}
+\end{equation}
+где $y^{\text{ст}}$ --- допустимая статическая ошибка, $t_{\max}$ ---
+требуемая длительность переходного процесса.
+
+\textbf{Для робота SAMURAI} разумные параметры:
+\begin{equation}
+  \mat{Q} = \operatorname{diag}(10,\,10,\,5,\,1,\,1),
+  \qquad
+  \mat{R} = \operatorname{diag}(1,\,1).
+  \label{eq:Q_R_robot}
+\end{equation}
+Большие веса на $p_x, p_y, \theta$ означают приоритет точности позиции
+и курса; малые веса на $v, \omega$ --- допускаем заметные отклонения
+скоростей. $\mat{R} = \mat{I}$ --- штрафуем затраты управления равномерно.
+
+\begin{notebox}
+\textbf{«Сделать поведение робота ошибочным»} в терминах ЛКР означает:
+\begin{itemize}
+  \item Заменить $\mat{Q}$ на отрицательно определённую --- алгоритм
+        не сходится или даст нестабильный регулятор;
+  \item Поменять знак $\mat{R}$ или сделать $\mat{R}$ очень малой ---
+        получим избыточно агрессивное управление с насыщением и
+        автоколебаниями;
+  \item Намеренно использовать желаемые полюса в правой полуплоскости
+        $\lambda^{\text{уст}}_i > 0$ для модального регулятора ---
+        замкнутая система будет неустойчива.
+\end{itemize}
+Эти эксперименты безопасны в симуляторе, но опасны на реальном железе ---
+проводить только с поднятыми колёсами.
+\end{notebox}
+
+\section{Регулирование с ненулевой уставкой}
+\label{sec:setpoint}
+
+ЛКР стабилизирует систему в нулевой точке. Для отслеживания
+заданной траектории $\vect{x}_0 \neq \vect{0}$ (например, цели Nav2)
+требуется дополнительное управляющее воздействие (п.~3.2 учебника,
+формула 3.7):
+\begin{equation}
+  \vect{u}(t) = -\mat{K}\,\vect{x}(t) + \vect{u}_{\text{уст}}(t),
+  \quad
+  \vect{u}_{\text{уст}} = -\big(\mat{C}\mat{A}_z^{-1}\mat{B}\big)^{-1}\,\vect{y}_{\text{уст}}(t),
+  \label{eq:setpoint_feedforward}
+\end{equation}
+где $\mat{A}_z = \mat{A} - \mat{B}\mat{K}$ --- матрица замкнутой системы.
+Это \textbf{прямая связь по уставке} (feedforward), компенсирующая статическую
+ошибку при ступенчатом изменении задания.
+
+Для робота уставка $\vect{y}_{\text{уст}} = (p_x^*, p_y^*, \theta^*, v^*, 0)\T$
+формируется из заданной точки и желаемой скорости подхода.
+
+\section{Наблюдатель состояния (Луенбергер)}
+\label{sec:observer}
+
+Регулятор \eqref{eq:state_feedback} использует полный вектор $\vect{x}(t)$,
+но реальные датчики дают только $\vect{y} = \mat{C}\vect{x}$. Согласно
+п.~3.4.1 учебника, состояние восстанавливается полноразмерным наблюдателем:
+
+\begin{formulabox}[title={Уравнение наблюдателя (Luenberger)}]
+\begin{equation}
+  \dot{\hat{\vect{x}}}(t) = \mat{A}\,\hat{\vect{x}} + \mat{B}\,\vect{u}
+       + \mat{L}\big(\vect{y} - \mat{C}\hat{\vect{x}}\big).
+  \label{eq:observer}
+\end{equation}
+\end{formulabox}
+
+Ошибка восстановления $\vect{e} = \vect{x} - \hat{\vect{x}}$ удовлетворяет:
+\begin{equation}
+  \dot{\vect{e}} = (\mat{A} - \mat{L}\mat{C})\,\vect{e}.
+  \label{eq:observer_error}
+\end{equation}
+
+Матрица $\mat{L}$ выбирается так, чтобы $(\mat{A}-\mat{L}\mat{C})$
+имела заданные собственные значения, обеспечивающие сходимость
+$\vect{e}(t) \to 0$ существенно быстрее динамики регулятора.
+Стандартная рекомендация (п.~3.4.2 учебника): полюса наблюдателя в $5\ldots10$ раз
+быстрее полюсов регулятора:
+\begin{equation}
+  \tilde{\lambda}^{\text{набл}}_i = 5 \cdot \lambda^{\text{уст}}_i.
+  \label{eq:observer_eigvals}
+\end{equation}
+
+\subsection{Принцип разделения}
+
+При совместном использовании регулятора и наблюдателя замкнутая
+система имеет блочную матрицу (формула 3.23 учебника):
+\begin{equation}
+  \mat{A}_c = \begin{pmatrix}
+    \mat{A}+\mat{B}\mat{K} & -\mat{B}\mat{K}\\
+    \mat{0} & \mat{A}-\mat{L}\mat{C}
+  \end{pmatrix}.
+  \label{eq:separation}
+\end{equation}
+Спектр $\sigma(\mat{A}_c) = \sigma(\mat{A}+\mat{B}\mat{K}) \cup \sigma(\mat{A}-\mat{L}\mat{C})$ ---
+полюса регулятора и наблюдателя независимы (\textbf{принцип разделения}).
+Это позволяет проектировать $\mat{K}$ и $\mat{L}$ \textbf{независимо}.
+
+\subsection{Условие наблюдаемости}
+
+Существование $\mat{L}$, обеспечивающего любые желаемые собственные
+значения, требует полной наблюдаемости (п.~3.4.1):
+\begin{equation}
+  \operatorname{rank}\mat{S}_n = n,
+  \quad
+  \mat{S}_n = \begin{pmatrix} \mat{C}\T & \mat{A}\T\mat{C}\T & \cdots & (\mat{A}\T)^{n-1}\mat{C}\T \end{pmatrix}.
+  \label{eq:observability}
+\end{equation}
+При $\mat{C} = \mat{I}$ (как в нашей модели --- все 5 координат
+наблюдаемы) это условие выполнено тривиально.
+
+\section{Численный пример для робота}
+\label{sec:numerical_example}
+
+Применим теорию к модели \eqref{eq:AB_numerical} при $v_0 = 0.2$ м/с,
+$T_s = 0.05$ с. Дискретизация ZOH даёт:
+\begin{equation*}
+  \mat{A}_d \approx \begin{pmatrix}
+    1 & 0 & 0 & 0.0488 & 0\\
+    0 & 1 & 0.01 & 0 & 0.000244\\
+    0 & 0 & 1 & 0 & 0.0488\\
+    0 & 0 & 0 & 0.717 & 0\\
+    0 & 0 & 0 & 0 & 0.607
+  \end{pmatrix}.
+\end{equation*}
+
+Решение DARE с $\mat{Q} = \operatorname{diag}(10,10,5,1,1)$, $\mat{R} = \mat{I}_2$
+(вычисление в \filepath{matlab/design\_lqr.m}, см. главу~\ref{ch:implementation})
+даёт регулятор:
+\begin{equation}
+  \mat{K}_{\text{LQR}} \approx \begin{pmatrix}
+    2.84 & 0 & 0 & 1.21 & 0\\
+    0 & 0.95 & 1.62 & 0 & 0.74
+  \end{pmatrix}.
+  \label{eq:K_lqr_robot}
+\end{equation}
+Структура $\mat{K}$ отражает связи: $u_v$ зависит от $p_x$ и $v$
+(продольный канал), $u_\omega$ --- от $p_y, \theta, \omega$
+(боковой канал, через рыскание).
+
+Собственные значения замкнутой непрерывной системы $\mat{A} - \mat{B}\mat{K}$
+лежат в левой полуплоскости (асимптотическая устойчивость), модули собственных
+значений $|\lambda_i|$ соответствуют постоянным времени $0{,}3\ldots 1$ с,
+что обеспечивает время регулирования $\sim 1{,}5$ с.
+
+\begin{notebox}
+ЛКР даёт автоматический компромисс «точность/затраты» через выбор
+$\mat{Q},\mat{R}$. Для расширения на \textbf{ограниченные} управления
+(физические лимиты: $|u_v| \leq 0{,}3$ м/с, $|u_\omega| \leq 2$ рад/с)
+переходим к MPC --- следующая глава.
+\end{notebox}

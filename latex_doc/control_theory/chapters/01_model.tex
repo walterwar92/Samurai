@@ -1,0 +1,256 @@
+% ============================================================
+%  Глава 1 — Математическая модель робота SAMURAI
+% ============================================================
+\chapter{Математическая модель робота SAMURAI}
+\label{ch:model}
+
+\section{Физическая постановка}
+\label{sec:physical}
+
+Робот SAMURAI --- гусеничное шасси с дифференциальным приводом.
+Контроллер PCA9685 управляет двумя задними моторами (M1 левый, M2 правый);
+передние моторы физически отсутствуют (см. \filepath{hardware\_presets/samurai\_default.yaml}).
+
+\begin{filebox}[title={Параметры объекта (\filepath{config.yaml})}]
+\begin{verbatim}
+simulator:
+  wheel_base:    0.17    # m  (track separation)
+  max_linear:    0.30    # m/s
+  max_angular:   2.00    # rad/s
+\end{verbatim}
+\end{filebox}
+
+\textbf{Команда движения} формируется в виде вектора $\vect{u} = (u_v, u_\omega)\T$,
+где $u_v$ --- желаемая линейная скорость [м/с], $u_\omega$ --- желаемая
+угловая скорость [рад/с]. Дифференциальная кинематика преобразует $\vect{u}$
+в скорости гусениц:
+\begin{equation}
+  v_L = u_v + \tfrac{B}{2}\,u_\omega, \qquad
+  v_R = u_v - \tfrac{B}{2}\,u_\omega,
+  \label{eq:diff_kinematics}
+\end{equation}
+где $B$ --- ширина базы (\texttt{wheel\_base}).
+
+\section{Нелинейная ОДУ модели}
+\label{sec:ode}
+
+В отличие от тривиальной кинематической модели, реальный робот имеет
+\textbf{инерционность моторов}: команда $u_v$ не отрабатывается мгновенно,
+а через апериодическое звено первого порядка с постоянной времени $\tau_v$.
+Аналогично для угловой скорости (постоянная $\tau_\omega$).
+
+Введём \textbf{вектор состояния} ($n=5$):
+\begin{equation}
+  \vect{x}(t) = \big(\,p_x,\; p_y,\; \theta,\; v,\; \omega\,\big)\T
+  \label{eq:state_vector}
+\end{equation}
+
+\begin{itemize}
+  \item $p_x, p_y$ --- координаты центра робота в мировой системе [м];
+  \item $\theta$ --- угол курса (yaw) [рад];
+  \item $v$ --- фактическая линейная скорость [м/с];
+  \item $\omega$ --- фактическая угловая скорость [рад/с].
+\end{itemize}
+
+\begin{formulabox}[title={Нелинейная модель в форме $\dot{\vect{x}} = \vect{f}(\vect{x}, \vect{u})$}]
+\begin{equation}
+  \begin{cases}
+    \dot{p}_x      = v\cos\theta,\\[2pt]
+    \dot{p}_y      = v\sin\theta,\\[2pt]
+    \dot{\theta}   = \omega,\\[2pt]
+    \dot{v}        = \dfrac{1}{\tau_v}\,(u_v - v),\\[6pt]
+    \dot{\omega}   = \dfrac{1}{\tau_\omega}\,(u_\omega - \omega).
+  \end{cases}
+  \label{eq:nonlinear_ode}
+\end{equation}
+\end{formulabox}
+
+Первые три уравнения --- кинематика дифференциального робота
+(идентична уравнениям 1.1 из учебника Козлова, формулы для $\dot{x}$ и $\dot{z}$).
+Последние два --- динамика моторов как RC-звено с постоянной времени $\tau$,
+определяемой механической инерцией ротора и противо-ЭДС.
+
+\begin{notebox}
+Постоянные времени $\tau_v \approx 0{,}15$ с, $\tau_\omega \approx 0{,}10$ с
+оценены экспериментально по графику разгона (см.
+\filepath{tests/test\_motor\_lag.py}). Для других шасси значения нужно
+переопределить --- они вынесены в \texttt{config.yaml} раздел \texttt{control.plant}.
+\end{notebox}
+
+\section{Линеаризация в опорной точке}
+\label{sec:linearization}
+
+Выберем \textbf{опорный режим} --- равномерное прямолинейное движение
+вперёд со скоростью $v_0$:
+\begin{equation}
+  \bar{\vect{x}} = (\bar{p}_x,\; \bar{p}_y,\; 0,\; v_0,\; 0)\T,
+  \qquad
+  \bar{\vect{u}} = (v_0,\; 0)\T.
+  \label{eq:operating_point}
+\end{equation}
+
+Подстановка $\bar{\vect{x}}, \bar{\vect{u}}$ в \eqref{eq:nonlinear_ode}
+даёт правые части $\dot{\bar{\vect{x}}} = (v_0,\,0,\,0,\,0,\,0)\T$, что
+соответствует нулевым отклонениям состояния от опорной траектории при
+постоянном $v_0$.
+
+Согласно методу линеаризации (см. учебник п.~1.1, формулы 1.2),
+уравнение для отклонений $\Delta\vect{x} = \vect{x} - \bar{\vect{x}}$,
+$\Delta\vect{u} = \vect{u} - \bar{\vect{u}}$ имеет вид:
+\begin{equation}
+  \Delta\dot{\vect{x}}(t) = \mat{A}\,\Delta\vect{x}(t) + \mat{B}\,\Delta\vect{u}(t),
+  \qquad
+  \mat{A} = \left.\frac{\partial \vect{f}}{\partial\vect{x}}\right|_{\bar{\vect{x}},\bar{\vect{u}}},
+  \quad
+  \mat{B} = \left.\frac{\partial \vect{f}}{\partial\vect{u}}\right|_{\bar{\vect{x}},\bar{\vect{u}}}.
+  \label{eq:linearization}
+\end{equation}
+
+\subsection{Вычисление матриц Якоби}
+
+Распишем частные производные функций $f_i$ по $x_j$:
+\begin{align*}
+  \frac{\partial f_1}{\partial \theta} &= -v\sin\theta\big|_0 = 0, &
+  \frac{\partial f_1}{\partial v} &= \cos\theta\big|_0 = 1,\\
+  \frac{\partial f_2}{\partial \theta} &= v\cos\theta\big|_0 = v_0, &
+  \frac{\partial f_2}{\partial v} &= \sin\theta\big|_0 = 0,\\
+  \frac{\partial f_3}{\partial \omega} &= 1, &
+  \frac{\partial f_4}{\partial v} &= -1/\tau_v,\\
+  \frac{\partial f_5}{\partial \omega} &= -1/\tau_\omega.
+\end{align*}
+
+Остальные элементы матрицы $\mat{A}$ равны нулю. Получаем:
+
+\begin{formulabox}[title={Линеаризованная модель в пространстве состояний}]
+\begin{equation}
+  \mat{A} = \begin{pmatrix}
+    0 & 0 & 0    & 1 & 0 \\
+    0 & 0 & v_0  & 0 & 0 \\
+    0 & 0 & 0    & 0 & 1 \\
+    0 & 0 & 0    & -1/\tau_v & 0 \\
+    0 & 0 & 0    & 0 & -1/\tau_\omega
+  \end{pmatrix},
+  \qquad
+  \mat{B} = \begin{pmatrix}
+    0 & 0 \\
+    0 & 0 \\
+    0 & 0 \\
+    1/\tau_v & 0 \\
+    0 & 1/\tau_\omega
+  \end{pmatrix}.
+  \label{eq:AB_matrices}
+\end{equation}
+\end{formulabox}
+
+Матрица наблюдения $\mat{C}$ выбирается по доступным датчикам.
+В роботе SAMURAI прямо измеряются $p_x, p_y$ (одометрия),
+$\theta$ (IMU), а $v, \omega$ восстанавливаются из последовательных
+позиций. Будем считать наблюдаемыми все 5 координат:
+\begin{equation}
+  \mat{C} = \mat{I}_5,
+  \qquad
+  \mat{D} = \mat{0}_{5\times 2}.
+  \label{eq:CD_matrices}
+\end{equation}
+
+\subsection{Численные значения}
+\label{sec:numerics}
+
+При $v_0 = 0{,}2$ м/с (профиль \texttt{normal}), $\tau_v = 0{,}15$ с,
+$\tau_\omega = 0{,}10$ с:
+\begin{equation}
+  \mat{A} = \begin{pmatrix}
+    0 & 0 & 0   & 1 & 0\\
+    0 & 0 & 0.2 & 0 & 0\\
+    0 & 0 & 0   & 0 & 1\\
+    0 & 0 & 0   & -6.667 & 0\\
+    0 & 0 & 0   & 0 & -10
+  \end{pmatrix},
+  \quad
+  \mat{B} = \begin{pmatrix}
+    0 & 0\\
+    0 & 0\\
+    0 & 0\\
+    6.667 & 0\\
+    0 & 10
+  \end{pmatrix}.
+  \label{eq:AB_numerical}
+\end{equation}
+
+\section{Анализ управляемости}
+\label{sec:controllability}
+
+Объект полностью управляем тогда и только тогда, когда матрица управляемости
+имеет полный ранг (учебник, формула перед п.~3.1):
+\begin{equation}
+  \mat{S}_y = \big[\,\mat{B}\,\big|\,\mat{A}\mat{B}\,\big|\,\mat{A}^2\mat{B}\,\big|\,\ldots\,\big|\,\mat{A}^{n-1}\mat{B}\,\big],
+  \qquad
+  \operatorname{rank} \mat{S}_y = n.
+  \label{eq:controllability}
+\end{equation}
+
+Для нашей системы $n=5$, $r=2$, поэтому $\mat{S}_y$ имеет размер $5 \times 10$.
+Вычисление в MATLAB (\filepath{matlab/analyze\_system.m}, см. главу~\ref{ch:implementation})
+показывает $\operatorname{rank}\mat{S}_y = 5$ при $v_0 \neq 0$ ---
+объект полностью управляем.
+
+\begin{warnbox}
+При $v_0 = 0$ опорная точка вырождена: координата $p_y$ становится
+неуправляемой (нельзя двигаться вбок без вращения). Для синтеза регулятора
+необходимо $v_0 > 0$ или модель в окрестности нетривиальной траектории.
+\end{warnbox}
+
+\section{Дискретизация}
+\label{sec:discretization}
+
+Для реализации регулятора в реальном времени переходим к дискретной модели
+с периодом $T_s = 0{,}05$ с (20 Гц --- частота цикла \texttt{motor\_node}).
+Согласно п.~1.5 учебника, дискретизация ZOH (zero-order hold) даёт:
+\begin{equation}
+  \boxed{
+    \mat{A}_d = e^{\mat{A} T_s}, \qquad
+    \mat{B}_d = \int_0^{T_s} e^{\mat{A}\tau}\,d\tau \cdot \mat{B},
+  }
+  \label{eq:zoh_discretization}
+\end{equation}
+что эквивалентно вычислению блочной матричной экспоненты:
+\begin{equation}
+  \exp\!\left(
+    \begin{pmatrix} \mat{A} & \mat{B} \\ \mat{0} & \mat{0} \end{pmatrix} T_s
+  \right)
+  =
+  \begin{pmatrix} \mat{A}_d & \mat{B}_d \\ \mat{0} & \mat{I} \end{pmatrix}.
+  \label{eq:block_exp}
+\end{equation}
+
+Дискретная модель:
+\begin{equation}
+  \vect{x}_{k+1} = \mat{A}_d\,\vect{x}_k + \mat{B}_d\,\vect{u}_k,
+  \qquad
+  \vect{y}_k = \mat{C}\,\vect{x}_k.
+  \label{eq:discrete_model}
+\end{equation}
+
+\subsection{Соответствие собственных значений}
+
+Собственные значения непрерывной и дискретной систем связаны соотношением
+(п.~3.1 учебника):
+\begin{equation}
+  \tilde{\lambda}_i = e^{\lambda_i T_s}.
+  \label{eq:eigval_mapping}
+\end{equation}
+Условия устойчивости:
+\begin{itemize}
+  \item непрерывная: $\operatorname{Re}\lambda_i < 0$ ---
+        собственные значения в левой полуплоскости;
+  \item дискретная: $|\tilde{\lambda}_i| < 1$ ---
+        внутри единичного круга.
+\end{itemize}
+
+\begin{notebox}
+Для непрерывного робота $\mat{A}$ имеет три нулевых собственных значения
+(апериодические интеграторы по $p_x, p_y, \theta$) и два отрицательных:
+$-1/\tau_v$, $-1/\tau_\omega$. Объект \textbf{не устойчив асимптотически}
+(но и не неустойчив --- это интегратор), что и ожидаемо: робот без
+управления продолжает двигаться по инерции.
+\end{notebox}

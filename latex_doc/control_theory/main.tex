@@ -1,0 +1,304 @@
+% ============================================================
+%  SAMURAI — Теория автоматического управления
+%  ОДУ-модель, модальный/оптимальный регулятор, MPC, наблюдатель
+%  Главный файл документа
+%  Компиляция: pdflatex main.tex   (два прохода для оглавления)
+% ============================================================
+\documentclass[12pt, a4paper, openany]{book}
+
+% ── Кодировка и язык ─────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian, english]{babel}
+
+% ── Геометрия страницы ───────────────────────────────────────────
+\usepackage[
+  top=25mm, bottom=25mm,
+  left=30mm, right=20mm
+]{geometry}
+
+% ── Математика ───────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+
+% ── Графика и цвет ───────────────────────────────────────────────
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc}
+
+% ── Код ──────────────────────────────────────────────────────────
+\usepackage{listings}
+\usepackage{courier}
+
+\definecolor{codebg}{RGB}{245,247,250}
+\definecolor{codeframe}{RGB}{180,190,210}
+\definecolor{keyword}{RGB}{0,100,200}
+\definecolor{comment}{RGB}{100,130,100}
+\definecolor{string}{RGB}{163,21,21}
+\definecolor{number}{RGB}{9,134,88}
+
+% UTF-8 support for listings: literate replacement for Cyrillic chars.
+% Без этого pdflatex падает на байтах UTF-8 в комментариях кода.
+\lstset{
+  extendedchars=true,
+  inputencoding=utf8,
+  literate=
+    {а}{{\selectfont\char224}}1{б}{{\selectfont\char225}}1
+    {в}{{\selectfont\char226}}1{г}{{\selectfont\char227}}1
+    {д}{{\selectfont\char228}}1{е}{{\selectfont\char229}}1
+    {ё}{{\selectfont\char184}}1{ж}{{\selectfont\char230}}1
+    {з}{{\selectfont\char231}}1{и}{{\selectfont\char232}}1
+    {й}{{\selectfont\char233}}1{к}{{\selectfont\char234}}1
+    {л}{{\selectfont\char235}}1{м}{{\selectfont\char236}}1
+    {н}{{\selectfont\char237}}1{о}{{\selectfont\char238}}1
+    {п}{{\selectfont\char239}}1{р}{{\selectfont\char240}}1
+    {с}{{\selectfont\char241}}1{т}{{\selectfont\char242}}1
+    {у}{{\selectfont\char243}}1{ф}{{\selectfont\char244}}1
+    {х}{{\selectfont\char245}}1{ц}{{\selectfont\char246}}1
+    {ч}{{\selectfont\char247}}1{ш}{{\selectfont\char248}}1
+    {щ}{{\selectfont\char249}}1{ъ}{{\selectfont\char250}}1
+    {ы}{{\selectfont\char251}}1{ь}{{\selectfont\char252}}1
+    {э}{{\selectfont\char253}}1{ю}{{\selectfont\char254}}1
+    {я}{{\selectfont\char255}}1
+    {А}{{\selectfont\char192}}1{Б}{{\selectfont\char193}}1
+    {В}{{\selectfont\char194}}1{Г}{{\selectfont\char195}}1
+    {Д}{{\selectfont\char196}}1{Е}{{\selectfont\char197}}1
+    {Ё}{{\selectfont\char168}}1{Ж}{{\selectfont\char198}}1
+    {З}{{\selectfont\char199}}1{И}{{\selectfont\char200}}1
+    {Й}{{\selectfont\char201}}1{К}{{\selectfont\char202}}1
+    {Л}{{\selectfont\char203}}1{М}{{\selectfont\char204}}1
+    {Н}{{\selectfont\char205}}1{О}{{\selectfont\char206}}1
+    {П}{{\selectfont\char207}}1{Р}{{\selectfont\char208}}1
+    {С}{{\selectfont\char209}}1{Т}{{\selectfont\char210}}1
+    {У}{{\selectfont\char211}}1{Ф}{{\selectfont\char212}}1
+    {Х}{{\selectfont\char213}}1{Ц}{{\selectfont\char214}}1
+    {Ч}{{\selectfont\char215}}1{Ш}{{\selectfont\char216}}1
+    {Щ}{{\selectfont\char217}}1{Ъ}{{\selectfont\char218}}1
+    {Ы}{{\selectfont\char219}}1{Ь}{{\selectfont\char220}}1
+    {Э}{{\selectfont\char221}}1{Ю}{{\selectfont\char222}}1
+    {Я}{{\selectfont\char223}}1
+    {—}{{\textemdash}}1{–}{{\textendash}}1{«}{{\guillemotleft}}1
+    {»}{{\guillemotright}}1{№}{{N\textsuperscript{o}}}1
+    {²}{{\textsuperscript{2}}}1{·}{{$\cdot$}}1
+}
+
+\lstdefinestyle{pythonstyle}{
+  language=Python,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=4pt,
+  basicstyle=\footnotesize\ttfamily,
+  keywordstyle=\color{keyword}\bfseries,
+  commentstyle=\color{comment}\itshape,
+  stringstyle=\color{string},
+  numberstyle=\scriptsize\ttfamily\color{gray},
+  numbers=left,
+  numbersep=10pt,
+  xleftmargin=2.5em,
+  showstringspaces=false,
+  breaklines=true,
+  tabsize=4,
+  captionpos=b,
+  morekeywords={True, False, None, self},
+}
+
+\lstdefinestyle{matlabstyle}{
+  language=Matlab,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=4pt,
+  basicstyle=\footnotesize\ttfamily,
+  keywordstyle=\color{keyword}\bfseries,
+  commentstyle=\color{comment}\itshape,
+  stringstyle=\color{string},
+  numberstyle=\scriptsize\ttfamily\color{gray},
+  numbers=left,
+  numbersep=10pt,
+  xleftmargin=2.5em,
+  showstringspaces=false,
+  breaklines=true,
+  tabsize=2,
+  captionpos=b,
+}
+
+\lstset{style=pythonstyle}
+
+% ── Таблицы ──────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{float}
+
+% ── Гиперссылки ──────────────────────────────────────────────────
+\usepackage[
+  colorlinks=true,
+  linkcolor=blue!70!black,
+  citecolor=green!60!black,
+  urlcolor=blue!80!black,
+  bookmarks=true,
+  bookmarksnumbered=true
+]{hyperref}
+
+% ── Колонтитулы ──────────────────────────────────────────────────
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\small\thepage}
+\fancyhead[LO]{\small\nouppercase{\rightmark}}
+\fancyhead[RE]{\small\nouppercase{\leftmark}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Параграфы ────────────────────────────────────────────────────
+\usepackage{parskip}
+\setlength{\parindent}{0pt}
+
+% ── Окружения ────────────────────────────────────────────────────
+\usepackage{tcolorbox}
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{formulabox}[1][]{
+  enhanced, breakable,
+  colback=blue!3!white, colframe=blue!50!black,
+  fonttitle=\bfseries, title=Формула, #1
+}
+\newtcolorbox{notebox}[1][]{
+  enhanced,
+  colback=orange!8!white, colframe=orange!70!black,
+  fonttitle=\bfseries, title=Примечание, #1
+}
+\newtcolorbox{filebox}[1][]{
+  enhanced,
+  colback=gray!6!white, colframe=gray!50!black,
+  fonttitle=\bfseries\ttfamily, #1
+}
+\newtcolorbox{warnbox}[1][]{
+  enhanced,
+  colback=red!4!white, colframe=red!70!black,
+  fonttitle=\bfseries, title=Внимание, #1
+}
+
+% ── Нумерация уравнений по главам ────────────────────────────────
+\numberwithin{equation}{chapter}
+
+% ── Макросы ──────────────────────────────────────────────────────
+\newcommand{\filepath}[1]{\texttt{\small\color{gray!80!black}#1}}
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\T}{^{\mathsf{T}}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+% ============================================================
+\begin{document}
+
+% ── Титульная страница ───────────────────────────────────────────
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+{\Huge\bfseries SAMURAI Robot}\\[0.4cm]
+{\Large\bfseries Теория автоматического управления}\\[0.3cm]
+{\large ОДУ-модель, синтез регуляторов, MPC, наблюдатель состояния}\\[1cm]
+\rule{\textwidth}{1pt}\\[0.5cm]
+{\large Технический справочник по регулятору движения робота}\\[0.5cm]
+\rule{\textwidth}{1pt}\\[2cm]
+
+\begin{tabular}{ll}
+\textbf{Объект управления:} & 2-моторный гусеничный робот (Adeept HAT)\\
+\textbf{Размерность состояния:} & $n=5$ (координаты + скорости)\\
+\textbf{Размерность управления:} & $r=2$ (linear, angular)\\
+\textbf{Период дискретизации:} & $T_s = 0.05$ с (20 Гц)\\
+\textbf{Метод линеаризации:} & ряд Тейлора в опорной точке\\
+\textbf{Синтез регуляторов:} & модальный, ЛКР, MPC\\
+\textbf{Наблюдатель:} & полноразмерный (Luenberger)\\
+\textbf{Реализация:} & MATLAB (offline) $\to$ YAML $\to$ Python (онлайн)\\
+\end{tabular}
+
+\vfill
+{\large Источник теории: Козлов В.\,Н., Куприянов В.\,Е., Шашихин В.\,Н.\\
+``Теория автоматического управления'', СПбГПУ, 2008}\\[0.5cm]
+{\large\today}
+\end{titlepage}
+
+% ── Оглавление ───────────────────────────────────────────────────
+\tableofcontents
+\newpage
+
+% ── Введение ─────────────────────────────────────────────────────
+\chapter*{Введение}
+\addcontentsline{toc}{chapter}{Введение}
+
+Документ содержит полное математическое описание системы автоматического
+управления (САУ) гусеничным роботом SAMURAI. Изложение построено по схеме
+\textbf{«модели $\to$ анализ $\to$ синтез»} согласно учебному пособию
+\textit{Козлов В.\,Н., Куприянов В.\,Е., Шашихин В.\,Н. ``Теория автоматического
+управления''} (СПбГПУ, 2008).
+
+\section*{Постановка задачи}
+
+Робот SAMURAI имеет 2 задних мотора (M1, M2) с дифференциальной кинематикой
+и должен отрабатывать заданные траектории движения. Существующая система
+управления использует прямую трансляцию команд скорости (\texttt{cmd\_vel})
+в ШИМ моторов через статические калибровочные коэффициенты, что:
+
+\begin{itemize}
+  \item не учитывает инерционность моторов ($\tau \approx 0.15$ с);
+  \item не оптимизирует управление по интегральному критерию;
+  \item не предсказывает поведение системы на горизонте.
+\end{itemize}
+
+Цель работы --- построить \textbf{линейную модель} робота, синтезировать
+\textbf{ЛКР} и \textbf{MPC-регулятор}, и встроить их в код управления так,
+чтобы параметры регулятора были \textbf{редактируемы из конфига}. Это
+позволяет:
+
+\begin{enumerate}
+  \item улучшать поведение робота, подбирая матрицы $\mat{Q}$, $\mat{R}$;
+  \item \textbf{намеренно ухудшать} поведение для отладки и демонстрации
+        неустойчивости (выбор «неправильных» полюсов и весов);
+  \item менять режим управления на лету (off/LQR/MPC) без перекомпиляции.
+\end{enumerate}
+
+\section*{Структура документа}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Глава} & \textbf{Содержание}\\
+\midrule
+1. Модель робота & Нелинейная ОДУ, линеаризация, дискретизация\\
+2. Синтез регуляторов & Модальный, ЛКР через Риккати\\
+3. MPC & Прогнозирующее управление, QP-задача\\
+4. Реализация в коде & MATLAB $\to$ YAML $\to$ Python\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Используемые обозначения}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+$\vect{x}(t) \in \mathbb{R}^n$ & вектор состояния объекта\\
+$\vect{u}(t) \in \mathbb{R}^r$ & вектор управляющих воздействий\\
+$\vect{y}(t) \in \mathbb{R}^m$ & вектор наблюдаемых выходов\\
+$\mat{A}, \mat{B}, \mat{C}, \mat{D}$ & матрицы модели в пространстве состояний\\
+$\mat{K}$ & матрица обратной связи (регулятор)\\
+$\mat{L}$ & матрица обратной связи наблюдателя\\
+$\mat{Q}, \mat{R}$ & весовые матрицы критерия качества\\
+$\mat{P}$ & решение уравнения Риккати\\
+$T_s$ & период дискретизации\\
+$N$ & горизонт прогноза MPC\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ── Главы ────────────────────────────────────────────────────────
+\include{chapters/01_model}
+\include{chapters/02_synthesis}
+\include{chapters/03_mpc}
+\include{chapters/04_implementation}
+
+\end{document}

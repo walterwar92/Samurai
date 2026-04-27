@@ -33,7 +33,7 @@ from typing import Any, Optional
 from .schemas.actuators import ArmState, ClawState, HeadState, LedState
 from .schemas.detection import BallInfo, Detection, DetectionResult
 from .schemas.maps import ForbiddenZone, MapInfo, SlamMapData
-from .schemas.robot import RobotPose, RobotStatus, VelocityDetail
+from .schemas.robot import OdometrySources, RobotPose, RobotStatus, VelocityDetail
 from .schemas.sensors import (
     BatteryStatus,
     ImuData,
@@ -55,6 +55,9 @@ class _RobotBlock:
     # MQTT odom — primary source from Pi. ROS2 /odometry/filtered только если
     # MQTT odom stale (>2s). Timestamp нужен для приоритета.
     mqtt_odom_ts: float = 0.0
+    # Параллельные источники одометрии (этап 1A: diagnostic publish).
+    # Заполняется в _h_odom — UI рендерит все треки одновременно.
+    odom_sources: OdometrySources = field(default_factory=OdometrySources)
 
 
 @dataclass
@@ -463,6 +466,7 @@ class DashboardState:
                 'imu_ekf_bias': list(s.imu_ekf_bias) if ekf else None,
                 'imu_has_ekf': ekf is not None,
                 'pose': {**r.pose.model_dump(), 'yaw_deg': yaw_deg},
+                'odom_sources': r.odom_sources.model_dump(),
                 'stationary': r.stationary,
                 'velocity': {
                     **r.velocity_estimated.model_dump(),

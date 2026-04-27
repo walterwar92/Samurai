@@ -49,6 +49,8 @@ try:
 except ImportError:
     _ACCEL_POS_AVAILABLE = False
 
+from pi_nodes.filters.position_fusion import PositionFusion, VALID_MODES
+
 try:
     from pi_nodes.calibration_profiles import (
         get_active, get_profile, save_profile, set_active,
@@ -108,6 +110,25 @@ DEADZONE_ANGULAR = cfg('odometry.deadzone_angular', 0.05)  # rad/s
 # 0.5s — быстрая остановка при потере связи (безопаснее чем 1.0)
 CMD_VEL_TIMEOUT = cfg('odometry.cmd_vel_timeout', 0.5)
 
+# Motor lag — wheel-odom uses commanded velocity, but real motors don't
+# track instantly. A 1st-order low-pass on the target velocity captures
+# spool-up/spool-down delay (~100-200ms typical for tracked DC motors)
+# and stops position from "leading" reality on every start/stop.
+# Set tau_sec=0 to disable (legacy behaviour).
+MOTOR_LAG_ENABLED = bool(cfg('odometry.motor_lag.enabled', True))
+MOTOR_LAG_TAU = float(cfg('odometry.motor_lag.tau_sec', 0.15))
+
+# Position fusion — wheel + IMU. Default 'wheel' = legacy behaviour.
+# Switch at runtime via MQTT topic samurai/{id}/odometry/source ("wheel"
+# / "imu" / "complementary" / "ekf"). See PositionFusion docstring.
+ODOMETRY_SOURCE_DEFAULT = cfg('odometry.source', 'wheel')
+FUSION_ALPHA = cfg('odometry.fusion.complementary_alpha', 0.7)
+FUSION_Q_POS = cfg('odometry.fusion.ekf_q_pos', 0.05)
+FUSION_Q_VEL = cfg('odometry.fusion.ekf_q_vel', 0.10)
+FUSION_R_WHEEL = cfg('odometry.fusion.ekf_r_wheel', 0.04)
+FUSION_R_IMU = cfg('odometry.fusion.ekf_r_imu', 0.20)
+FUSION_R_IMU_V = cfg('odometry.fusion.ekf_r_imu_vel', 0.10)
+
 # Priority mux — manual override timeout (seconds).
 # After this time without manual commands, autonomous control resumes.
 MANUAL_OVERRIDE_TIMEOUT = cfg('motor.manual_override_timeout', 0.5)
@@ -147,6 +168,10 @@ class MotorNode(MqttNode):
         self._linear = 0.0
         self._angular = 0.0
         self._last_cmd_time = 0.0
+        # Motor lag state — running value of "actual" velocity tracked via
+        # 1st-order low-pass on the commanded × scale target. Zero when at
+        # rest. Reset on reset_position_cb.
+        self._v_lagged = 0.0
 
         # Collision guard — extracted to CollisionPolicy class for testability.
         # avoid_dir / avoid_active live inside the policy now.
@@ -188,6 +213,31 @@ class MotorNode(MqttNode):
             fast_adapt_ticks=IMU_FAST_ADAPT_TICKS,
         ))
 
+        # ── Position fusion (wheel + IMU) ──────────────────────────────
+        # Mode selectable at startup (config) or runtime (MQTT). Default
+        # 'wheel' preserves legacy odom behaviour; user switches to 'imu',
+        # 'complementary' or 'ekf' to compare on a live robot.
+        try:
+            initial_mode = ODOMETRY_SOURCE_DEFAULT
+            if initial_mode not in VALID_MODES:
+                self.log_warn('Unknown odometry.source %r, defaulting to wheel',
+                              initial_mode)
+                initial_mode = 'wheel'
+            self._fusion = PositionFusion(
+                mode=initial_mode,
+                alpha=FUSION_ALPHA,
+                q_pos=FUSION_Q_POS,
+                q_vel=FUSION_Q_VEL,
+                r_wheel=FUSION_R_WHEEL,
+                r_imu=FUSION_R_IMU,
+                r_imu_v=FUSION_R_IMU_V,
+            )
+            self.log_info('PositionFusion: mode=%s alpha=%.2f',
+                          self._fusion.mode, self._fusion.alpha)
+        except Exception as e:
+            self.log_warn('PositionFusion init failed: %s — wheel-only', e)
+            self._fusion = None
+
         # Accelerometer position estimator — pass VelocityEKF params from config
         self._pos_estimator = None
         self._pos_estimator_ready = False
@@ -215,6 +265,10 @@ class MotorNode(MqttNode):
         self.subscribe('range', self._range_cb, qos=0)
         self.subscribe('collision_guard/enable', self._collision_guard_cb, qos=1)
 
+        # ── Position fusion runtime control (etap 1B/1C) ─────────────
+        self.subscribe('odometry/source', self._odometry_source_cb, qos=1)
+        self.subscribe('odometry/fusion/alpha', self._odometry_alpha_cb, qos=1)
+
         # ── Calibration MQTT interface ───────────────────────────────
         self.subscribe('calibration/set', self._cal_set_cb, qos=1)
         self.subscribe('calibration/profile/load', self._cal_profile_load_cb, qos=1)
@@ -224,11 +278,36 @@ class MotorNode(MqttNode):
 
         # Pre-allocate odom message template (avoid dict creation every 50ms)
         # x, y — centimetres; vx — m/s; speed — m/s
+        # *_imu — diagnostic position from AccelPositionEstimator (IMU only).
+        # source — which fusion mode produced the primary x/y for this tick
+        # (wheel|imu|complementary|ekf). Allows the dashboard to label & compare.
         self._odom_msg = {
             'x': 0.0, 'y': 0.0, 'theta': 0.0, 'vx': 0.0, 'vz': 0.0,
             'speed': 0.0,
             'accel_x': 0.0, 'accel_y': 0.0, 'stationary': False, 'ts': 0.0,
+            'x_wheel': 0.0, 'y_wheel': 0.0,
+            'x_imu': 0.0, 'y_imu': 0.0,
+            'vx_imu': 0.0, 'vy_imu': 0.0,
+            'stationary_imu': True,
+            'source': 'wheel',
         }
+        # ── State-space controller (LQR / MPC) ────────────────────────
+        # Off by default; enable by setting `control.mode` in config.yaml.
+        # Math is documented in latex_doc/control_theory/, parameters in
+        # config.yaml `control:` section. Designed offline by matlab/main.m.
+        self._ss_controller = None
+        try:
+            from pi_nodes.control.controller_factory import (
+                make_controller, PassthroughController,
+            )
+            ctrl = make_controller()
+            if not isinstance(ctrl, PassthroughController):
+                self._ss_controller = ctrl
+                self.log_info('State-space controller enabled: %s', ctrl)
+        except Exception as exc:                                    # pragma: no cover
+            self.log_warn('State-space controller init failed (%s); using passthrough.',
+                          exc)
+
         self.create_timer(0.05, self._control_loop)    # 20 Hz
         self.create_timer(1.0, self._publish_profile)   # 1 Hz
 
@@ -464,10 +543,55 @@ class MotorNode(MqttNode):
         self._theta = 0.0
         self._vx = 0.0
         self._vz = 0.0
+        self._v_lagged = 0.0
         if self._pos_estimator is not None:
             self._pos_estimator.reset()
         self._push.reset()
+        if self._fusion is not None:
+            self._fusion.reset()
         self.log_info('Position reset to (0, 0, 0) — new home set')
+
+    def _odometry_source_cb(self, topic, data):
+        """Switch position fusion mode at runtime.
+        Payload: "wheel" | "imu" | "complementary" | "ekf"
+        or {"source": "ekf"}.
+        """
+        if self._fusion is None:
+            self.log_warn('PositionFusion unavailable — cannot switch source')
+            return
+        if isinstance(data, dict):
+            mode = str(data.get('source', '')).strip().lower()
+        else:
+            mode = str(data).strip().lower()
+        if mode not in VALID_MODES:
+            self.log_warn('Bad odometry source %r (expected one of %s)',
+                          mode, VALID_MODES)
+            return
+        try:
+            changed = self._fusion.set_mode(mode)
+        except ValueError as e:
+            self.log_warn('Reject odometry source: %s', e)
+            return
+        if changed:
+            self.log_info('Odometry source: %s', mode)
+            self.publish('odometry/source/active', mode, retain=True)
+
+    def _odometry_alpha_cb(self, topic, data):
+        """Adjust complementary fusion alpha at runtime (0..1)."""
+        if self._fusion is None:
+            return
+        try:
+            if isinstance(data, dict):
+                alpha = float(data.get('alpha', data.get('value', 0.7)))
+            else:
+                alpha = float(data)
+        except (TypeError, ValueError):
+            self.log_warn('Bad fusion alpha payload: %r', data)
+            return
+        self._fusion.set_alpha(alpha)
+        self.log_info('Fusion alpha: %.3f', self._fusion.alpha)
+        self.publish('odometry/fusion/alpha/active',
+                     {'alpha': self._fusion.alpha}, retain=True)
 
     def _profile_cb(self, topic, data):
         name = str(data).strip().lower()
@@ -476,6 +600,34 @@ class MotorNode(MqttNode):
             self._max_lin, self._max_ang = SPEED_PROFILES[name]
             self.log_info('Speed profile: %s (lin=%.2f, ang=%.2f)',
                           name, self._max_lin, self._max_ang)
+
+    def _apply_state_space_control(self, lin_target: float, ang_target: float):
+        """Route a velocity setpoint through the state-space regulator.
+
+        Builds a 5-vector state x = (px, py, theta, v, omega) and reference
+        x_ref = (px, py, theta, lin_target, ang_target), then computes
+        u = -K (x - x_ref) (clipped, see LQRController/MPCController).
+
+        Position/heading components contribute zero error here (we don't
+        have a position goal in this loop), so the regulator effectively
+        works as a velocity tracker that compensates motor inertia.
+
+        Returns (lin_cmd, ang_cmd) — corrected throttle commands in the
+        same units the rest of the loop expects (m/s and rad/s).
+        """
+        try:
+            import numpy as np
+        except ImportError:
+            return lin_target, ang_target
+
+        v_now = float(self._v_lagged)
+        w_now = float(getattr(self, '_imu_gz', 0.0))
+        x = np.array([self._x, self._y, self._theta, v_now, w_now])
+        x_ref = np.array([self._x, self._y, self._theta,
+                          float(lin_target), float(ang_target)])
+
+        u = self._ss_controller.step(x, x_ref=x_ref)
+        return float(u[0]), float(u[1])
 
     def _control_loop(self):
         now = self.now_sec()
@@ -523,6 +675,13 @@ class MotorNode(MqttNode):
             if decision.source is not None:
                 self._active_source = decision.source
 
+        # ── State-space regulator (LQR / MPC) ─────────────────────────
+        # When enabled, treats (lin_cmd, ang_cmd) as a velocity setpoint and
+        # routes them through u = -K(x - x_ref) before driving motors.
+        # No-op when control.mode = "off" (default).
+        if self._ss_controller is not None:
+            lin_cmd, ang_cmd = self._apply_state_space_control(lin_cmd, ang_cmd)
+
         # Drive motors — apply motor_trim for straight-line correction
         lin = max(-self._max_lin, min(self._max_lin, lin_cmd))
         ang = max(-self._max_ang, min(self._max_ang, ang_cmd))
@@ -551,11 +710,23 @@ class MotorNode(MqttNode):
         # Apply calibration scale to commanded velocity for odometry
         if abs(lin) > DEADZONE_LINEAR:
             scale = self._scale_fwd if lin >= 0 else self._scale_bwd
-            v_actual = lin * scale
+            v_target = lin * scale
         else:
-            v_actual = 0.0
+            v_target = 0.0
 
-        # Integrate position from commanded velocity + IMU heading
+        # ── Motor lag: 1st-order low-pass on v_target ───────────────
+        # v(t) = v(t-1) + (v_target - v(t-1)) · dt / (tau + dt)
+        # Captures motor spool-up/spool-down inertia (~100-200ms) so
+        # position doesn't "lead" reality on every start/stop transition.
+        if MOTOR_LAG_ENABLED and MOTOR_LAG_TAU > 0 and dt > 0:
+            alpha_lag = dt / (MOTOR_LAG_TAU + dt)
+            self._v_lagged += alpha_lag * (v_target - self._v_lagged)
+            v_actual = self._v_lagged
+        else:
+            v_actual = v_target
+            self._v_lagged = v_target  # keep state coherent if disabled
+
+        # Integrate position from lagged velocity + IMU heading
         self._x += v_actual * dt * cy
         self._y += v_actual * dt * sy
 
@@ -585,19 +756,53 @@ class MotorNode(MqttNode):
 
         is_stationary = motors_idle and push_vx == 0.0 and push_vy == 0.0
 
-        # AccelPositionEstimator — background diagnostics only
-        # (provides linear_accel_world for dashboard graphs)
+        # AccelPositionEstimator — IMU-only position (diagnostic + fusion source).
+        # Runs every tick; outputs are published as x_imu/y_imu alongside the
+        # wheel-derived x/y so the dashboard can compare both estimators live.
         if self._pos_estimator_ready:
             self._pos_estimator.update_prediction(self._theta, dt)
             self._pos_estimator.blend()
-        la_x, la_y = (self._pos_estimator.linear_accel_world
-                       if self._pos_estimator_ready else (0.0, 0.0))
+            x_imu_m = self._pos_estimator.x
+            y_imu_m = self._pos_estimator.y
+            vx_imu = self._pos_estimator.vx
+            vy_imu = self._pos_estimator.vy
+            stationary_imu = self._pos_estimator.is_stationary
+            la_x, la_y = self._pos_estimator.linear_accel_world
+        else:
+            x_imu_m = 0.0
+            y_imu_m = 0.0
+            vx_imu = 0.0
+            vy_imu = 0.0
+            stationary_imu = True
+            la_x, la_y = 0.0, 0.0
+
+        # Wheel-only position is just the dead-reckoned (self._x, self._y) above
+        # — keep a snapshot so the fusion can pick the source per-tick.
+        x_wheel_m = self._x
+        y_wheel_m = self._y
+
+        # ── Fusion: combine wheel + IMU per active mode ───────────────
+        # Modes: wheel|imu|complementary|ekf — selectable at runtime via
+        # samurai/{id}/odometry/source. Full IMU EKF state stays warm in
+        # all modes so a switch is seamless.
+        if self._fusion is not None:
+            x_primary_m, y_primary_m = self._fusion.update(
+                x_wheel=x_wheel_m, y_wheel=y_wheel_m,
+                x_imu=x_imu_m, y_imu=y_imu_m,
+                vx_imu=vx_imu, vy_imu=vy_imu,
+                dt=dt,
+            )
+            source_label = self._fusion.mode
+        else:
+            x_primary_m = x_wheel_m
+            y_primary_m = y_wheel_m
+            source_label = 'wheel'
 
         # Update pre-allocated odom dict (avoid allocation every 50ms)
         # x, y — centimetres for precision; vx, speed — m/s
         m = self._odom_msg
-        m['x'] = round(self._x * 100.0, 2)    # cm
-        m['y'] = round(self._y * 100.0, 2)    # cm
+        m['x'] = round(x_primary_m * 100.0, 2)    # cm — fused primary
+        m['y'] = round(y_primary_m * 100.0, 2)
         m['theta'] = round(self._theta, 4)
         m['vx'] = round(self._vx, 3)
         m['vz'] = round(self._vz, 3)
@@ -606,6 +811,16 @@ class MotorNode(MqttNode):
         m['accel_y'] = round(la_y, 4)
         m['stationary'] = is_stationary
         m['ts'] = self.timestamp()
+
+        # ── Diagnostic: per-source positions for dashboard comparison ──
+        m['x_wheel'] = round(x_wheel_m * 100.0, 2)
+        m['y_wheel'] = round(y_wheel_m * 100.0, 2)
+        m['x_imu'] = round(x_imu_m * 100.0, 2)
+        m['y_imu'] = round(y_imu_m * 100.0, 2)
+        m['vx_imu'] = round(vx_imu, 3)
+        m['vy_imu'] = round(vy_imu, 3)
+        m['stationary_imu'] = stationary_imu
+        m['source'] = source_label
 
         self.publish('odom', m)
 
@@ -617,6 +832,11 @@ class MotorNode(MqttNode):
             self._prev_active_source = self._active_source
         # Publish calibration state periodically
         self._publish_calibration()
+        # Publish active fusion mode + alpha (retained — UI reconnect-safe)
+        if self._fusion is not None:
+            self.publish('odometry/source/active', self._fusion.mode, retain=True)
+            self.publish('odometry/fusion/alpha/active',
+                         {'alpha': round(self._fusion.alpha, 3)}, retain=True)
 
     def on_shutdown(self):
         self._driver.shutdown()

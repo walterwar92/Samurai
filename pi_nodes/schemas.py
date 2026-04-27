@@ -85,7 +85,12 @@ if _HAS_PYDANTIC:
 
     class Odom(_BaseMqttSchema):
         """samurai/{id}/odom — published from motor_node every 50ms.
-        Note: x, y are CENTIMETRES (legacy; consumers often divide by 100)."""
+        Note: x, y are CENTIMETRES (legacy; consumers often divide by 100).
+
+        x/y is the *primary* fused position; the source is named in `source`.
+        Per-source x_wheel/x_imu are diagnostic — published every tick so the
+        dashboard can plot all estimators side-by-side and compare error.
+        """
         x: float = 0.0
         y: float = 0.0
         theta: float = 0.0
@@ -96,6 +101,15 @@ if _HAS_PYDANTIC:
         accel_y: float = 0.0
         stationary: bool = True
         ts: float = 0.0
+        # ── Diagnostic per-source positions (centimetres, m/s) ──
+        x_wheel: float = 0.0
+        y_wheel: float = 0.0
+        x_imu: float = 0.0
+        y_imu: float = 0.0
+        vx_imu: float = 0.0
+        vy_imu: float = 0.0
+        stationary_imu: bool = True
+        source: str = 'wheel'
 
     class Battery(_BaseMqttSchema):
         """samurai/{id}/battery — voltage + percent."""

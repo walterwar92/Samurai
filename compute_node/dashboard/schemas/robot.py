@@ -31,6 +31,24 @@ class RobotVelocity(BaseModel):
     commanded: VelocityDetail = Field(default_factory=VelocityDetail)
 
 
+class OdometrySources(BaseModel):
+    """Параллельные оценки позиции от разных источников одометрии (метры, рад/с).
+
+    Публикуется motor_node-ом в каждом odom-тике как diagnostic, чтобы
+    дашборд мог рендерить wheel/imu/complementary/ekf одновременно и
+    пользователь мог сравнить точность каждого режима на живом роботе.
+    """
+    x_wheel: float = 0.0
+    y_wheel: float = 0.0
+    x_imu: float = 0.0
+    y_imu: float = 0.0
+    vx_imu: float = 0.0
+    vy_imu: float = 0.0
+    stationary_imu: bool = True
+    # Какой источник используется как primary x/y в этом тике.
+    source: Literal['wheel', 'imu', 'complementary', 'ekf'] = 'wheel'
+
+
 class RobotStatus(BaseModel):
     """Статус FSM робота — что робот делает прямо сейчас."""
     state: str = Field(default='IDLE', description='Имя FSM-состояния')

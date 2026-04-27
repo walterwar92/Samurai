@@ -152,8 +152,22 @@ export interface RobotImuState {
   imu_has_ekf: boolean
 }
 
+export type OdometrySourceMode = 'wheel' | 'imu' | 'complementary' | 'ekf'
+
+export interface OdometrySources {
+  x_wheel: number
+  y_wheel: number
+  x_imu: number
+  y_imu: number
+  vx_imu: number
+  vy_imu: number
+  stationary_imu: boolean
+  source: OdometrySourceMode
+}
+
 export interface RobotPoseState {
   pose: RobotPose
+  odom_sources: OdometrySources
   stationary: boolean
   velocity: RobotVelocity
   speed_profile: string
