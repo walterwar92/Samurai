@@ -10,6 +10,7 @@ Replaces rclpy.Node. Provides:
   - Config access via config_loader.cfg()
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from typing import Callable, Any, Optional
 
 import paho.mqtt.client as mqtt
@@ -53,6 +55,55 @@ except ImportError:
     _DEFAULT_ROBOT_ID = 'robot1'
     def _get_mqtt_creds():
         return None, None
+
+
+# ── Correlation ID propagation (#56) ─────────────────────────────────
+# A correlation_id (cid) lets us trace an action across nodes:
+#   voice_command "иди вперёд"  →  fsm sets goal  →  cmd_vel pulse  →  motor moves
+# Each MQTT publish carries the cid in the `_cid` field; the subscribe
+# wrapper captures it into a contextvar so any log event emitted while
+# handling that message inherits the same cid. Messages published from
+# inside that callback automatically inherit the cid too.
+#
+# JSON log output is opt-in via SAMURAI_JSON_LOGS=1 — keeps the human-
+# friendly `[level] [node] msg` format as default for tail-friendly dev.
+
+_correlation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'samurai_cid', default=None)
+
+
+def current_correlation_id() -> Optional[str]:
+    return _correlation_id.get()
+
+
+def set_correlation_id(cid: Optional[str]) -> contextvars.Token:
+    return _correlation_id.set(cid)
+
+
+def new_correlation_id() -> str:
+    """Generate a short random cid (8 hex chars — collision-free for trace-window scope)."""
+    return uuid.uuid4().hex[:8]
+
+
+_JSON_LOGS = os.environ.get('SAMURAI_JSON_LOGS', '').lower() in ('1', 'true', 'yes')
+
+
+class _CidJsonFormatter(logging.Formatter):
+    """Structured logger format: one JSON object per line, includes cid if set."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            'ts': record.created,
+            'level': record.levelname,
+            'node': record.name,
+            'msg': record.getMessage(),
+        }
+        cid = current_correlation_id()
+        if cid:
+            payload['cid'] = cid
+        if record.exc_info:
+            payload['exc'] = self.formatException(record.exc_info)
+        return json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
 
 
 def get_local_ip(timeout: float = 2.0) -> str:
@@ -136,8 +187,11 @@ class MqttNode:
         self._log.propagate = False
         if not self._log.handlers:
             handler = logging.StreamHandler()
-            handler.setFormatter(
-                logging.Formatter(f'[%(levelname)s] [{name}] %(message)s'))
+            if _JSON_LOGS:
+                handler.setFormatter(_CidJsonFormatter())
+            else:
+                handler.setFormatter(
+                    logging.Formatter(f'[%(levelname)s] [{name}] %(message)s'))
             self._log.addHandler(handler)
             self._log.setLevel(logging.INFO)
 
@@ -194,8 +248,20 @@ class MqttNode:
 
     def publish_raw(self, full_topic: str, payload,
                     qos: int = 0, retain: bool = False):
-        """Publish to an arbitrary MQTT topic (no robot_id prefix)."""
-        if isinstance(payload, dict) or isinstance(payload, list):
+        """Publish to an arbitrary MQTT topic (no robot_id prefix).
+
+        If a correlation_id is set in the current context (e.g. inside a
+        message-handling callback), it is injected into outgoing dict
+        payloads as `_cid` for cross-node trace propagation.
+        """
+        if isinstance(payload, dict):
+            cid = current_correlation_id()
+            if cid and '_cid' not in payload:
+                # Copy to avoid mutating caller's dict — payload may be reused.
+                payload = dict(payload)
+                payload['_cid'] = cid
+            data = _json_dumps_bytes(payload)
+        elif isinstance(payload, list):
             data = _json_dumps_bytes(payload)
         elif isinstance(payload, (bytes, bytearray)):
             data = payload
@@ -248,11 +314,25 @@ class MqttNode:
                     data = raw.decode('utf-8', errors='replace')
             else:
                 data = raw
+            # Extract correlation_id if present in the payload, so any log
+            # events / publishes inside the callback inherit it. Fresh cid
+            # generated when the inbound message has none — gives every
+            # message-driven action a traceable id even if the producer
+            # didn't bother to set one.
+            inbound_cid: Optional[str] = None
+            if isinstance(data, dict):
+                cid_val = data.get('_cid')
+                if isinstance(cid_val, str) and cid_val:
+                    inbound_cid = cid_val
+            cid = inbound_cid or new_correlation_id()
+            token = set_correlation_id(cid)
             t0 = time.monotonic()
             try:
                 callback(mqtt_msg.topic, data)
             except Exception as exc:
                 self._log.error('Callback error on %s: %s', mqtt_msg.topic, exc)
+            finally:
+                _correlation_id.reset(token)
             elapsed = time.monotonic() - t0
             elapsed_ms = elapsed * 1000
             if elapsed_ms > self._perf_cb_max_ms:
@@ -441,14 +521,18 @@ class MqttNode:
         """Publish error/warning to centralized log topic for dashboard aggregation."""
         if self._mqtt_connected:
             try:
+                payload = {
+                    'node': self.name,
+                    'level': level,
+                    'msg': text[:200],
+                    'ts': time.time(),
+                }
+                cid = current_correlation_id()
+                if cid:
+                    payload['cid'] = cid
                 self._client.publish(
                     f'samurai/{self._robot_id}/log/events',
-                    _json_dumps_bytes({
-                        'node': self.name,
-                        'level': level,
-                        'msg': text[:200],
-                        'ts': time.time(),
-                    }),
+                    _json_dumps_bytes(payload),
                     qos=0)
             except Exception:
                 pass  # never let logging crash the node
