@@ -91,3 +91,8 @@ nav:
       - 'SLAM map (log-odds occupancy)': algorithms/slam-map.md
       - 'PWM motor (PCA9685, slow-decay)': algorithms/pwm-motor.md
       - 'Accelerometer position estimator': algorithms/accel-position.md
+      - 'Follow-me (person tracking)': algorithms/follow-me.md
+      - 'Patrol (waypoint sequence)': algorithms/patrol.md
+      - 'Geofence & sensors': algorithms/geofence-sensors.md
+      - 'Simulator overview': algorithms/simulator.md
+      - 'Theory foundations': algorithms/theory.md
