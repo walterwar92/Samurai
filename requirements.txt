@@ -1,6 +1,17 @@
 # ========================================
 # Samurai Robot — Python Dependencies
 # ========================================
+# This file lists DIRECT dependencies with loose constraints — suitable for
+# development. For reproducible production deployments generate a fully-pinned
+# `requirements.lock` ON THE TARGET PLATFORM (Pi 4 arm64 / laptop x86):
+#
+#     ./scripts/lock-requirements.sh                # writes requirements.lock
+#     pip install --no-deps -r requirements.lock    # deterministic install
+#
+# requirements.lock is gitignored — it pins both top-level deps and the entire
+# transitive set (numpy ABI, etc.) to versions that work on YOUR build host.
+# Committing a single lock file across Pi/laptop/Windows would cause install
+# failures from platform-specific wheel hashes.
 
 # --- Hardware (Raspberry Pi) ---
 gpiozero

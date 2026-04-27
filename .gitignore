@@ -108,6 +108,11 @@ logs/
 *.vrb
 *.synctex.gz
 
+# --- Locked requirements (#70) ---
+# Generated on the deployment platform via ./scripts/lock-requirements.sh.
+# Platform-specific (arm64 vs x86_64 wheel hashes) — never commit.
+requirements.lock
+
 # --- Claude Code ---
 .claude/
 
