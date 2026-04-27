@@ -87,3 +87,4 @@ nav:
       - 'Velocity EKF (2D fusion)': algorithms/velocity-ekf.md
       - 'Odometry (differential drive)': algorithms/odometry.md
       - 'Quaternions & sensor projections': algorithms/quaternions.md
+      - 'IMU calibration & filtering': algorithms/imu-calibration.md
