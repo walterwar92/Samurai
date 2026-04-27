@@ -83,3 +83,4 @@ nav:
   - Algorithms:
       - 'A* pathfinding & Bresenham': algorithms/pathfinding.md
       - 'Pure Pursuit (path replay)': algorithms/pure-pursuit.md
+      - 'IMU EKF (yaw + bias)': algorithms/imu-ekf.md
