@@ -68,11 +68,10 @@ export interface SamcanApi {
   applyPreset: (name: 'park' | 'forward' | 'grab') => Promise<void>
 }
 
-// Опрос телеметрии. Когда соединение есть — быстро (200 мс).
-// При ошибках растёт backoff до 5 сек чтобы не нагружать браузер
-// fetch'ами в холостую (когда bridge не запущен).
-const POLL_OK_MS   = 250
-const POLL_MAX_MS  = 5000
+// Polling fallback — used only when the SSE stream is unavailable
+// (older proxy / bridge without /api/samcan/stream support).
+const POLL_OK_MS = 1000
+const POLL_MAX_MS = 5000
 
 export function useSamcan(): SamcanApi {
   const [state, setState] = useState<SamcanState | null>(null)
@@ -80,40 +79,85 @@ export function useSamcan(): SamcanApi {
 
   useEffect(() => {
     aliveRef.current = true
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let backoff = POLL_OK_MS
+    let pollTimer: ReturnType<typeof setTimeout> | null = null
+    let eventSource: EventSource | null = null
+    let useSSE = true   // start with SSE; flip on first error
 
-    const schedule = (ms: number) => {
-      if (!aliveRef.current) return
-      timer = setTimeout(tick, ms)
-    }
-
-    const tick = async () => {
-      let ok = false
+    // ── SSE path (preferred, #29) ───────────────────────────────────
+    // EventSource handles auto-reconnect. We just listen and parse.
+    const startSSE = () => {
       try {
-        const ctrl = new AbortController()
-        const t = setTimeout(() => ctrl.abort(), 1500)
-        const res = await fetch('/api/samcan/state', { cache: 'no-store', signal: ctrl.signal })
-        clearTimeout(t)
-        if (res.ok) {
-          const data = await res.json()
-          if (aliveRef.current) setState(data)
-          ok = true
+        eventSource = new EventSource('/api/samcan/stream')
+        eventSource.onmessage = (ev) => {
+          if (!aliveRef.current) return
+          try {
+            const data = JSON.parse(ev.data)
+            setState(data)
+          } catch {
+            /* malformed frame — drop */
+          }
+        }
+        eventSource.onerror = () => {
+          // Browser will auto-retry; mark stale meanwhile. If this fails
+          // repeatedly, fall back to polling.
+          if (!aliveRef.current) return
+          setState((s) => (s ? { ...s, connected: false, telemetry_fresh: false } : null))
+          // After 3 retries with no successful message, switch to polling.
+          // EventSource's `readyState === CLOSED` is the signal it gave up.
+          if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+            useSSE = false
+            eventSource.close()
+            eventSource = null
+            startPolling()
+          }
         }
       } catch {
-        /* network/timeout/abort — handled below */
+        useSSE = false
+        startPolling()
       }
-      if (!ok && aliveRef.current) {
-        setState(s => s ? { ...s, connected: false, telemetry_fresh: false } : null)
-      }
-      backoff = ok ? POLL_OK_MS : Math.min(POLL_MAX_MS, Math.max(POLL_OK_MS * 2, backoff * 2))
-      schedule(backoff)
     }
 
-    tick()
+    // ── Polling fallback ───────────────────────────────────────────
+    const startPolling = () => {
+      let backoff = POLL_OK_MS
+      const schedule = (ms: number) => {
+        if (!aliveRef.current) return
+        pollTimer = setTimeout(tick, ms)
+      }
+      const tick = async () => {
+        let ok = false
+        try {
+          const ctrl = new AbortController()
+          const t = setTimeout(() => ctrl.abort(), 1500)
+          const res = await fetch('/api/samcan/state', { cache: 'no-store', signal: ctrl.signal })
+          clearTimeout(t)
+          if (res.ok) {
+            const data = await res.json()
+            if (aliveRef.current) setState(data)
+            ok = true
+          }
+        } catch {
+          /* network/timeout/abort */
+        }
+        if (!ok && aliveRef.current) {
+          setState((s) => (s ? { ...s, connected: false, telemetry_fresh: false } : null))
+        }
+        backoff = ok ? POLL_OK_MS : Math.min(POLL_MAX_MS, Math.max(POLL_OK_MS * 2, backoff * 2))
+        schedule(backoff)
+      }
+      tick()
+    }
+
+    if (useSSE && typeof EventSource !== 'undefined') {
+      startSSE()
+    } else {
+      startPolling()
+    }
+
     return () => {
       aliveRef.current = false
-      if (timer) clearTimeout(timer)
+      if (pollTimer) clearTimeout(pollTimer)
+      if (eventSource) eventSource.close()
     }
   }, [])
 

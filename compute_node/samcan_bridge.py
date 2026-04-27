@@ -34,6 +34,7 @@ import serial
 import serial.tools.list_ports
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -372,8 +373,7 @@ async def post_scenario(req: ScenarioReq) -> dict:
     return {"ok": True, "scenario": name, "steps": len(steps)}
 
 
-@app.get("/api/samcan/state")
-async def get_state() -> dict:
+def _build_state_dict() -> dict:
     fresh = state.connected and (time.time() - state.last_seen_ts < 2.0)
     return {
         "connected": state.connected,
@@ -389,6 +389,56 @@ async def get_state() -> dict:
         "rx_count": state.rx_count,
         "age_sec": round(time.time() - state.last_seen_ts, 2) if state.last_seen_ts else None,
     }
+
+
+@app.get("/api/samcan/state")
+async def get_state() -> dict:
+    return _build_state_dict()
+
+
+@app.get("/api/samcan/stream")
+async def stream_state() -> StreamingResponse:
+    """Server-Sent Events: pushes state on change instead of REST polling (#29).
+
+    Replaces the 4 req/sec/client REST polling pattern. With N clients
+    connected this scales to N concurrent streams that each only send a
+    frame when state actually changes — net traffic and server CPU drop
+    proportionally to (idle / active) ratio of the bridge.
+
+    Connecting clients receive the current snapshot immediately, then
+    diffs as state mutates. EventSource (browser built-in) handles
+    auto-reconnect, so we don't need ack/retry plumbing on the client.
+    """
+
+    async def event_generator():
+        last_sent: str = ""
+        # Initial frame: send immediately so reconnecting clients see
+        # current state without waiting for the next change.
+        try:
+            while True:
+                payload = json.dumps(_build_state_dict(), separators=(",", ":"))
+                if payload != last_sent:
+                    yield f"data: {payload}\n\n"
+                    last_sent = payload
+                else:
+                    # Keep-alive comment every iteration of no-change to
+                    # prevent intermediary proxies from killing the
+                    # connection on idle. SSE convention: lines starting
+                    # with `:` are ignored by EventSource clients.
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.25)   # 4 Hz check; only send on diff
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
+        },
+    )
 
 
 @app.get("/api/samcan/diag")

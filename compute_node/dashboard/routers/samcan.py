@@ -16,7 +16,7 @@ import logging
 import os
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 try:
     import httpx
@@ -139,6 +139,41 @@ async def _proxy(path: str, request: Request) -> Response:
          'detail': str(last_exc) if last_exc else 'unknown',
          'attempts': _MAX_ATTEMPTS},
         status_code=503,
+    )
+
+
+# Streaming proxy specifically for SSE (#29). httpx's regular client
+# buffers the whole response, which would defeat the point of an
+# event stream. We use stream() and forward chunks as they arrive.
+@router.get('/stream', tags=['samcan'], operation_id='samcan_stream')
+async def samcan_stream(request: Request) -> Response:
+    if not _HAS_HTTPX:
+        return JSONResponse({'error': 'httpx not installed'}, status_code=500)
+    target = f'{SAMCAN_BRIDGE_URL}/api/samcan/stream'
+
+    async def gen():
+        # Use a fresh client for streaming so the keepalive isn't shared
+        # with short-request consumers.
+        timeout = httpx.Timeout(connect=2.0, read=None, write=2.0, pool=2.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as sclient:
+                async with sclient.stream('GET', target) as r:
+                    async for chunk in r.aiter_bytes():
+                        if await request.is_disconnected():
+                            break
+                        yield chunk
+        except Exception as exc:
+            log.warning('samcan SSE proxy error: %s', exc)
+            yield f'event: error\ndata: {{"error":"{exc}"}}\n\n'.encode()
+
+    return StreamingResponse(
+        gen(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        },
     )
 
 
