@@ -44,6 +44,7 @@ jobs:
             tests/test_sim_arena.py \
             tests/test_sim_robot.py \
             tests/test_sim_sensors.py \
+            tests/test_sim_renderer.py \
             -v --tb=short
 
   mqtt-integration:

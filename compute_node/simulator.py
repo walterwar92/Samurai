@@ -953,113 +953,24 @@ class SimFSM:
 # Map Renderer — top-down view of arena
 # ═════════════════════════════════════════════════════════════════
 
-class MapRenderer:
+# MapRenderer — extracted to compute_node/sim_renderer.py (#44 phase 5).
+# Re-exported with constructor pinned to legacy module-level constants.
+from compute_node.sim_renderer import MapRenderer as _ExternalMapRenderer  # noqa: E402
+
+
+class MapRenderer(_ExternalMapRenderer):  # type: ignore[misc]
+    """Backward-compat shim: pins ROBOT_RADIUS, ULTRASONIC_MAX, CAM_FOV,
+    COLOUR_BGR to the simulator's module-level constants so existing
+    `MapRenderer(arena)` calls keep their original styling."""
+
     def __init__(self, arena: SimArena, scale: int = 100):
-        self.arena = arena
-        self.scale = scale  # pixels per metre
-        self.w = int(arena.width * scale)
-        self.h = int(arena.height * scale)
-
-    def render(self, robot: SimRobot, scan_points=None,
-               planned_path=None) -> bytes:
-        img = np.full((self.h, self.w, 3), 240, dtype=np.uint8)
-
-        # Walls
-        cv2.rectangle(img, (0, 0), (self.w - 1, self.h - 1), (30, 30, 30), 3)
-
-        # Grid
-        for i in range(1, int(self.arena.width)):
-            x = int(i * self.scale)
-            cv2.line(img, (x, 0), (x, self.h), (210, 210, 210), 1)
-        for i in range(1, int(self.arena.height)):
-            y = int(i * self.scale)
-            cv2.line(img, (0, y), (self.w, y), (210, 210, 210), 1)
-
-        # Forbidden zones (semi-transparent red)
-        overlay = img.copy()
-        for zone in self.arena.forbidden_zones:
-            px1 = int(zone['x1'] * self.scale)
-            py1 = self.h - int(zone['y2'] * self.scale)  # flip Y
-            px2 = int(zone['x2'] * self.scale)
-            py2 = self.h - int(zone['y1'] * self.scale)
-            cv2.rectangle(overlay, (px1, py1), (px2, py2), (0, 0, 200), -1)
-            cv2.rectangle(img, (px1, py1), (px2, py2), (0, 0, 180), 2)
-            # Zone label
-            cx = (px1 + px2) // 2
-            cy = (py1 + py2) // 2
-            cv2.putText(img, 'X', (cx - 5, cy + 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        # Blend overlay for semi-transparency (40% opacity)
-        cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
-
-        # Balls
-        for ball in self.arena.balls:
-            if ball['grabbed']:
-                continue
-            bx = int(ball['x'] * self.scale)
-            by = self.h - int(ball['y'] * self.scale)  # flip Y
-            colour_bgr = COLOUR_BGR.get(ball['colour'], (200, 200, 200))
-            cv2.circle(img, (bx, by), max(3, int(ball['radius'] * self.scale * 2)),
-                       colour_bgr, -1)
-            cv2.circle(img, (bx, by), max(3, int(ball['radius'] * self.scale * 2)),
-                       (0, 0, 0), 1)
-
-        # Scan points
-        if scan_points:
-            for pt in scan_points:
-                sx = int(pt[0] * self.scale)
-                sy = self.h - int(pt[1] * self.scale)
-                cv2.circle(img, (sx, sy), 2, (200, 160, 60), -1)
-
-        # Planned path (yellow-green polyline)
-        if planned_path and len(planned_path) >= 2:
-            pts = []
-            for wx, wy in planned_path:
-                px = int(wx * self.scale)
-                py = self.h - int(wy * self.scale)
-                pts.append([px, py])
-            pts_arr = np.array(pts, dtype=np.int32)
-            cv2.polylines(img, [pts_arr], False, (0, 200, 100), 2,
-                          cv2.LINE_AA)
-            # Draw waypoint dots
-            for p in pts:
-                cv2.circle(img, (p[0], p[1]), 3, (0, 180, 80), -1)
-
-        # Robot
-        rx = int(robot.x * self.scale)
-        ry = self.h - int(robot.y * self.scale)
-        r_px = max(4, int(ROBOT_RADIUS * self.scale))
-
-        # Robot body
-        cv2.circle(img, (rx, ry), r_px, (79, 195, 247), -1)
-        cv2.circle(img, (rx, ry), r_px, (40, 100, 130), 2)
-
-        # Direction arrow
-        arrow_len = r_px + 8
-        ax = int(rx + arrow_len * math.cos(robot.theta))
-        ay = int(ry - arrow_len * math.sin(robot.theta))  # flip Y
-        cv2.arrowedLine(img, (rx, ry), (ax, ay), (40, 100, 130), 2,
-                        tipLength=0.3)
-
-        # FOV cone
-        fov_len = int(ULTRASONIC_MAX * self.scale * 0.4)
-        for sign in (-1, 1):
-            a = robot.theta + sign * CAM_FOV / 2
-            fx = int(rx + fov_len * math.cos(a))
-            fy = int(ry - fov_len * math.sin(a))
-            cv2.line(img, (rx, ry), (fx, fy), (150, 200, 150), 1)
-
-        _, png = cv2.imencode('.png', img)
-        return png.tobytes()
-
-    def get_map_info(self) -> dict:
-        return {
-            'width': self.w,
-            'height': self.h,
-            'resolution': 1.0 / self.scale,
-            'origin_x': 0.0,
-            'origin_y': 0.0,
-        }
+        super().__init__(
+            arena, scale=scale,
+            robot_radius=ROBOT_RADIUS,
+            ultrasonic_max=ULTRASONIC_MAX,
+            cam_fov=CAM_FOV,
+            colour_bgr=COLOUR_BGR,
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
