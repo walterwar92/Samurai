@@ -46,6 +46,7 @@ jobs:
             tests/test_sim_sensors.py \
             tests/test_sim_renderer.py \
             tests/test_sim_detector.py \
+            tests/test_sim_fsm_states.py \
             -v --tb=short
 
   mqtt-integration:

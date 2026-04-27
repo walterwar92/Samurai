@@ -242,14 +242,10 @@ class SimDetector(_ExternalSimDetector):  # type: ignore[misc]
 # FSM — ported from fsm_node.py (no ROS2)
 # ═════════════════════════════════════════════════════════════════
 
-class State:
-    IDLE = 'IDLE'
-    SEARCHING = 'SEARCHING'
-    TARGETING = 'TARGETING'
-    APPROACHING = 'APPROACHING'
-    GRABBING = 'GRABBING'
-    CALLING = 'CALLING'
-    RETURNING = 'RETURNING'
+# State — extracted to compute_node/sim_fsm_states.py (#44 phase 7a).
+# Re-exported as a class so legacy `State.IDLE` access keeps working;
+# the new module uses an `Enum` for stronger typing.
+from compute_node.sim_fsm_states import State  # noqa: E402, F401
 
 
 class SimFSM:
