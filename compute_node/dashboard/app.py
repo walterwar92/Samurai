@@ -27,13 +27,14 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 import socketio
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 # slowapi is optional — without it, dashboard runs unchanged. With it,
@@ -179,6 +180,80 @@ def create_app(
             response.headers['Link'] = f'<{new_path}>; rel="successor-version"'
             return response
         return await call_next(request)
+
+    # ── Idempotency-Key middleware (#59) ──────────────────────────────
+    # Clients (frontend api.ts retry wrapper, mobile app) may retry POSTs
+    # after a network blip when the original request actually reached the
+    # server. Without idempotency the second request executes the command
+    # twice (e.g. emergency stop fired thrice, calibration profile saved
+    # twice). With an Idempotency-Key header, the cached response from the
+    # first request is returned for any retry within a 1-minute window.
+    #
+    # In-memory cache — single dashboard process, no horizontal scaling
+    # currently. Bound: 256 entries (LRU-evicted), 60s TTL.
+    _IDEM_TTL_S = 60.0
+    _IDEM_MAX_ENTRIES = 256
+    _idem_cache: dict[str, tuple[float, int, bytes, str]] = {}
+    _idem_lock = asyncio.Lock()
+
+    def _idem_evict_expired(now: float) -> None:
+        # Drop expired entries plus, if still over budget, the oldest.
+        expired = [k for k, (ts, *_) in _idem_cache.items() if now - ts > _IDEM_TTL_S]
+        for k in expired:
+            _idem_cache.pop(k, None)
+        if len(_idem_cache) > _IDEM_MAX_ENTRIES:
+            # Sorted by insertion ts ascending → oldest first.
+            for k, _ in sorted(_idem_cache.items(), key=lambda kv: kv[1][0])[
+                    : len(_idem_cache) - _IDEM_MAX_ENTRIES]:
+                _idem_cache.pop(k, None)
+
+    @app.middleware('http')
+    async def idempotency_key(request: Request, call_next):
+        # Only mutating verbs care; reads are inherently idempotent.
+        if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            return await call_next(request)
+        key = request.headers.get('idempotency-key') or \
+              request.headers.get('Idempotency-Key')
+        if not key:
+            return await call_next(request)
+
+        # Scope by method + path so an Idempotency-Key reused across distinct
+        # endpoints doesn't accidentally short-circuit a different operation.
+        cache_key = f'{request.method} {request.url.path} {key}'
+        now = time.monotonic()
+
+        async with _idem_lock:
+            cached = _idem_cache.get(cache_key)
+            if cached is not None:
+                ts, status, body, ctype = cached
+                if now - ts <= _IDEM_TTL_S:
+                    return Response(
+                        content=body,
+                        status_code=status,
+                        media_type=ctype,
+                        headers={'Idempotency-Replay': 'true'},
+                    )
+                _idem_cache.pop(cache_key, None)
+
+        response = await call_next(request)
+
+        # Only cache successful responses — retrying a 500 should be allowed
+        # to actually re-attempt the operation.
+        if 200 <= response.status_code < 300:
+            body_bytes = b''
+            async for chunk in response.body_iterator:
+                body_bytes += chunk
+            ctype = response.headers.get('content-type', 'application/json')
+            async with _idem_lock:
+                _idem_evict_expired(now)
+                _idem_cache[cache_key] = (now, response.status_code,
+                                          body_bytes, ctype)
+            return Response(content=body_bytes,
+                            status_code=response.status_code,
+                            media_type=ctype,
+                            headers={k: v for k, v in response.headers.items()
+                                     if k.lower() not in ('content-length',)})
+        return response
 
     # ── /api/v1/ routers ──────────────────────────────────────────────
     # robot
