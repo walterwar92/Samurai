@@ -79,6 +79,9 @@ jobs:
       - name: Lint
         run: npx eslint . --max-warnings=0
         continue-on-error: true   # baseline lint debt — fail-soft until cleaned
+      - name: Prettier check
+        run: npx prettier --check "src/**/*.{ts,tsx,css,md}"
+        continue-on-error: true   # baseline formatting drift — fail-soft
 
   frontend-build:
     name: Frontend production build

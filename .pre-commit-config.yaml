@@ -1,0 +1,48 @@
+# Pre-commit hooks (#60)
+#
+# Install: `pip install pre-commit && pre-commit install` (run once per clone)
+# After install, every `git commit` runs these hooks on staged files.
+# To run manually: `pre-commit run --all-files`
+#
+# Why pre-commit instead of husky: pre-commit (pip package) covers both Python
+# AND frontend with one tool, so we don't pay the husky overhead just for one
+# project's frontend. The frontend prettier check runs through `prettier --check`
+# locally without needing husky/lint-staged.
+
+repos:
+  # ── Generic hygiene ─────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'   # markdown trailing-spaces sometimes intentional (line breaks)
+      - id: end-of-file-fixer
+      - id: check-yaml
+        exclude: '^compute_node/frontend/openapi\.json$'
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # ── Python: light-touch formatting only (no auto-fixers that rewrite
+  # logic — those should be opt-in PR by PR, not on every commit). ─────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: ['--fix', '--select=F401,F841,E711,E712,E713,E714,W291,W293']
+        # F401 = unused import, F841 = unused local var, E711/12 = == None / is True,
+        # E713/14 = not in / not is, W291/3 = trailing whitespace.
+
+  # ── Frontend (run inside compute_node/frontend) ─────────────────────
+  - repo: local
+    hooks:
+      - id: prettier-frontend
+        name: prettier --check (frontend)
+        entry: bash -c 'cd compute_node/frontend && npx --no prettier --check "$@" || true' --
+        language: system
+        files: '^compute_node/frontend/src/.*\.(ts|tsx|css|md)$'
+        # `|| true` keeps this advisory until baseline drift is cleaned up.
+        # Flip to a hard failure once the codebase is formatter-clean.

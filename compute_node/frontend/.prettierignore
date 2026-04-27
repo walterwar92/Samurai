@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+coverage
+*.lock
+*.lockb
+package-lock.json
+src/api/generated/
+openapi.json
