@@ -365,17 +365,40 @@ def create_app(
 
     async def _push_loop():
         last_json = ''
+        last_payload = None
+        idle_keepalive = 0     # tick counter; force a re-emit every ~5s even if idle
+        IDLE_KEEPALIVE_TICKS = 50   # 5s @ 10 Hz — keeps reconnecting clients fresh
         while True:
             await asyncio.sleep(0.1)  # 10 Hz
+            # Fast-path skip when nothing has changed since the last tick.
+            # The dirty flag is set by handlers/routers via state.mark_dirty()
+            # whenever they mutate state; if it's clear we can avoid the
+            # ~100µs snapshot+JSON cost AND the per-client emit() fan-out.
+            # Periodic re-emit (idle_keepalive) preserves the previous
+            # behaviour of pushing periodic frames to clients that may
+            # reconnect mid-idle.
+            dirty = state.consume_dirty()
+            if not dirty:
+                idle_keepalive += 1
+                if idle_keepalive < IDLE_KEEPALIVE_TICKS or last_payload is None:
+                    continue
+                idle_keepalive = 0   # fall through to re-emit cached payload
+            else:
+                idle_keepalive = 0
+
             try:
-                payload = state.legacy_socketio_state()
-                payload_json = json.dumps(payload, separators=(',', ':'), default=str)
+                if dirty or last_payload is None:
+                    payload = state.legacy_socketio_state()
+                    payload_json = json.dumps(payload, separators=(',', ':'), default=str)
+                else:
+                    payload, payload_json = last_payload, last_json
             except Exception as exc:
                 log.exception('SocketIO push: state serialization failed: %s', exc)
                 continue
-            if payload_json == last_json:
+            if payload_json == last_json and not dirty:
                 continue
             last_json = payload_json
+            last_payload = payload
             await sio.emit('state_update', payload)
 
     @app.on_event('startup')

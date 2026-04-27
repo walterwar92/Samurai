@@ -176,6 +176,15 @@ class DashboardState:
         # потенциальным deadlock'ам при цепочках обновлений.
         self.lock: threading.RLock = threading.RLock()
 
+        # Dirty flag (#21): producers (MQTT/ROS2 handlers, REST POSTs) call
+        # mark_dirty() after mutating state. The /ws/state push loop checks
+        # consume_dirty() each tick and skips the whole snapshot+serialize+
+        # broadcast pipeline when nothing has changed. With 4+ connected
+        # clients this is the difference between every-tick fan-out and
+        # idle CPU. Initial value True so the first tick always emits an
+        # initial state snapshot to fresh subscribers.
+        self._dirty: bool = True
+
         self.robot = _RobotBlock()
         self.sensors = _SensorsBlock()
         self.actuators = _ActuatorsBlock()
@@ -184,6 +193,21 @@ class DashboardState:
         self.control = _ControlBlock()
         self.camera = _CameraBlock()
         self.system = _SystemBlock()
+
+    # ── Dirty-flag helpers (#21) ───────────────────────────────────────
+    def mark_dirty(self) -> None:
+        """Producer signal that state has changed since the last consume."""
+        self._dirty = True
+
+    def consume_dirty(self) -> bool:
+        """Atomically read-and-clear the dirty flag. True iff state changed."""
+        # Bool read+write under the GIL is effectively atomic, but the lock
+        # gives a clean memory-ordering boundary against concurrent writers
+        # so a flag set DURING this consume isn't lost.
+        with self.lock:
+            was = self._dirty
+            self._dirty = False
+            return was
 
     # ── Atomic snapshot ────────────────────────────────────────────────
     def snapshot(self) -> dict[str, Any]:
@@ -358,10 +382,12 @@ class DashboardState:
         """Добавить запись в event_log с автоматическим locking."""
         with self.lock:
             self.system.event_log.append(entry)
+        self.mark_dirty()
 
     def append_voice_log(self, entry: dict):
         with self.lock:
             self.system.voice_log.append(entry)
+        self.mark_dirty()
 
     def add_zone(self, x1: float, y1: float, x2: float, y2: float) -> ForbiddenZone:
         """Атомарно создать зону с auto-incremented ID."""
@@ -372,19 +398,26 @@ class DashboardState:
                 x1=x1, y1=y1, x2=x2, y2=y2,
             )
             self.map.zones.append(z)
-            return z
+        self.mark_dirty()
+        return z
 
     def remove_zone(self, zone_id: int) -> bool:
         """Удалить зону по ID. True если удалена."""
         with self.lock:
             before = len(self.map.zones)
             self.map.zones = [z for z in self.map.zones if z.id != zone_id]
-            return len(self.map.zones) < before
+            removed = len(self.map.zones) < before
+        if removed:
+            self.mark_dirty()
+        return removed
 
     def clear_zones(self):
         with self.lock:
+            had_any = len(self.map.zones) > 0
             self.map.zones = []
             self.map.zone_counter = 0
+        if had_any:
+            self.mark_dirty()
 
     # ── Legacy SocketIO push (для совместимости со старым фронтом) ───
     def legacy_socketio_state(self) -> dict[str, Any]:

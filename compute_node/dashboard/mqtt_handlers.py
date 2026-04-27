@@ -170,6 +170,11 @@ class MQTTHandlers:
             handler(self, msg.payload)
         except Exception as exc:
             log.error('MQTT msg error [%s]: %s', suffix, exc)
+            return
+        # Single mark_dirty() after every successful MQTT-driven mutation.
+        # The push loop reads-and-clears this flag to decide whether the
+        # next tick needs a fresh snapshot+broadcast (#21).
+        self._state.mark_dirty()
 
     # ── Per-topic handlers ─────────────────────────────────────────
     def _h_camera_endpoint(self, payload: bytes):
