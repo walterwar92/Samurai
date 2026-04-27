@@ -192,78 +192,24 @@ class SimRobot(_ExternalSimRobot):  # type: ignore[misc]
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimSensors — ultrasonic ray-cast + IMU
+# SimSensors — extracted to compute_node/sim_sensors.py (#44 phase 4).
+# Re-exported with constructor pinned to legacy module-level constants.
 # ═════════════════════════════════════════════════════════════════
 
-class SimSensors:
+from compute_node.sim_sensors import SimSensors as _ExternalSimSensors  # noqa: E402
+
+
+class SimSensors(_ExternalSimSensors):  # type: ignore[misc]
+    """Backward-compat shim: pins ULTRASONIC_MIN/MAX and SIM_DT, defaults
+    to noisy mode (matching the original behaviour)."""
+
     def __init__(self):
-        self.range_m = ULTRASONIC_MAX
-        self.imu_yaw = 0.0
-        self.imu_pitch = 0.0
-        self.imu_roll = 0.0
-        self.imu_gyro_z = 0.0
-        self.accel_x = 0.0
-
-    def update(self, robot: SimRobot, arena: SimArena):
-        self._update_ultrasonic(robot, arena)
-        self._update_imu(robot)
-
-    def _update_ultrasonic(self, robot: SimRobot, arena: SimArena):
-        """Ray-cast forward from robot to find nearest obstacle."""
-        rx, ry = robot.x, robot.y
-        dx = math.cos(robot.theta)
-        dy = math.sin(robot.theta)
-        best = ULTRASONIC_MAX
-
-        # Check walls
-        # Right wall (x = arena.width)
-        if dx > 0:
-            t = (arena.width - rx) / dx
-            if ULTRASONIC_MIN < t < best:
-                best = t
-        # Left wall (x = 0)
-        if dx < 0:
-            t = -rx / dx
-            if ULTRASONIC_MIN < t < best:
-                best = t
-        # Top wall (y = arena.height)
-        if dy > 0:
-            t = (arena.height - ry) / dy
-            if ULTRASONIC_MIN < t < best:
-                best = t
-        # Bottom wall (y = 0)
-        if dy < 0:
-            t = -ry / dy
-            if ULTRASONIC_MIN < t < best:
-                best = t
-
-        # Check balls
-        for ball in arena.balls:
-            if ball['grabbed']:
-                continue
-            bx, by = ball['x'], ball['y']
-            # Distance from ray to ball centre
-            to_ball_x = bx - rx
-            to_ball_y = by - ry
-            proj = to_ball_x * dx + to_ball_y * dy  # projection on ray
-            if proj < ULTRASONIC_MIN or proj > best:
-                continue
-            perp = abs(to_ball_x * dy - to_ball_y * dx)  # perpendicular dist
-            if perp < ball['radius'] + 0.05:  # ultrasonic cone
-                if proj < best:
-                    best = proj
-
-        # Add noise
-        noise = random.gauss(0, 0.005)
-        self.range_m = max(ULTRASONIC_MIN, min(ULTRASONIC_MAX, best + noise))
-
-    def _update_imu(self, robot: SimRobot):
-        noise = random.gauss(0, 0.3)
-        self.imu_yaw = math.degrees(robot.theta) + noise
-        self.imu_pitch = random.gauss(0, 0.2)
-        self.imu_roll = random.gauss(0, 0.2)
-        self.imu_gyro_z = robot.v_angular
-        self.accel_x = (robot.v_linear - robot._prev_v_linear) / SIM_DT
+        super().__init__(
+            ultrasonic_min=ULTRASONIC_MIN,
+            ultrasonic_max=ULTRASONIC_MAX,
+            dt=SIM_DT,
+            inject_noise=True,
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
