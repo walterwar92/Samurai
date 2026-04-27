@@ -216,159 +216,26 @@ class SimSensors(_ExternalSimSensors):  # type: ignore[misc]
 # SimDetector — geometric "YOLO" detection
 # ═════════════════════════════════════════════════════════════════
 
-class SimDetector:
+# SimDetector — extracted to compute_node/sim_detector.py (#44 phase 6).
+# Re-exported with constructor pinned to legacy module-level constants.
+from compute_node.sim_detector import SimDetector as _ExternalSimDetector  # noqa: E402
+
+
+class SimDetector(_ExternalSimDetector):  # type: ignore[misc]
+    """Backward-compat shim: pins CAM_W/CAM_H, FOCAL_LENGTH_PX,
+    BALL_DIAMETER_M, CAM_FOV, COLOUR_BGR to the simulator's module-level
+    constants so existing `SimDetector()` callers retain their original
+    camera projection."""
+
     def __init__(self):
-        self.detections = []
-        self.annotated_frame = None
-
-    def update(self, robot: SimRobot, arena: SimArena):
-        """Detect visible balls and render camera view."""
-        self.detections = []
-        frame = self._render_camera(robot, arena)
-        self.annotated_frame = frame
-
-    def _render_camera(self, robot: SimRobot, arena: SimArena) -> np.ndarray:
-        """Render first-person camera view."""
-        # Dark grey floor
-        frame = np.full((CAM_H, CAM_W, 3), (60, 60, 55), dtype=np.uint8)
-
-        # Horizon line at 40% from top
-        horizon_y = int(CAM_H * 0.4)
-        # Sky (lighter grey)
-        frame[:horizon_y, :] = (90, 85, 80)
-        # Floor gradient
-        for row in range(horizon_y, CAM_H):
-            t = (row - horizon_y) / (CAM_H - horizon_y)
-            grey = int(55 + t * 20)
-            frame[row, :] = (grey, grey, grey - 5)
-
-        # Render walls as perspective lines
-        self._draw_walls(frame, robot, arena, horizon_y)
-
-        # Render balls in view
-        visible = []
-        for ball in arena.balls:
-            if ball['grabbed']:
-                continue
-            bx, by = ball['x'], ball['y']
-            # Vector from robot to ball
-            dx = bx - robot.x
-            dy = by - robot.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < 0.01 or dist > 3.0:
-                continue
-
-            # Angle to ball relative to robot heading
-            angle = math.atan2(dy, dx) - robot.theta
-            angle = math.atan2(math.sin(angle), math.cos(angle))
-
-            if abs(angle) > CAM_FOV / 2:
-                continue
-
-            visible.append((dist, angle, ball))
-
-        # Sort by distance (far first, so near balls draw on top)
-        visible.sort(key=lambda v: -v[0])
-
-        for dist, angle, ball in visible:
-            # Project to screen
-            screen_x = int(CAM_W / 2 + (angle / (CAM_FOV / 2)) * (CAM_W / 2))
-
-            # Apparent size
-            apparent_px = int(FOCAL_LENGTH_PX * BALL_DIAMETER_M / dist)
-            apparent_px = max(4, min(200, apparent_px))
-
-            # Vertical position: balls are on the floor, lower = closer
-            screen_y = horizon_y + int((1.0 - 0.03 / max(0.1, dist)) *
-                                        (CAM_H - horizon_y) * 0.7)
-
-            colour_bgr = COLOUR_BGR.get(ball['colour'], (200, 200, 200))
-
-            # Draw ball (circle with highlight)
-            cv2.circle(frame, (screen_x, screen_y), apparent_px, colour_bgr, -1)
-            # Highlight
-            hl_x = screen_x - apparent_px // 4
-            hl_y = screen_y - apparent_px // 4
-            hl_r = max(1, apparent_px // 4)
-            hl_colour = tuple(min(255, c + 60) for c in colour_bgr)
-            cv2.circle(frame, (hl_x, hl_y), hl_r, hl_colour, -1)
-
-            # Shadow
-            shadow_y = screen_y + apparent_px
-            cv2.ellipse(frame, (screen_x, shadow_y),
-                        (apparent_px, apparent_px // 4), 0, 0, 360,
-                        (30, 30, 25), -1)
-
-            # Detection bounding box
-            x1 = screen_x - apparent_px
-            y1 = screen_y - apparent_px
-            w = apparent_px * 2
-            h = apparent_px * 2
-            conf = max(0.5, min(0.99, 1.0 - dist / 3.0))
-
-            det = {
-                'colour': ball['colour'],
-                'class': 'sports ball',
-                'x': max(0, x1), 'y': max(0, y1),
-                'w': w, 'h': h,
-                'conf': round(conf, 3),
-                'distance': round(dist, 3),
-            }
-            self.detections.append(det)
-
-            # Annotate
-            label = f"{ball['colour']} {conf:.2f} {dist:.2f}m"
-            cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), (0, 255, 0), 2)
-            cv2.putText(frame, label, (x1, y1 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-
-        # HUD overlay
-        self._draw_hud(frame, robot)
-
-        return frame
-
-    def _draw_walls(self, frame, robot, arena, horizon_y):
-        """Draw arena walls as simple perspective lines."""
-        corners_world = [
-            (0, 0), (arena.width, 0),
-            (arena.width, arena.height), (0, arena.height),
-        ]
-        for i in range(4):
-            cx, cy = corners_world[i]
-            dx = cx - robot.x
-            dy = cy - robot.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < 0.1:
-                continue
-            angle = math.atan2(dy, dx) - robot.theta
-            angle = math.atan2(math.sin(angle), math.cos(angle))
-            if abs(angle) > CAM_FOV / 2 + 0.3:
-                continue
-            sx = int(CAM_W / 2 + (angle / (CAM_FOV / 2)) * (CAM_W / 2))
-            wall_h = int(min(200, 80 / max(0.3, dist)))
-            cv2.line(frame, (sx, horizon_y - wall_h),
-                     (sx, horizon_y + wall_h // 2), (100, 100, 110), 2)
-
-    def _draw_hud(self, frame, robot):
-        """Draw HUD: crosshair + compass."""
-        # Crosshair
-        cx, cy = CAM_W // 2, CAM_H // 2
-        cv2.line(frame, (cx - 15, cy), (cx + 15, cy), (0, 255, 0), 1)
-        cv2.line(frame, (cx, cy - 15), (cx, cy + 15), (0, 255, 0), 1)
-
-        # Compass
-        yaw_deg = math.degrees(robot.theta)
-        cv2.putText(frame, f"YAW: {yaw_deg:.0f}", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 200), 1)
-
-    def get_closest_detection(self, target_colour: str = ''):
-        """Get closest detection matching target colour."""
-        matches = self.detections
-        if target_colour:
-            matches = [d for d in matches if d['colour'] == target_colour]
-        if not matches:
-            return None
-        return min(matches, key=lambda d: d['distance'])
+        super().__init__(
+            cam_w=CAM_W,
+            cam_h=CAM_H,
+            focal_length_px=FOCAL_LENGTH_PX,
+            ball_diameter_m=BALL_DIAMETER_M,
+            cam_fov=CAM_FOV,
+            colour_bgr=COLOUR_BGR,
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
