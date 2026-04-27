@@ -68,8 +68,8 @@ EOF
     echo -e "${YELLOW}  ── Ctrl+C для остановки ──${NC}"
     echo ""
 
-    cd "$SAMURAI_ROOT/compute_node"
-    exec python3 simulator.py
+    cd "$SAMURAI_ROOT"
+    exec python3 -m compute_node.simulator
 }
 
 main "$@"
