@@ -86,3 +86,4 @@ nav:
       - 'IMU EKF (yaw + bias)': algorithms/imu-ekf.md
       - 'Velocity EKF (2D fusion)': algorithms/velocity-ekf.md
       - 'Odometry (differential drive)': algorithms/odometry.md
+      - 'Quaternions & sensor projections': algorithms/quaternions.md
