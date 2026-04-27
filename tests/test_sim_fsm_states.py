@@ -3,6 +3,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compute_node.sim_fsm_states import State, ALL_STATES
@@ -43,7 +45,6 @@ def test_lookup_by_value():
 
 
 def test_invalid_value_raises():
-    import pytest
     with pytest.raises(ValueError):
         State('UNKNOWN_STATE')
 
@@ -57,7 +58,11 @@ def test_all_states_tuple_is_immutable():
 
 def test_simulator_reexport():
     """Backward compat: importing State from simulator must yield the
-    same enum members."""
+    same enum members. simulator.py transitively imports cv2/numpy
+    (MapRenderer, SimDetector), so skip cleanly on environments without
+    those — matches the pattern used by tests/test_sim_renderer.py."""
+    pytest.importorskip('cv2')
+    pytest.importorskip('numpy')
     from compute_node import simulator
     assert simulator.State is State
     assert simulator.State.IDLE is State.IDLE
