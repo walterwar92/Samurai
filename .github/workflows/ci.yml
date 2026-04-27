@@ -40,6 +40,7 @@ jobs:
             tests/test_ekf_imu.py \
             tests/test_velocity_ekf.py \
             tests/test_schemas.py \
+            tests/test_pathfinding.py \
             -v --tb=short
 
   mqtt-integration:

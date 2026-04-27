@@ -115,182 +115,20 @@ PATH_SAFETY_MARGIN = 0.10  # 10 cm extra clearance around obstacles
 
 
 # ═════════════════════════════════════════════════════════════════
-# A* Pathfinder — grid-based pathfinding around forbidden zones
+# A* Pathfinder — extracted to compute_node/pathfinding.py (#44).
+# Re-exported here so existing call sites (`from simulator import find_path`)
+# keep working without modification.
 # ═════════════════════════════════════════════════════════════════
 
-import heapq
-
-def _build_grid(arena, zones, robot_radius):
-    """Build occupancy grid: True = blocked, False = free."""
-    cols = int(arena.width / PATH_GRID_RES)
-    rows = int(arena.height / PATH_GRID_RES)
-    grid = [[False] * cols for _ in range(rows)]
-    margin = robot_radius + PATH_SAFETY_MARGIN
-
-    for r in range(rows):
-        for c in range(cols):
-            wx = (c + 0.5) * PATH_GRID_RES
-            wy = (r + 0.5) * PATH_GRID_RES
-
-            # Block cells near arena walls
-            if (wx < margin or wx > arena.width - margin or
-                    wy < margin or wy > arena.height - margin):
-                grid[r][c] = True
-                continue
-
-            # Block cells inside forbidden zones (with robot radius margin)
-            for z in zones:
-                zx1 = z['x1'] - margin
-                zy1 = z['y1'] - margin
-                zx2 = z['x2'] + margin
-                zy2 = z['y2'] + margin
-                if zx1 <= wx <= zx2 and zy1 <= wy <= zy2:
-                    grid[r][c] = True
-                    break
-
-    return grid, rows, cols
-
-
-def _world_to_grid(wx, wy):
-    """Convert world metres → grid cell (col, row)."""
-    return int(wx / PATH_GRID_RES), int(wy / PATH_GRID_RES)
-
-
-def _grid_to_world(c, r):
-    """Convert grid cell → world centre metres."""
-    return (c + 0.5) * PATH_GRID_RES, (r + 0.5) * PATH_GRID_RES
-
-
-def find_path(arena, zones, start_xy, goal_xy, robot_radius=ROBOT_RADIUS):
-    """A* pathfinding from start to goal, avoiding walls and forbidden zones.
-    Returns list of (x, y) world-coordinate waypoints, or [] if no path."""
-    grid, rows, cols = _build_grid(arena, zones, robot_radius)
-
-    sc, sr = _world_to_grid(*start_xy)
-    gc, gr = _world_to_grid(*goal_xy)
-
-    # Clamp to grid bounds
-    sc = max(0, min(cols - 1, sc))
-    sr = max(0, min(rows - 1, sr))
-    gc = max(0, min(cols - 1, gc))
-    gr = max(0, min(rows - 1, gr))
-
-    # If start or goal is blocked, find nearest free cell
-    if grid[sr][sc]:
-        sr, sc = _nearest_free(grid, sr, sc, rows, cols)
-    if grid[gr][gc]:
-        gr, gc = _nearest_free(grid, gr, gc, rows, cols)
-
-    if sr is None or gr is None:
-        return []
-
-    # A* with 8-directional movement
-    DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
-            (-1, -1), (-1, 1), (1, -1), (1, 1)]
-    COSTS = [1.0, 1.0, 1.0, 1.0, 1.414, 1.414, 1.414, 1.414]
-
-    def heuristic(r1, c1, r2, c2):
-        dr = abs(r1 - r2)
-        dc = abs(c1 - c2)
-        return max(dr, dc) + 0.414 * min(dr, dc)  # octile distance
-
-    open_set = [(heuristic(sr, sc, gr, gc), 0.0, sr, sc)]
-    g_cost = {(sr, sc): 0.0}
-    came_from = {}
-
-    while open_set:
-        _f, g, r, c = heapq.heappop(open_set)
-
-        if r == gr and c == gc:
-            # Reconstruct path
-            path = []
-            while (r, c) in came_from:
-                path.append(_grid_to_world(c, r))
-                r, c = came_from[(r, c)]
-            path.append(_grid_to_world(sc, sr))
-            path.reverse()
-            return _smooth_path(path, grid, rows, cols)
-
-        if g > g_cost.get((r, c), float('inf')):
-            continue
-
-        for (dr, dc), cost in zip(DIRS, COSTS):
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < rows and 0 <= nc < cols and not grid[nr][nc]:
-                ng = g + cost
-                if ng < g_cost.get((nr, nc), float('inf')):
-                    g_cost[(nr, nc)] = ng
-                    f = ng + heuristic(nr, nc, gr, gc)
-                    came_from[(nr, nc)] = (r, c)
-                    heapq.heappush(open_set, (f, ng, nr, nc))
-
-    return []  # No path found
-
-
-def _nearest_free(grid, r, c, rows, cols):
-    """BFS to find nearest free cell."""
-    from collections import deque as dq
-    visited = set()
-    queue = dq([(r, c)])
-    visited.add((r, c))
-    while queue:
-        cr, cc = queue.popleft()
-        if not grid[cr][cc]:
-            return cr, cc
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = cr + dr, cc + dc
-            if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
-                visited.add((nr, nc))
-                queue.append((nr, nc))
-    return None, None
-
-
-def _line_of_sight(x0, y0, x1, y1, grid, rows, cols):
-    """Bresenham check: True if straight line between two world points is free."""
-    c0, r0 = _world_to_grid(x0, y0)
-    c1, r1 = _world_to_grid(x1, y1)
-    dc = abs(c1 - c0)
-    dr = abs(r1 - r0)
-    sc = 1 if c0 < c1 else -1
-    sr = 1 if r0 < r1 else -1
-    err = dc - dr
-    while True:
-        if 0 <= r0 < rows and 0 <= c0 < cols:
-            if grid[r0][c0]:
-                return False
-        else:
-            return False
-        if r0 == r1 and c0 == c1:
-            break
-        e2 = 2 * err
-        if e2 > -dr:
-            err -= dr
-            c0 += sc
-        if e2 < dc:
-            err += dc
-            r0 += sr
-    return True
-
-
-def _smooth_path(path, grid=None, rows=0, cols=0):
-    """Reduce path points using line-of-sight pruning against the grid."""
-    if len(path) <= 2:
-        return path
-    if grid is None:
-        return path
-    smoothed = [path[0]]
-    i = 0
-    while i < len(path) - 1:
-        best = i + 1
-        for j in range(len(path) - 1, i + 1, -1):
-            if _line_of_sight(path[i][0], path[i][1],
-                              path[j][0], path[j][1],
-                              grid, rows, cols):
-                best = j
-                break
-        smoothed.append(path[best])
-        i = best
-    return smoothed
+from compute_node.pathfinding import (  # noqa: E402, F401
+    find_path,
+    _build_grid,
+    _world_to_grid,
+    _grid_to_world,
+    _nearest_free,
+    _line_of_sight,
+    _smooth_path,
+)
 
 
 # ═════════════════════════════════════════════════════════════════
