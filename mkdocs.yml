@@ -82,3 +82,4 @@ nav:
       - First-time setup: first-run.md
   - Algorithms:
       - 'A* pathfinding & Bresenham': algorithms/pathfinding.md
+      - 'Pure Pursuit (path replay)': algorithms/pure-pursuit.md
