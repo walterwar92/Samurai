@@ -20,12 +20,14 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
-    from config_loader import cfg as _cfg
+    from config_loader import cfg as _cfg, get_mqtt_credentials as _get_mqtt_creds
     _DEFAULT_ROBOT_ID = _cfg('mqtt.robot_id', 'robot1')
     _DEFAULT_BROKER = _cfg('mqtt.broker', '127.0.0.1')
 except ImportError:
     _DEFAULT_ROBOT_ID = 'robot1'
     _DEFAULT_BROKER = '127.0.0.1'
+    def _get_mqtt_creds():
+        return None, None
 
 # Ensure project root is in sys.path so child processes can find
 # pi_nodes.*, config_loader, etc. regardless of how launcher was invoked.
