@@ -102,14 +102,34 @@ dashboard (`/api/v1/samcan/*`). Заполняй только если хоче�
 ```json
 {
   "commands": [
-    { "name": "drive", "description": "...", "params_schema": { "type": "object", ... } },
-    { "name": "stop",  "description": "..." }
+    {
+      "name": "drive",
+      "description": "Задать скорость робота",
+      "params_schema": {
+        "linear":  { "type": "number", "minimum": -0.5, "maximum": 0.5,
+                     "default": 0.0, "description": "Линейная скорость, м/с" },
+        "angular": { "type": "number", "minimum": -2.0, "maximum": 2.0,
+                     "default": 0.0, "description": "Угловая скорость, рад/с" }
+      }
+    },
+    { "name": "stop", "description": "Плавно остановить движение", "params_schema": null }
   ]
 }
 ```
 
-Сайт сохраняет это (например, в таблицу `agent_capabilities`) и UI рисует
-кнопки/формы из `params_schema` (JSON Schema).
+**Формат `params_schema`** — упрощённое подмножество JSON Schema (как в
+MOIS-инструкции для прошивок). Это **flat dict** «имя_параметра → описание»,
+а НЕ полная Schema-обёртка `{type:"object", properties:{...}}`. UI рисует
+элементы по `type`:
+
+| Тип | Дополнительно | UI-элемент |
+|---|---|---|
+| `integer` / `number` | `minimum`, `maximum`, `default`, `description` | слайдер |
+| `boolean` | `description` | переключатель |
+| `string` + `enum: [...]` | `description` | плашки с вариантами |
+| `string` | `maxLength` (опц.), `description` | текстовое поле |
+
+`params_schema: null` — команда без параметров (просто кнопка).
 
 ### GET `?action=poll`
 
@@ -144,8 +164,17 @@ dashboard (`/api/v1/samcan/*`). Заполняй только если хоче�
 }
 ```
 
-`exit_code=0` — успех. Если dashboard вернул ошибку (например, MQTT
-отвалился), `exit_code=1` и `stderr` содержит читаемое описание.
+**Коды выхода** (по MOIS-спеке):
+
+| `exit_code` | Значение |
+|---|---|
+| 0 | Успех |
+| 1 | Общая ошибка (например, dashboard вернул HTTP 500) |
+| 2 | Неверные параметры (validation) |
+| 3 | Таймаут |
+| 4 | Аппаратная ошибка |
+
+При `exit_code > 0` всегда заполняется `stderr` с человекочитаемым описанием.
 
 ### POST `?action=telemetry`
 
@@ -178,22 +207,26 @@ dashboard и шлёт компактный snapshot:
 ## Реестр команд
 
 Полный список — `./samurai.sh agent --list-commands`. На момент написания
-**54 команды**, сгруппированы:
+**57 команд**, сгруппированы:
 
 | Категория  | Команды |
 |------------|---------|
 | basic      | `ping`, `info`, `dashboard_health` |
 | motion     | `drive`, `stop`, `emergency_stop`, `reset_position`, `set_speed_profile`, `get_speed_profile` |
 | state      | `get_status`, `get_pose`, `get_velocity`, `get_battery`, `get_temperature`, `get_sensors`, `get_ultrasonic`, `get_imu`, `get_fsm`, `get_detections`, `get_actuators`, `get_mqtt`, `get_log` |
-| actuators  | `claw`, `head`, `arm`, `arm_presets`, `head_presets`, `led` |
+| actuators  | `claw`, `head`, `head_angle`, `arm`, `arm_preset`, `arm_presets`, `head_presets`, `led`, `led_mode` |
 | voice/fsm  | `voice`, `fsm_transition`, `tts_speak`, `tts_toggle` |
 | control    | `patrol`, `patrol_waypoints`, `follow_me`, `path_recorder`, `path_recorder_status`, `path_recorder_list`, `detection_toggle`, `obstacle_avoidance_toggle`, `collision_guard_toggle` |
 | maps       | `map_list`, `map_info`, `map_save`, `map_load`, `zones_list`, `zones_clear` |
 | samcan     | `samcan_cmd`, `samcan_scenario`, `samcan_state`, `samcan_log`, `samcan_scenarios`, `samcan_diag`, `samcan_preset_apply` |
 
 Каждая команда документирована в файле `commands/<категория>.py` и
-экспортирует `params_schema` (JSON Schema) — сайт может строить UI
-автоматически.
+экспортирует `params_schema` — сайт может строить UI автоматически.
+
+**Команды только для API (не для UI):** `head`, `arm`, `led`,
+`patrol_waypoints` — принимают сложные параметры (массив или union типов).
+У них `params_schema=null`, для UI-friendly альтернативы есть `head_angle`,
+`arm_preset`, `led_mode`.
 
 ## Как добавить новую команду
 
@@ -208,9 +241,14 @@ dashboard и шлёт компактный snapshot:
 Пример (взять из commands/motion.py):
 
 ```python
+from ._utils import bad_params, from_http
+
 def handle_drive(params, ctx):
-    linear = float(params.get("linear", 0.0))
-    angular = float(params.get("angular", 0.0))
+    try:
+        linear = float(params.get("linear", 0.0))
+        angular = float(params.get("angular", 0.0))
+    except (TypeError, ValueError) as exc:
+        return bad_params(f"linear/angular должны быть числами: {exc}")
     return from_http(ctx.client.post(
         "/api/v1/robot/velocity",
         json_body={"linear": linear, "angular": angular},
@@ -218,18 +256,20 @@ def handle_drive(params, ctx):
 
 COMMANDS = {
     "drive": {
-        "description": "Задать скорость робота: linear (м/с), angular (рад/с)",
+        "description": "Задать скорость робота",
         "params_schema": {
-            "type": "object",
-            "properties": {
-                "linear":  {"type": "number"},
-                "angular": {"type": "number"},
-            },
+            "linear":  {"type": "number", "minimum": -0.5, "maximum": 0.5,
+                        "default": 0.0, "description": "Линейная скорость, м/с"},
+            "angular": {"type": "number", "minimum": -2.0, "maximum": 2.0,
+                        "default": 0.0, "description": "Угловая скорость, рад/с"},
         },
         "handler": handle_drive,
     },
 }
 ```
+
+Используй `bad_params(...)` (exit_code=2) для валидации входных параметров,
+`err(...)` (exit_code=1) для общих ошибок. См. `commands/_utils.py`.
 
 ## Файлы
 
