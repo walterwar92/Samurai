@@ -12,7 +12,7 @@ source "$LIB_DIR/locking.sh"
 main() {
     print_banner "S A M U R A I   S T A T U S" "Активные компоненты"
 
-    local components=(robot sim compute detector bridge)
+    local components=(robot sim compute detector bridge agent)
     local any_running=false
 
     printf "  %-12s %-10s %-8s\n" "КОМПОНЕНТ" "СТАТУС" "PID"
@@ -52,7 +52,7 @@ main() {
     echo ""
     log_step "systemd units"
     local unit state enabled
-    for unit in samurai-robot samurai-compute samurai-bridge; do
+    for unit in samurai-robot samurai-compute samurai-bridge samurai-agent; do
         if systemctl list-unit-files 2>/dev/null | grep -q "^$unit.service"; then
             state=$(systemctl is-active "$unit" 2>/dev/null || echo "inactive")
             enabled=$(systemctl is-enabled "$unit" 2>/dev/null || echo "disabled")

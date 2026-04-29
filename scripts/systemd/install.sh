@@ -18,7 +18,7 @@ SAMURAI_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SAMURAI_ROOT/scripts/lib/common.sh"
 
 UNIT_DIR="/etc/systemd/system"
-ALL_UNITS=(robot compute bridge)
+ALL_UNITS=(robot compute bridge agent)
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then

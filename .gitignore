@@ -133,6 +133,9 @@ credentials.json
 *.pem
 *.key
 
+# --- MOIS HTTP-агент (содержит api_token) ---
+compute_node/mois_agent/config.json
+
 # --- Generated documentation ---
 docs/_build/
 site/
