@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ._utils import HandlerResult, err, from_http, opt_param
+from ._utils import HandlerResult, bad_params, from_http, opt_param
 
 
 def handle_drive(params: Mapping[str, Any], ctx) -> HandlerResult:
@@ -12,7 +12,7 @@ def handle_drive(params: Mapping[str, Any], ctx) -> HandlerResult:
         linear = float(opt_param(params, "linear", 0.0))
         angular = float(opt_param(params, "angular", 0.0))
     except (TypeError, ValueError) as exc:
-        return err(f"linear/angular должны быть числами: {exc}")
+        return bad_params(f"linear/angular должны быть числами: {exc}")
     return from_http(
         ctx.client.post(
             "/api/v1/robot/velocity",
@@ -37,7 +37,7 @@ def handle_set_speed_profile(params: Mapping[str, Any], ctx) -> HandlerResult:
     """{"profile": "slow"|"normal"|"fast"}."""
     profile = opt_param(params, "profile")
     if profile not in {"slow", "normal", "fast"}:
-        return err("profile: slow|normal|fast")
+        return bad_params("profile: slow|normal|fast")
     return from_http(
         ctx.client.post("/api/v1/speed_profile", json_body={"profile": profile})
     )
@@ -49,12 +49,21 @@ def handle_get_speed_profile(params: Mapping[str, Any], ctx) -> HandlerResult:
 
 COMMANDS = {
     "drive": {
-        "description": "Задать скорость робота: linear (м/с), angular (рад/с)",
+        "description": "Задать скорость робота",
         "params_schema": {
-            "type": "object",
-            "properties": {
-                "linear": {"type": "number", "default": 0.0},
-                "angular": {"type": "number", "default": 0.0},
+            "linear": {
+                "type": "number",
+                "minimum": -0.5,
+                "maximum": 0.5,
+                "default": 0.0,
+                "description": "Линейная скорость, м/с",
+            },
+            "angular": {
+                "type": "number",
+                "minimum": -2.0,
+                "maximum": 2.0,
+                "default": 0.0,
+                "description": "Угловая скорость, рад/с",
             },
         },
         "handler": handle_drive,
@@ -75,13 +84,14 @@ COMMANDS = {
         "handler": handle_reset_position,
     },
     "set_speed_profile": {
-        "description": "Профиль скорости: slow|normal|fast",
+        "description": "Профиль скорости",
         "params_schema": {
-            "type": "object",
-            "properties": {
-                "profile": {"enum": ["slow", "normal", "fast"]},
+            "profile": {
+                "type": "string",
+                "enum": ["slow", "normal", "fast"],
+                "default": "normal",
+                "description": "Профиль скорости",
             },
-            "required": ["profile"],
         },
         "handler": handle_set_speed_profile,
     },

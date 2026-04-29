@@ -6,6 +6,13 @@
 `ctx` — простой namespace с: client (DashboardClient), config (AgentConfig),
 samcan_client (DashboardClient или None), state (общий dict для кеша
 телеметрии).
+
+Коды выхода (по MOIS-спеке):
+  0 — успех
+  1 — общая ошибка
+  2 — неверные параметры (validation)
+  3 — таймаут
+  4 — аппаратная ошибка
 """
 from __future__ import annotations
 
@@ -14,6 +21,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from ..client import HTTPResult
+
+EXIT_OK = 0
+EXIT_GENERAL = 1
+EXIT_BAD_PARAMS = 2
+EXIT_TIMEOUT = 3
+EXIT_HARDWARE = 4
 
 
 @dataclass
@@ -32,12 +45,17 @@ class HandlerResult:
 
 def ok(payload: Any = "OK") -> HandlerResult:
     if isinstance(payload, str):
-        return HandlerResult(0, payload, "")
-    return HandlerResult(0, json.dumps(payload, ensure_ascii=False), "")
+        return HandlerResult(EXIT_OK, payload, "")
+    return HandlerResult(EXIT_OK, json.dumps(payload, ensure_ascii=False), "")
 
 
-def err(message: str, exit_code: int = 1) -> HandlerResult:
+def err(message: str, exit_code: int = EXIT_GENERAL) -> HandlerResult:
     return HandlerResult(int(exit_code), "", str(message))
+
+
+def bad_params(message: str) -> HandlerResult:
+    """Validation error → exit_code=2 (по MOIS-спеке)."""
+    return HandlerResult(EXIT_BAD_PARAMS, "", str(message))
 
 
 def from_http(result: HTTPResult, *, success_payload: Any = None) -> HandlerResult:

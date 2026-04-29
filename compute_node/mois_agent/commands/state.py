@@ -105,19 +105,17 @@ COMMANDS = {
         "handler": handle_get_imu,
     },
     "get_fsm": {
-        "description": "Текущее состояние FSM (idle/hunt/...)",
+        "description": "Текущее состояние FSM",
         "params_schema": None,
         "handler": handle_get_fsm,
     },
     "get_detections": {
-        "description": "YOLO-детекции; параметр color → ближайший по цвету",
+        "description": "YOLO-детекции; color (опционально) → ближайшая по цвету",
         "params_schema": {
-            "type": "object",
-            "properties": {
-                "color": {
-                    "type": "string",
-                    "enum": ["red", "orange", "yellow", "green", "blue", "white", "black"],
-                },
+            "color": {
+                "type": "string",
+                "enum": ["red", "orange", "yellow", "green", "blue", "white", "black"],
+                "description": "Фильтр по цвету (необязательно)",
             },
         },
         "handler": handle_get_detections,
