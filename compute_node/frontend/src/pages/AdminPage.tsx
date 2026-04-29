@@ -8,7 +8,7 @@ import { FsmTransitionButtons } from '@/components/fsm/FsmTransitionButtons'
 import { SensorPanel } from '@/components/sensors/SensorPanel'
 import { ActuatorToggles } from '@/components/actuators/ActuatorToggles'
 import { ServoControlPanel } from '@/components/actuators/ServoControlPanel'
-import { JoystickControl } from '@/components/joystick/JoystickControl'
+import { JoystickControl } from '@/components/controls/JoystickControl'
 import { EmergencyStop } from '@/components/controls/EmergencyStop'
 import { PrecisionDrivePanel } from '@/components/controls/PrecisionDrivePanel'
 import { CalibrationPanel } from '@/components/controls/CalibrationPanel'
@@ -16,10 +16,6 @@ import { DetectionTable } from '@/components/detection/DetectionTable'
 import { BallsTable } from '@/components/detection/BallsTable'
 import { CommandInput } from '@/components/controls/CommandInput'
 import { QuickCommandButtons } from '@/components/controls/QuickCommandButtons'
-import { PatrolPanel } from '@/components/controls/PatrolPanel'
-import { FollowMePanel } from '@/components/controls/FollowMePanel'
-import { PathRecorderPanel } from '@/components/controls/PathRecorderPanel'
-import { SpeedProfileSelector } from '@/components/controls/SpeedProfileSelector'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -97,7 +93,7 @@ export function AdminPage() {
               </Card>
 
               {/* ── СЕНСОРЫ ── */}
-              <SensorPanel state={state} expanded />
+              <SensorPanel expanded />
 
               {/* ── СИСТЕМА ── */}
               <Card>

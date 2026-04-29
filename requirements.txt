@@ -1,6 +1,17 @@
 # ========================================
 # Samurai Robot — Python Dependencies
 # ========================================
+# This file lists DIRECT dependencies with loose constraints — suitable for
+# development. For reproducible production deployments generate a fully-pinned
+# `requirements.lock` ON THE TARGET PLATFORM (Pi 4 arm64 / laptop x86):
+#
+#     ./scripts/lock-requirements.sh                # writes requirements.lock
+#     pip install --no-deps -r requirements.lock    # deterministic install
+#
+# requirements.lock is gitignored — it pins both top-level deps and the entire
+# transitive set (numpy ABI, etc.) to versions that work on YOUR build host.
+# Committing a single lock file across Pi/laptop/Windows would cause install
+# failures from platform-specific wheel hashes.
 
 # --- Hardware (Raspberry Pi) ---
 gpiozero
@@ -29,6 +40,11 @@ opencv-python>=4.8.0
 ultralytics>=8.0.0              # YOLOv8n / YOLO11n (для экспорта в ONNX)
 onnxruntime>=1.17.0             # Быстрее PyTorch CPU на ~50%, RAM -500MB
 numpy>=1.24.0,<2.0              # numpy<2 нужен для совместимости ROS2
+# H.264 video decoding для compute_node/detectors/H264TCPFrameSource (с 2026-04).
+# Camera_node на Pi публикует H.264 поток через TCP вместо JPEG в MQTT.
+# PyAV — Python bindings к ffmpeg, ~50MB, hardware-accelerated decode.
+# На Pi не нужен (там только encoder в picamera2).
+av>=11.0.0
 
 # --- Speech Recognition ---
 vosk>=0.3.45
@@ -42,6 +58,9 @@ uvicorn[standard]>=0.27.0       # ASGI сервер для FastAPI
 python-multipart>=0.0.9         # Для form-data в FastAPI
 pyserial>=3.5                   # Samcan USB bridge (Arduino Uno)
 httpx>=0.27                     # Dashboard → Samcan bridge proxy
+slowapi>=0.1.9                  # Dashboard write rate limiting (#58)
+# sentry-sdk опционален: установлен → активируется через SENTRY_DSN env (#73).
+sentry-sdk[fastapi]>=2.0; python_version >= "3.10"
 # flask и flask-socketio оставлены для совместимости (simulator.py)
 flask>=3.0.0
 flask-cors
@@ -50,6 +69,8 @@ python-socketio>=5.10.0
 
 # --- Config ---
 PyYAML>=6.0                         # config.yaml loader
+pydantic>=2.0                       # config.yaml schema validation (#42)
 
 # --- Utilities ---
 transforms3d
+orjson>=3.10.0                      # ~3-5x faster JSON serialization for MQTT publish path

@@ -47,7 +47,7 @@ motor_node     → PCA9685 I2C          mqtt_bridge_compute → MQTT↔ROS2
 imu_node       → MPU6050 I2C          ekf_node            → EKF одометрия
 camera_node    → CSI → JPEG (MQTT)    slam_toolbox        → SLAM-картография
 ultrasonic_node→ HC-SR04 GPIO         nav2_bringup        → навигация
-battery_node   → ADS7830 ADC          yolo_detector_node  → YOLO детекция
+battery_node   → ADS7830 ADC          detector.py         → YOLO/HSV детекция
 temperature_node→ /sys/class/thermal  depth_to_scan_node  → depth→LaserScan
 servo_node     → PCA9685 серво        dashboard_node      → FastAPI :5000
 laser_node     → GPIO17               patrol_node         → автопатруль
@@ -75,10 +75,12 @@ fallback_nav   → автономность         gesture_node        → же
 
 ```
 Samurai/
-├── start_robot_mqtt.sh          # Запуск Pi (Python + MQTT, основной)
-├── start_laptop_robot.sh        # Запуск ноутбука (Docker + ROS2)
-├── start_laptop_sim.sh          # Запуск симулятора (Flask, без ROS2)
-├── start_robot.sh               # [DEPRECATED] Старый запуск через Docker
+├── samurai.sh                   # Главный CLI: ./samurai.sh <robot|sim|compute|...>
+├── scripts/
+│   ├── lib/                     # Общая библиотека (логи, проверки, locking, mDNS)
+│   ├── cmds/                    # Подкоманды (robot.sh, sim.sh, compute.sh, ...)
+│   └── systemd/                 # Unit-файлы для автозапуска (production)
+├── start_*.sh                   # [DEPRECATED] тонкие обёртки над samurai.sh
 │
 ├── pi_nodes/                    # Все ноды Raspberry Pi (чистый Python)
 │   ├── mqtt_node.py             #   Базовый класс MqttNode
@@ -103,9 +105,18 @@ Samurai/
 │
 ├── compute_node/                # Ноды ноутбука
 │   ├── mqtt_bridge_compute.py   #   MQTT↔ROS2 мост
-│   ├── yolo_detector_node.py    #   YOLO детекция
+│   ├── detector.py              #   Объединённый YOLO/HSV детектор (CLI)
+│   ├── detectors/               #   Пакет: backends, sources, publishers,
+│   │                            #          HSV calibrator
 │   ├── depth_to_scan_node.py    #   Depth → LaserScan
-│   ├── dashboard_node.py        #   FastAPI + WebSocket :5000
+│   ├── dashboard/               #   FastAPI :5000 (пакет — #7, 2026-04)
+│   │   ├── app.py               #     create_app() factory + /api/v1/
+│   │   ├── state.py             #     DashboardState (RLock + 8 блоков)
+│   │   ├── mqtt_handlers.py     #     paho-mqtt 35 топиков → state
+│   │   ├── ros2_subscribers.py  #     rclpy SLAM/EKF/YOLO → state
+│   │   ├── routers/ (12 файлов) #     APIRouter по доменам (~80 paths)
+│   │   └── schemas/ (8 файлов)  #     Pydantic — 92 модели
+│   ├── frontend/                #   React UI (vite, src/api/ из openapi)
 │   └── simulator.py             #   Автономный симулятор (Flask)
 │
 ├── ros_ws/                      # ROS2 workspace (только ноутбук)
@@ -176,14 +187,16 @@ git clone <repo> ~/Samurai && cd ~/Samurai
 sudo apt install -y mosquitto mosquitto-clients
 sudo systemctl enable --now mosquitto
 
-# Всё остальное start_robot_mqtt.sh установит автоматически:
+# Сделать CLI исполняемым (один раз)
+chmod +x samurai.sh
+
+# Всё остальное samurai CLI установит автоматически при первом запуске:
 # Python зависимости (paho-mqtt, smbus2, gpiozero, PyYAML)
-# I2C включение, avahi-daemon
-chmod +x start_robot_mqtt.sh
-./start_robot_mqtt.sh
+# I2C включение, avahi-daemon, конфиг mosquitto
+./samurai.sh robot
 ```
 
-> Скрипт автоматически проверит и доустановит все зависимости при первом запуске.
+> CLI автоматически проверит и доустановит все зависимости при первом запуске.
 
 ### 2. Ноутбук (вычислительный узел)
 
@@ -197,10 +210,10 @@ sudo usermod -aG docker $USER && newgrp docker
 sudo pacman -S avahi nss-mdns
 sudo systemctl enable --now avahi-daemon
 
-# Запуск — всё остальное скрипт сделает сам:
+# Запуск — всё остальное CLI сделает сам:
 cd ~/Samurai
-chmod +x start_laptop_robot.sh
-./start_laptop_robot.sh
+chmod +x samurai.sh
+./samurai.sh compute
 ```
 
 ### 3. Симулятор (без железа)
@@ -208,7 +221,7 @@ chmod +x start_laptop_robot.sh
 ```bash
 pip install flask flask-cors flask-socketio opencv-python numpy paho-mqtt
 cd ~/Samurai
-./start_laptop_sim.sh
+./samurai.sh sim
 ```
 
 ### 4. Android приложение
@@ -226,39 +239,61 @@ cd ~/Samurai
 
 ## Запуск
 
+Все команды запускаются через единый CLI `samurai.sh`:
+
+```bash
+./samurai.sh                  # справка
+./samurai.sh <команда> [опции]
+./samurai.sh status           # что сейчас работает
+./samurai.sh stop             # остановить всё
+```
+
+| Команда | Что делает | Где запускать |
+|---------|-----------|---------------|
+| `robot` | Pi-ноды (Pure Python + MQTT) | На Pi |
+| `robot --legacy` | Старый Docker+ROS2 (DEPRECATED) | На Pi |
+| `sim` | Симулятор Flask :5000 без железа | На ноуте |
+| `compute` | Compute-стек (Docker + ROS2 + Dashboard :5000) | На ноуте |
+| `detector [--gpu]` | YOLO детектор отдельным процессом | На ноуте/GPU-ноуте |
+| `bridge [PORT]` | Samcan USB bridge :5005 | На ноуте |
+| `build-cpp [pi@host]` | Кросс-компиляция C++ для arm64 | На ноуте |
+| `status` | Что запущено + системные службы | Везде |
+| `stop [target]` | Остановить компонент(ы) | Везде |
+
 ### Реальный робот (основной сценарий)
 
 **Шаг 1 — Raspberry Pi** (SSH или терминал):
 ```bash
 cd ~/Samurai
-./start_robot_mqtt.sh
+./samurai.sh robot
 ```
 
-Скрипт автоматически:
-- Проверит Python, pip, I2C
-- Установит недостающие зависимости
-- Запустит mosquitto (если не запущен)
-- Запустит avahi-daemon
-- Запустит все 13 нод через `robot_launcher.py`
+CLI автоматически:
+- Проверит Python, pip, I2C, mosquitto, avahi
+- Установит недостающие Python-зависимости
+- Запустит все ноды через `pi_nodes.robot_launcher`
 
 **Шаг 2 — Ноутбук**:
 ```bash
 cd ~/Samurai
-./start_laptop_robot.sh
+./samurai.sh compute
 ```
 
-Скрипт автоматически:
+CLI автоматически:
 - Проверит Docker, соберёт образ (первый раз ~15 мин)
 - Соберёт ROS2 workspace (colcon build)
+- Пересоберёт React-фронт (`npm run build`)
 - Найдёт Pi через mDNS (`raspberrypi.local`)
-- Передаст IP Pi в `mqtt_bridge_compute`
-- Запустит контейнер с SLAM, Nav2, YOLO, Dashboard
+- Запустит контейнер: MQTT-bridge + SLAM + Nav2 + YOLO + Dashboard
+- Поднимет Samcan USB bridge на :5005 (если подключён Arduino)
 
-Опции:
+Опции (полный список — `./samurai.sh compute --help`):
 ```bash
-./start_laptop_robot.sh --pi 192.168.1.50   # IP вручную
-./start_laptop_robot.sh --hotspot            # мобильный хотспот
-./start_laptop_robot.sh --rebuild            # пересборка образа + workspace
+./samurai.sh compute --pi 192.168.1.50   # IP вручную
+./samurai.sh compute --hotspot           # мобильный хотспот (unicast DDS)
+./samurai.sh compute --rebuild           # пересборка образа + workspace
+./samurai.sh compute --remote-yolo       # YOLO на отдельном GPU-ноуте
+./samurai.sh compute --no-samcan         # без Samcan bridge
 ```
 
 Dashboard: **http://localhost:5000**
@@ -271,12 +306,191 @@ Dashboard: **http://localhost:5000**
 ### Симулятор (для разработки)
 
 ```bash
-./start_laptop_sim.sh
+./samurai.sh sim
 ```
 
 Откройте: [http://localhost:5000](http://localhost:5000)
 
 Полная эмуляция: арена 3x3 м, мячи, датчики, FSM, REST API.
+
+---
+
+### Production: автозапуск через systemd
+
+После того как всё работает в ручном режиме, можно настроить автоматический
+запуск при загрузке OS + автоперезапуск при крэше:
+
+```bash
+# На Pi (запускается автоматически после ребута)
+sudo ./scripts/systemd/install.sh robot
+sudo systemctl enable --now samurai-robot
+
+# На ноутбуке
+sudo ./scripts/systemd/install.sh compute bridge
+sudo systemctl enable --now samurai-compute samurai-bridge
+
+# Логи
+journalctl -u samurai-robot -f       # live-tail на Pi
+systemctl status samurai-compute     # статус на ноуте
+
+# Удалить
+sudo ./scripts/systemd/install.sh --uninstall
+```
+
+`install.sh` подставляет реальный путь репо и юзера в шаблоны и копирует
+unit-файлы в `/etc/systemd/system/`. Подробнее: `./scripts/systemd/install.sh --help`.
+
+---
+
+### Старые скрипты (start_*.sh)
+
+Для обратной совместимости старые `start_robot_mqtt.sh`, `start_laptop_robot.sh`
+и т. д. сохранены как тонкие обёртки. Они показывают deprecation warning и
+делегируют в `samurai.sh`. **Используй новый CLI** в новых документах/CI.
+
+---
+
+### Камера: H.264 поток (с 2026-04)
+
+Раньше: JPEG в MQTT topic `samurai/{id}/camera` (~2.5 МБ/с, 640×480 q=65 20fps).
+Теперь: **H.264** через TCP, hardware encoder Pi (~200-500 КБ/с, 10× меньше).
+
+**Архитектура:**
+```
+Pi camera_node
+  ├─ picamera2 H264Encoder (hardware) → bitrate 2 Mbps, iperiod 30
+  ├─ TCPStreamServer на :8554
+  │    ├─ Multiplex: множественные клиенты, каждому свой socket
+  │    └─ Late-join safe: новые клиенты получают init_buffer (SPS/PPS+IDR)
+  └─ MQTT discovery: samurai/{id}/camera/endpoint (retained, JSON)
+
+Compute / Frontend
+  ├─ compute_node/detectors/H264TCPFrameSource (PyAV decode → BGR np.ndarray)
+  ├─ dashboard /ws/h264 (asyncio TCP→WebSocket прокси)
+  └─ React CameraFeed (WebCodecs VideoDecoder → canvas)
+```
+
+**Browser requirements (для CameraFeed):**
+- Chrome 94+ / Edge 94+ / Android Chrome 94+ (WebCodecs API)
+- Safari iOS — WebCodecs только в Technology Preview, fallback "не поддерживается"
+
+**Pi requirements:**
+- picamera2 (стандарт на Raspberry Pi OS)
+- Open port 8554 в firewall (если есть): `sudo ufw allow 8554/tcp`
+
+**Compute requirements:**
+- PyAV (`pip install av`) для декодирования H.264 в детекторе
+
+**Конфигурация (config.yaml `mqtt`):**
+```yaml
+camera_h264_port: 8554       # TCP port на Pi
+camera_h264_bitrate: 2000000 # 2 Mbps (можно 1_000_000 для узкого WiFi)
+camera_h264_iperiod: 30      # I-frame каждые 30 кадров (1.5с @ 20fps)
+```
+
+**Что временно сломано (TODO):**
+- Android `CameraScreen` — показывает заглушку "Видео временно недоступно" вместо MJPEG.
+  Нужен MediaCodec H.264 декодер (issue #9 follow-up)
+- `compute_node/simulator.py` — продолжает отдавать MJPEG /video_feed для legacy UI,
+  но React frontend ждёт H.264 → симулятор-видео в нём не работает
+- `tools/camera_and_range.py` — читал JPEG MQTT topic, не работает
+
+---
+
+### Детектор объектов (YOLO + HSV)
+
+Один объединённый детектор `compute_node/detector.py` (раньше было 3 разных
+файла с дублированной логикой и расходящимися HSV-диапазонами).
+
+```bash
+# CPU + HSV fallback (default — на ноутбуке без GPU)
+./samurai.sh detector
+
+# GPU YOLO (отдельный GPU-ноут или мощный desktop)
+./samurai.sh detector --gpu --model yolo11n.pt
+
+# Принудительный backend
+./samurai.sh detector --backend hsv         # без YOLO, только blob
+./samurai.sh detector --backend yolo --device cpu
+
+# С явным IP робота
+./samurai.sh detector --pi 192.168.1.50
+```
+
+Опубликует:
+- `samurai/{id}/ball_detection` — лучший мяч (для FSM)
+- `samurai/{id}/detections` — все объекты + count + ts
+- `samurai/{id}/yolo/annotated` — JPEG с bbox'ами для дашборда
+- `samurai/{id}/yolo/status` — online/offline (retain=true)
+
+Detection enable/disable — через MQTT topic `samurai/{id}/detection/enable`
+(payload `on`/`off`). При OFF публикует пустой список + сырой кадр (heartbeat).
+
+### HSV калибратор (для подстройки под освещение)
+
+Старая болезнь YOLO-детектора: HSV-диапазоны цветов калибровались под лампы
+накаливания, при дневном свете — путаница оранжевого с жёлтым. Теперь есть
+интерактивный GUI:
+
+```bash
+# Live с робота
+./samurai.sh detector --calibrate red       # подстроить красный
+./samurai.sh detector --calibrate yellow    # потом жёлтый
+
+# По статичному фото (если робот не доступен)
+./samurai.sh detector --calibrate red --image ball_red.jpg
+```
+
+OpenCV окна с trackbars (H/S/V low + high) и live-preview маски.
+Управление в GUI: `s` — сохранить в `config.yaml`, `n` — следующий цвет,
+`q`/ESC — выход. Сохранение идёт в `config.yaml` секцию `hsv_colours` —
+после этого все детекторы (CPU/GPU/HSV blob) подхватывают новые диапазоны
+автоматически (раньше HSV был хардкоден в каждом из 3 файлов с расхождениями).
+
+---
+
+### MQTT auth (опционально)
+
+По умолчанию робот работает с anonymous MQTT — это удобно для разработки
+в доверенной локальной сети. Для production можно включить authentication.
+
+**Включить:**
+```bash
+# На Pi
+./samurai.sh auth init               # создаёт ~/.samurai/mqtt.passwd
+                                     # (default user/password = samurai/samurai)
+                                     # + обновляет mosquitto.conf c allow_anonymous=false
+
+# Или вручную:
+./samurai.sh auth set robot1 my_secret_password
+
+# Посмотреть/проверить:
+./samurai.sh auth show
+./samurai.sh auth status
+```
+
+**Прокинуть creds на другие устройства:**
+```bash
+# На ноутбуке (compute) — те же creds в файл
+./samurai.sh auth set robot1 my_secret_password
+
+# На Android: Settings → MQTT user/password (поля под "Robot ID")
+
+# На ESP32: в firmware/esp32/src/config.h раскомментировать
+#   #define MQTT_USER "robot1"
+#   #define MQTT_PASS "my_secret_password"
+```
+
+**Приоритет источников creds (для Python-клиентов):**
+1. ENV vars `SAMURAI_MQTT_USER` + `SAMURAI_MQTT_PASS` (для systemd, Docker)
+2. Файл `~/.samurai/mqtt.passwd` (chmod 600)
+3. `config.yaml` секция `mqtt.auth.{username, password}` (только dev — не коммитить!)
+4. Если ничего не настроено — anonymous
+
+**Отключить:**
+```bash
+./samurai.sh auth disable
+```
 
 ---
 
@@ -348,6 +562,22 @@ mosquitto_pub -h raspberrypi.local -t 'samurai/robot1/cmd_vel' \
 ## Голосовые команды
 
 Голосовые команды на русском языке. Источник: Android приложение (Vosk) или `voice_node` на Pi.
+
+С #2 (2026-04) добавлена опциональная LLM-парсилка команд на ноутбуке:
+`compute_node/llm_voice` подписывается на `voice_command`, прогоняет
+текст через **Qwen 2.5 7B** (Ollama) и публикует structured
+`voice/intent` (JSON с action/colour/direction/confidence). FSM на Pi
+выполняет intent если confidence ≥ 0.5; иначе fallback'ит на встроенный
+regex-парсер (как раньше). LLM-нода не обязательна — robot работает
+полностью без неё.
+
+Запуск (на ноуте, после `ollama pull qwen2.5:7b`):
+```bash
+samurai voice-llm                       # auto-discover Pi, Ollama localhost:11434
+samurai voice-llm --backend mock        # dev без Ollama
+samurai voice-llm --model qwen2.5:1.5b  # быстрая модель на CPU
+```
+
 
 ### Автономные команды
 
@@ -421,22 +651,49 @@ IDLE ──(команда)──> SEARCHING ──(мяч найден)──> 
 
 Полная документация REST API: [API_REFERENCE.md](API_REFERENCE.md)
 
-Быстрые примеры:
+С 2026-04 (#7) FastAPI dashboard разбит на пакет `compute_node/dashboard/` с
+роутерами по доменам, Pydantic-схемами и автогенерированной OpenAPI:
+
+- **OpenAPI / Swagger UI:** `http://localhost:5000/docs` (интерактивная)
+- **ReDoc:** `http://localhost:5000/redoc`
+- **Сырая схема:** `http://localhost:5000/openapi.json`
+
+Все новые эндпойнты под префиксом `/api/v1/` (старые `/api/...` продолжают
+работать через middleware-alias с заголовком
+`Deprecation: true; sunset="2026-12-31"`).
+
+**TypeScript-клиент** для фронта генерируется автоматически:
+
+```bash
+cd compute_node/frontend
+npm run generate:api          # → src/api/generated/{services,models}/*.ts
+```
+
+Использование в коде фронта:
+
+```ts
+import { RobotService } from '@/api'
+await RobotService.setVelocityApiV1RobotVelocityPost({
+  requestBody: { linear: 0.2, angular: 0.0 },
+})
+```
+
+Быстрые примеры curl:
 
 ```bash
 # Статус робота
-curl http://localhost:5000/api/status
+curl http://localhost:5000/api/v1/status
 
 # Голосовая команда
-curl -X POST http://localhost:5000/api/fsm/command \
+curl -X POST http://localhost:5000/api/v1/fsm/command \
   -H "Content-Type: application/json" \
   -d '{"text": "найди красный мяч"}'
 
 # Ультразвук
-curl http://localhost:5000/api/sensors/ultrasonic
+curl http://localhost:5000/api/v1/sensors/ultrasonic
 
 # Моторы
-curl -X POST http://localhost:5000/api/robot/velocity \
+curl -X POST http://localhost:5000/api/v1/robot/velocity \
   -H "Content-Type: application/json" \
   -d '{"linear": 0.1, "angular": 0.0}'
 ```

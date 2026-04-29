@@ -1,4 +1,4 @@
-import { Battery, BatteryLow, BatteryMedium, BatteryFull } from 'lucide-react'
+import { BatteryLow, BatteryMedium, BatteryFull } from 'lucide-react'
 
 interface BatteryIndicatorProps {
   voltage: number

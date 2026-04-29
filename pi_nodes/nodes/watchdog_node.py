@@ -33,6 +33,12 @@ MONITORED_TOPICS = [
 # Critical topics — if these die, trigger emergency stop
 CRITICAL_TOPICS = {'odom', 'imu'}
 
+# Warn topics — publish a degradation event but do NOT e-stop. The robot can
+# still drive on heuristic / dead-reckoning nav with a dead camera, so freezing
+# would be more harmful than the warning. FSM/dashboard can subscribe to
+# samurai/{id}/watchdog/event and react (e.g. exit ball-hunt on camera loss).
+WARN_TOPICS = {'camera', 'range'}
+
 
 class WatchdogNode(MqttNode):
     def __init__(self, **kwargs):
@@ -41,6 +47,9 @@ class WatchdogNode(MqttNode):
         self._last_seen: dict[str, float] = {}
         self._emergency_sent = False
         self._last_warn_time = 0.0  # throttle dead-topic warnings
+        # Per-warn-topic state — flips on alive→dead and back, so FSM gets
+        # exactly one event per transition rather than every report cycle.
+        self._warn_dead: dict[str, bool] = {t: False for t in WARN_TOPICS}
         grace_sec = cfg('watchdog.startup_grace_sec', 15.0)
         self._startup_grace = time.time() + grace_sec  # configurable grace period
 
@@ -82,6 +91,17 @@ class WatchdogNode(MqttNode):
                 if suffix in CRITICAL_TOPICS:
                     critical_dead.append(suffix)
 
+            # Edge-triggered warn events (alive→dead, dead→alive) — only after
+            # startup grace, otherwise every cold start spams "camera dead".
+            if suffix in WARN_TOPICS and now > self._startup_grace:
+                was_dead = self._warn_dead[suffix]
+                if not alive and not was_dead and last > 0.0:
+                    self._warn_dead[suffix] = True
+                    self._publish_warn_event(suffix, 'dead', age)
+                elif alive and was_dead:
+                    self._warn_dead[suffix] = False
+                    self._publish_warn_event(suffix, 'recovered', age)
+
         if dead_topics and (now - self._last_warn_time) >= _WARN_THROTTLE_SEC:
             self._last_warn_time = now
             self.log_warn('Dead topics: %s', ', '.join(dead_topics))
@@ -99,6 +119,19 @@ class WatchdogNode(MqttNode):
 
         report['mqtt'] = self._mqtt_connected
         self.publish('watchdog', report)
+
+    def _publish_warn_event(self, topic: str, state: str, age_s: float):
+        """Edge-triggered event for non-critical topic transitions."""
+        self.publish('watchdog/event', {
+            'topic': topic,
+            'state': state,  # 'dead' | 'recovered'
+            'age_s': age_s,
+            'ts': time.time(),
+        }, qos=1)
+        if state == 'dead':
+            self.log_warn('Topic %s WENT DEAD (age=%.1fs)', topic, age_s)
+        else:
+            self.log_info('Topic %s recovered', topic)
 
 
 def main():

@@ -1,0 +1,333 @@
+% ============================================================
+%  Глава 4 — Реализация регулятора в роботе
+% ============================================================
+\chapter{Реализация в коде робота}
+\label{ch:implementation}
+
+В этой главе описывается \textbf{полный конвейер}:
+\textsf{MATLAB (offline)} $\to$ \textsf{YAML/JSON} $\to$ \textsf{Python (online)}
+$\to$ \textsf{motor\_node} реального робота. Все коэффициенты выносятся
+в \filepath{config.yaml}, что позволяет менять поведение робота
+без перекомпиляции.
+
+\section{Архитектура}
+\label{sec:architecture}
+
+\begin{center}
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners, minimum width=3cm, minimum height=0.9cm,
+              font=\small, align=center},
+  arrow/.style={-{Stealth[length=2.5mm]}, thick},
+  node distance=0.6cm and 1.5cm
+]
+\node[box, fill=blue!8]   (matlab)  {MATLAB\\\filepath{matlab/main.m}};
+\node[box, fill=green!8, right=of matlab] (yaml) {\filepath{config.yaml}\\\small \texttt{control:} раздел};
+\node[box, fill=orange!8, right=of yaml] (py)   {Python\\\filepath{pi\_nodes/control/}};
+\node[box, fill=red!8, below=of py] (motor) {\filepath{motor\_node.py}\\цикл 20 Гц};
+
+\draw[arrow] (matlab) -- node[above, font=\scriptsize] {export} (yaml);
+\draw[arrow] (yaml)   -- node[above, font=\scriptsize] {load} (py);
+\draw[arrow] (py)     -- node[right, font=\scriptsize] {cmd\_vel} (motor);
+\end{tikzpicture}
+\end{center}
+
+\textbf{Шаги работы:}
+\begin{enumerate}
+  \item Инженер запускает \texttt{main.m} в MATLAB --- получает $\mat{A}, \mat{B}, \mat{K}, \mat{L}, \mat{P}_f$;
+  \item Скрипт автоматически экспортирует матрицы в \filepath{config.yaml}
+        раздел \texttt{control};
+  \item Робот при старте читает \texttt{control} и инициализирует регулятор;
+  \item На каждом цикле \texttt{motor\_node} вызывает $\vect{u}_k = \texttt{controller.step}(\vect{x}_k, \vect{x}_k^{\text{ref}})$;
+  \item Если \texttt{control.mode} = \texttt{off}, действует старая логика
+        прямой трансляции \texttt{cmd\_vel}.
+\end{enumerate}
+
+\section{Конфигурация}
+\label{sec:config}
+
+Все коэффициенты вынесены в \filepath{config.yaml}, раздел \texttt{control}:
+
+\begin{filebox}[title={\filepath{config.yaml} --- \texttt{control:}}]
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily]
+control:
+  mode: "off"           # off | lqr | mpc | modal — режим регулятора
+
+  plant:                # параметры объекта (физика)
+    v0:        0.20     # м/с — опорная скорость линеаризации
+    tau_v:     0.15     # с — постоянная мотора (linear)
+    tau_w:     0.10     # с — постоянная мотора (angular)
+    Ts:        0.05     # с — период дискретизации (= 1 / 20 Hz)
+
+  weights:              # критерий качества
+    Q_diag:  [10, 10, 5, 1, 1]   # x,y,theta,v,omega
+    R_diag:  [1, 1]              # u_v, u_omega
+
+  limits:               # физические ограничения управления
+    u_min:   [-0.30, -2.0]
+    u_max:   [+0.30, +2.0]
+
+  mpc:                  # параметры MPC
+    horizon_N:  10      # горизонт прогноза (шагов)
+    solver:     "clip"  # clip | qp (qp требует scipy/cvxpy)
+
+  modal:                # параметры модального регулятора
+    poles_continuous: [-2, -3, -4, -8, -10]   # желаемые
+    observer_speedup: 5.0   # во сколько раз быстрее регулятора
+
+  # Матрицы рассчитаны MATLAB-скриптом, обновляются автоматически.
+  # Для ручной правки: установите override: true и поменяйте значения.
+  matrices:
+    override: false
+    A: null   # 5x5 — заполнится из MATLAB
+    B: null   # 5x2
+    K: null   # 2x5 — главный регулятор
+    L: null   # 5x5 — наблюдатель (если включён)
+    Pf: null  # 5x5 — терминальный штраф MPC
+\end{lstlisting}
+\end{filebox}
+
+\section{Python-модуль управления}
+\label{sec:python_impl}
+
+В пакете \filepath{pi\_nodes/control/} добавлены три новых модуля:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Файл} & \textbf{Назначение}\\
+\midrule
+\filepath{state\_space\_model.py} & Дискретная модель $\vect{x}_{k+1}=\mat{A}_d\vect{x}_k + \mat{B}_d\vect{u}_k$\\
+\filepath{lqr\_controller.py}     & ЛКР: $\vect{u}_k = -\mat{K}\,\vect{x}_k$\\
+\filepath{mpc\_controller.py}     & MPC: явное решение + проекция на бокс\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Загрузка матриц}
+
+\begin{filebox}[title={\filepath{pi\_nodes/control/state\_space\_model.py}}]
+\begin{lstlisting}[style=pythonstyle]
+import numpy as np
+from config_loader import cfg
+
+class StateSpaceModel:
+    """Discrete state-space model x[k+1] = Ad*x[k] + Bd*u[k]."""
+    def __init__(self, Ad=None, Bd=None):
+        if Ad is None:
+            Ad = np.array(cfg('control.matrices.A'), dtype=float)
+        if Bd is None:
+            Bd = np.array(cfg('control.matrices.B'), dtype=float)
+        self.Ad, self.Bd = Ad, Bd
+        self.n, self.r = self.Bd.shape
+
+    def step(self, x, u):
+        return self.Ad @ x + self.Bd @ u
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Регулятор LQR}
+
+\begin{filebox}[title={\filepath{pi\_nodes/control/lqr\_controller.py}}]
+\begin{lstlisting}[style=pythonstyle]
+import numpy as np
+from config_loader import cfg
+
+class LQRController:
+    def __init__(self, K=None, u_min=None, u_max=None):
+        self.K     = np.array(K     if K     is not None
+                              else cfg('control.matrices.K'))
+        self.u_min = np.array(u_min if u_min is not None
+                              else cfg('control.limits.u_min'))
+        self.u_max = np.array(u_max if u_max is not None
+                              else cfg('control.limits.u_max'))
+
+    def step(self, x, x_ref=None):
+        dx = x - x_ref if x_ref is not None else x
+        u  = -self.K @ dx
+        return np.clip(u, self.u_min, self.u_max)
+\end{lstlisting}
+\end{filebox}
+
+\subsection{MPC: явное решение + проекция}
+
+\begin{filebox}[title={\filepath{pi\_nodes/control/mpc\_controller.py} (упрощённо)}]
+\begin{lstlisting}[style=pythonstyle]
+class MPCController:
+    """MPC c явным решением + проекцией на бокс ограничений."""
+
+    def __init__(self, Ad, Bd, Q, R, Pf, N, u_min, u_max):
+        self.N = N
+        self._build_qp_matrices(Ad, Bd, Q, R, Pf)
+        self.u_min, self.u_max = u_min, u_max
+        self.r = Bd.shape[1]
+
+    def _build_qp_matrices(self, Ad, Bd, Q, R, Pf):
+        n, r = Bd.shape
+        N = self.N
+        # Phi (n*N x n) и Gamma (n*N x r*N) -- развёртка динамики
+        Phi   = np.vstack([np.linalg.matrix_power(Ad, i+1) for i in range(N)])
+        Gamma = np.zeros((n*N, r*N))
+        for i in range(N):
+            for j in range(i+1):
+                block = np.linalg.matrix_power(Ad, i-j) @ Bd
+                Gamma[i*n:(i+1)*n, j*r:(j+1)*r] = block
+
+        Q_bar = np.kron(np.eye(N-1), Q)
+        Q_bar = block_diag_pad(Q_bar, Pf)            # терминальный штраф
+        R_bar = np.kron(np.eye(N), R)
+
+        H_full = 2*(Gamma.T @ Q_bar @ Gamma + R_bar)
+        f_mat  = 2*Gamma.T @ Q_bar @ Phi
+
+        # Только первое управление: K_first = (H^-1 f)[:r, :]
+        K_first = -np.linalg.solve(H_full, f_mat)[:r, :]
+        self.K_first = K_first
+
+    def step(self, x, x_ref=None):
+        dx = x - x_ref if x_ref is not None else x
+        u  = self.K_first @ dx
+        return np.clip(u, self.u_min, self.u_max)
+\end{lstlisting}
+\end{filebox}
+
+\section{Тестирование}
+\label{sec:testing}
+
+Для каждого модуля написан unit-тест в \filepath{tests/}.
+
+\subsection{test\_state\_space\_model.py}
+
+Проверяет:
+\begin{itemize}
+  \item $\vect{x}_{k+1} = \mat{A}_d\vect{x}_k + \mat{B}_d\vect{u}_k$ ---
+        корректность дискретного шага;
+  \item Сходимость к точке равновесия при $\vect{u} = \vect{0}$
+        (для устойчивого $\mat{A}_d$).
+\end{itemize}
+
+\subsection{test\_lqr\_controller.py}
+
+Проверяет:
+\begin{itemize}
+  \item Замкнутая система $\mat{A}_d - \mat{B}_d\mat{K}$ устойчива
+        ($|\lambda_i| < 1$);
+  \item Управление лежит в пределах $[\vect{u}_{\min}, \vect{u}_{\max}]$;
+  \item При $\vect{x} = \vect{0}$ управление равно нулю.
+\end{itemize}
+
+\subsection{test\_mpc\_controller.py}
+
+Проверяет:
+\begin{itemize}
+  \item Без ограничений MPC совпадает с ЛКР для горизонта $N \geq 20$;
+  \item При активных ограничениях управление лежит на границе бокса;
+  \item Замкнутая симуляция сходится к нулю.
+\end{itemize}
+
+\section{Примеры использования}
+\label{sec:examples}
+
+\subsection{Запуск симуляции с MPC}
+
+\begin{filebox}[title={Изменение режима регулятора}]
+\begin{lstlisting}[basicstyle=\small\ttfamily]
+# 1. В config.yaml:
+control:
+  mode: mpc
+
+# 2. Запустить симулятор:
+./samurai.sh sim
+
+# 3. Открыть dashboard, отправить goal_pose
+\end{lstlisting}
+\end{filebox}
+
+\subsection{Расчёт нового регулятора в MATLAB}
+
+\begin{filebox}[title={\filepath{matlab/main.m} --- сценарий}]
+\begin{lstlisting}[style=matlabstyle]
+% Загрузить параметры объекта
+params = samurai_params();
+% Линеаризовать
+[A, B, C, D] = linearize_samurai(params);
+% Дискретизировать
+[Ad, Bd]     = discretize_samurai(A, B, params.Ts);
+% Синтез ЛКР
+[K_lqr, P]   = design_lqr(Ad, Bd, params.Q, params.R);
+% Синтез MPC
+mpc          = design_mpc(Ad, Bd, params.Q, params.R, P, params.N);
+% Экспорт в config.yaml
+export_to_yaml(Ad, Bd, K_lqr, P, mpc, '../config.yaml');
+% Симуляция
+simulate_closed_loop(Ad, Bd, K_lqr);
+\end{lstlisting}
+\end{filebox}
+
+\subsection{«Ошибочный» режим для демонстрации}
+
+Чтобы показать студентам \textbf{неустойчивую систему}, достаточно
+поставить в \texttt{config.yaml}:
+\begin{filebox}[title={Демонстрация неустойчивости}]
+\begin{lstlisting}[basicstyle=\small\ttfamily]
+control:
+  mode: modal
+  modal:
+    poles_continuous: [+1.0, +0.5, -1, -1, -1]   # 2 положительных!
+\end{lstlisting}
+\end{filebox}
+
+При запуске симуляции робот будет «убегать» по экспоненте,
+так как замкнутая система имеет полюса в правой полуплоскости.
+
+\section{Заключение}
+\label{sec:conclusion}
+
+\textbf{Резюме созданной системы:}
+
+\begin{enumerate}
+  \item Построена 5-мерная нелинейная ОДУ-модель робота
+        (глава~\ref{ch:model});
+  \item Модель линеаризована вокруг режима прямолинейного движения
+        и дискретизирована с $T_s = 0{,}05$ с;
+  \item Синтезированы 3 регулятора: модальный (pole placement),
+        ЛКР (Risk-метод), MPC с горизонтом $N = 10$ и проекцией;
+  \item Полноразмерный наблюдатель восстанавливает все 5 координат
+        состояния по доступным измерениям;
+  \item Расчёт выполняется offline в MATLAB
+        (\filepath{matlab/}, 6 файлов), результат экспортируется в
+        \filepath{config.yaml};
+  \item Python-реализация (\filepath{pi\_nodes/control/}, 3 файла)
+        читает конфиг при старте и применяет регулятор в цикле
+        \texttt{motor\_node} (20 Гц);
+  \item Покрыто unit-тестами (\filepath{tests/test\_*\_controller.py}, 3 файла);
+  \item Все параметры $\mat{Q}, \mat{R}, N, \vect{u}_{\min,\max}$ ---
+        редактируемы из конфига без перекомпиляции, что позволяет как
+        улучшать поведение робота, так и намеренно вводить ошибки
+        для отладки и обучения.
+\end{enumerate}
+
+\textbf{Ссылки на файлы проекта:}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Файл} & \textbf{Содержимое}\\
+\midrule
+\filepath{matlab/main.m}                                & оркестратор расчёта\\
+\filepath{matlab/samurai\_params.m}                     & параметры объекта\\
+\filepath{matlab/linearize\_samurai.m}                  & матрицы $\mat{A}, \mat{B}$\\
+\filepath{matlab/discretize\_samurai.m}                 & ZOH-дискретизация\\
+\filepath{matlab/design\_lqr.m}                         & решение DARE\\
+\filepath{matlab/design\_mpc.m}                         & MPC-матрицы\\
+\filepath{matlab/simulate\_closed\_loop.m}              & симуляция\\
+\filepath{matlab/export\_to\_yaml.m}                    & запись конфига\\
+\filepath{pi\_nodes/control/state\_space\_model.py}     & дискретная модель\\
+\filepath{pi\_nodes/control/lqr\_controller.py}         & ЛКР-регулятор\\
+\filepath{pi\_nodes/control/mpc\_controller.py}         & MPC-регулятор\\
+\filepath{config.yaml}                                  & раздел \texttt{control:}\\
+\filepath{tests/test\_state\_space\_model.py}           & тест модели\\
+\filepath{tests/test\_lqr\_controller.py}               & тест ЛКР\\
+\filepath{tests/test\_mpc\_controller.py}               & тест MPC\\
+\bottomrule
+\end{tabular}
+\end{center}

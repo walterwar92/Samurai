@@ -7,6 +7,7 @@ import { CameraFeed } from '@/components/camera/CameraFeed'
 import { MapCanvas } from '@/components/map/MapCanvas'
 import { FsmBadge } from '@/components/fsm/FsmBadge'
 import { SensorPanel } from '@/components/sensors/SensorPanel'
+import { OdometryComparePanel } from '@/components/sensors/OdometryComparePanel'
 import { DetectionBanner } from '@/components/detection/DetectionBanner'
 import { DetectionTable } from '@/components/detection/DetectionTable'
 import { BallsTable } from '@/components/detection/BallsTable'
@@ -90,8 +91,14 @@ export function DashboardPage() {
                 </CardContent>
               </Card>
 
+              {/* ── ОДОМЕТРИЯ — переключатель источников ── */}
+              <OdometryComparePanel
+                sources={state?.odom_sources ?? null}
+                pose={pose ?? null}
+              />
+
               {/* ── СЕНСОРЫ ── */}
-              <SensorPanel state={state} expanded />
+              <SensorPanel expanded />
 
               {/* ── СИСТЕМА ── */}
               <Card>

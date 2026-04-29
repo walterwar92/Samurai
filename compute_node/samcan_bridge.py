@@ -34,6 +34,7 @@ import serial
 import serial.tools.list_ports
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -58,29 +59,96 @@ class BridgeState:
         self.last_attempt_ts: float = 0.0
         self.attempted_port: str | None = None
         self.rx_count: int = 0                   # сколько строк пришло
+        # Бракованные пакеты: счётчики и образец последней плохой строки.
+        # Видны через /api/samcan/state, помогают диагностировать кабель/EMI.
+        self.malformed_count: int = 0
+        self.last_malformed: str = ""
 
     def add_log(self, line: str) -> None:
         self.log_buffer.append(line)
         if len(self.log_buffer) > self.LOG_MAX:
             self.log_buffer = self.log_buffer[-self.LOG_MAX:]
 
+    # ── Telemetry schema ─────────────────────────────────────────
+    # Maps each expected field to its coercion function. Unknown keys are
+    # ignored. Coercion failures (corrupted bytes from EMI, truncated
+    # packets) drop the bad field rather than overwriting last_telemetry
+    # with garbage; downstream code keeps the last-known-good value.
+    TELEMETRY_FIELDS: dict[str, Any] = {
+        'th': float, 'om': float, 'd': float,    # heading / omega / distance
+        'L': int, 'R': int,                      # left/right PWM
+        'm': str,                                # mode (FWD/STOP/...)
+        'kp': float, 'ki': float, 'kd': float,   # PID gains
+        'b': int, 'a': int, 'c': int,            # base/arm/claw servo angles
+        'h': int,                                # head angle
+        'v': float,                              # battery voltage
+        'rng': float,                            # ultrasonic
+    }
+    MAX_LINE_LEN = 512
+
     def parse_telemetry(self, line: str) -> bool:
-        """Парсит строку вида 'T,th=2.30,om=0.5,d=120.4,L=180,R=180,m=FWD,...'"""
+        """Парсит строку 'T,th=2.30,om=0.5,d=120.4,L=180,R=180,m=FWD'.
+
+        Безопасен к обрезанным/повреждённым пакетам: bad fields молча
+        отбрасываются, last_telemetry мержится — последнее валидное значение
+        для каждого поля сохраняется. Слишком длинные строки (corrupted
+        UART) отвергаются целиком.
+        """
         if not line.startswith("T,"):
             return False
-        d: dict[str, Any] = {}
+        if len(line) > self.MAX_LINE_LEN:
+            self._record_malformed(line, reason='line too long')
+            return False
+
+        parsed: dict[str, Any] = {}
+        any_bad = False
         for part in line[2:].split(","):
             if "=" not in part:
+                # Empty trailing parts after a stray comma are normal — skip
+                # silently; only bracket genuinely malformed structure later.
+                if part.strip():
+                    any_bad = True
                 continue
-            k, v = part.split("=", 1)
-            k, v = k.strip(), v.strip()
+            k, _, v = part.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if not k or not v:
+                any_bad = True
+                continue
+            coerce = self.TELEMETRY_FIELDS.get(k)
+            if coerce is None:
+                # Unknown but well-formed field — accept as-is for forward
+                # compatibility with newer firmware revisions.
+                parsed[k] = v
+                continue
             try:
-                d[k] = float(v) if "." in v else int(v)
-            except ValueError:
-                d[k] = v
-        self.last_telemetry = d
+                parsed[k] = coerce(v)
+            except (ValueError, TypeError):
+                any_bad = True   # field corrupted — skip, keep prior value
+
+        if any_bad and not parsed:
+            # Whole packet was unintelligible — don't touch state.
+            self._record_malformed(line, reason='no usable fields')
+            return False
+
+        # Merge instead of replace so a partial packet doesn't blank prior fields.
+        if self.last_telemetry:
+            merged = dict(self.last_telemetry)
+            merged.update(parsed)
+            self.last_telemetry = merged
+        else:
+            self.last_telemetry = parsed
         self.last_seen_ts = time.time()
         return True
+
+    def _record_malformed(self, line: str, reason: str) -> None:
+        self.malformed_count += 1
+        self.last_malformed = f'{reason}: {line[:120]}'
+        # Log first 5 occurrences then 1-in-100 to avoid log flood while
+        # still surfacing intermittent bus issues in journalctl.
+        if self.malformed_count <= 5 or self.malformed_count % 100 == 0:
+            log.warning('Bad telemetry (#%d, %s): %r',
+                        self.malformed_count, reason, line[:120])
 
 
 state = BridgeState()
@@ -305,14 +373,15 @@ async def post_scenario(req: ScenarioReq) -> dict:
     return {"ok": True, "scenario": name, "steps": len(steps)}
 
 
-@app.get("/api/samcan/state")
-async def get_state() -> dict:
+def _build_state_dict() -> dict:
     fresh = state.connected and (time.time() - state.last_seen_ts < 2.0)
     return {
         "connected": state.connected,
         "port": state.port,
         "telemetry_fresh": fresh,
         "telemetry": state.last_telemetry,
+        "malformed_count": state.malformed_count,
+        "last_malformed": state.last_malformed,
         "scenarios": list(SCENARIOS),
         # Диагностика — чтобы UI мог показать причину «нет связи»
         "last_error": state.last_error,
@@ -320,6 +389,56 @@ async def get_state() -> dict:
         "rx_count": state.rx_count,
         "age_sec": round(time.time() - state.last_seen_ts, 2) if state.last_seen_ts else None,
     }
+
+
+@app.get("/api/samcan/state")
+async def get_state() -> dict:
+    return _build_state_dict()
+
+
+@app.get("/api/samcan/stream")
+async def stream_state() -> StreamingResponse:
+    """Server-Sent Events: pushes state on change instead of REST polling (#29).
+
+    Replaces the 4 req/sec/client REST polling pattern. With N clients
+    connected this scales to N concurrent streams that each only send a
+    frame when state actually changes — net traffic and server CPU drop
+    proportionally to (idle / active) ratio of the bridge.
+
+    Connecting clients receive the current snapshot immediately, then
+    diffs as state mutates. EventSource (browser built-in) handles
+    auto-reconnect, so we don't need ack/retry plumbing on the client.
+    """
+
+    async def event_generator():
+        last_sent: str = ""
+        # Initial frame: send immediately so reconnecting clients see
+        # current state without waiting for the next change.
+        try:
+            while True:
+                payload = json.dumps(_build_state_dict(), separators=(",", ":"))
+                if payload != last_sent:
+                    yield f"data: {payload}\n\n"
+                    last_sent = payload
+                else:
+                    # Keep-alive comment every iteration of no-change to
+                    # prevent intermediary proxies from killing the
+                    # connection on idle. SSE convention: lines starting
+                    # with `:` are ignored by EventSource clients.
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.25)   # 4 Hz check; only send on diff
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
+        },
+    )
 
 
 @app.get("/api/samcan/diag")

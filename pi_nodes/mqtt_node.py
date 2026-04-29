@@ -10,6 +10,7 @@ Replaces rclpy.Node. Provides:
   - Config access via config_loader.cfg()
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -19,17 +20,90 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from typing import Callable, Any, Optional
 
 import paho.mqtt.client as mqtt
 
+# orjson is ~3-5x faster than stdlib json on the publish hot path (50 Hz IMU,
+# 20 Hz odom/range, etc.). Falls back to stdlib if not installed — logged once
+# at import so a missing wheel is visible without breaking the robot.
+try:
+    import orjson as _orjson
+    _HAS_ORJSON = True
+
+    def _json_dumps_bytes(obj) -> bytes:
+        return _orjson.dumps(obj)
+
+    def _json_loads(raw):
+        return _orjson.loads(raw)
+except ImportError:
+    _HAS_ORJSON = False
+
+    def _json_dumps_bytes(obj) -> bytes:
+        return json.dumps(obj, separators=(',', ':')).encode('utf-8')
+
+    def _json_loads(raw):
+        return json.loads(raw)
+
 # Load default robot_id from config.yaml (single source of truth)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
-    from config_loader import cfg as _cfg
+    from config_loader import cfg as _cfg, get_mqtt_credentials as _get_mqtt_creds
     _DEFAULT_ROBOT_ID = _cfg('mqtt.robot_id', 'robot1')
 except ImportError:
     _DEFAULT_ROBOT_ID = 'robot1'
+    def _get_mqtt_creds():
+        return None, None
+
+
+# ── Correlation ID propagation (#56) ─────────────────────────────────
+# A correlation_id (cid) lets us trace an action across nodes:
+#   voice_command "иди вперёд"  →  fsm sets goal  →  cmd_vel pulse  →  motor moves
+# Each MQTT publish carries the cid in the `_cid` field; the subscribe
+# wrapper captures it into a contextvar so any log event emitted while
+# handling that message inherits the same cid. Messages published from
+# inside that callback automatically inherit the cid too.
+#
+# JSON log output is opt-in via SAMURAI_JSON_LOGS=1 — keeps the human-
+# friendly `[level] [node] msg` format as default for tail-friendly dev.
+
+_correlation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'samurai_cid', default=None)
+
+
+def current_correlation_id() -> Optional[str]:
+    return _correlation_id.get()
+
+
+def set_correlation_id(cid: Optional[str]) -> contextvars.Token:
+    return _correlation_id.set(cid)
+
+
+def new_correlation_id() -> str:
+    """Generate a short random cid (8 hex chars — collision-free for trace-window scope)."""
+    return uuid.uuid4().hex[:8]
+
+
+_JSON_LOGS = os.environ.get('SAMURAI_JSON_LOGS', '').lower() in ('1', 'true', 'yes')
+
+
+class _CidJsonFormatter(logging.Formatter):
+    """Structured logger format: one JSON object per line, includes cid if set."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            'ts': record.created,
+            'level': record.levelname,
+            'node': record.name,
+            'msg': record.getMessage(),
+        }
+        cid = current_correlation_id()
+        if cid:
+            payload['cid'] = cid
+        if record.exc_info:
+            payload['exc'] = self.formatException(record.exc_info)
+        return json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
 
 
 def get_local_ip(timeout: float = 2.0) -> str:
@@ -78,11 +152,19 @@ class MqttNode:
     def __init__(self, name: str, *,
                  broker: str = '127.0.0.1',
                  port: int = 1883,
-                 robot_id: str = _DEFAULT_ROBOT_ID):
+                 robot_id: str = _DEFAULT_ROBOT_ID,
+                 username: Optional[str] = None,
+                 password: Optional[str] = None):
         self.name = name
         self._robot_id = robot_id
         self._broker = broker
         self._port = port
+        # Если username/password не переданы явно — ищем в ENV / файле / config.
+        # None, None → anonymous. См. config_loader.get_mqtt_credentials().
+        if username is None and password is None:
+            username, password = _get_mqtt_creds()
+        self._mqtt_user = username
+        self._mqtt_pwd = password
         self._running = False
         self._timers: list[threading.Thread] = []
         self._lock = threading.Lock()
@@ -105,8 +187,11 @@ class MqttNode:
         self._log.propagate = False
         if not self._log.handlers:
             handler = logging.StreamHandler()
-            handler.setFormatter(
-                logging.Formatter(f'[%(levelname)s] [{name}] %(message)s'))
+            if _JSON_LOGS:
+                handler.setFormatter(_CidJsonFormatter())
+            else:
+                handler.setFormatter(
+                    logging.Formatter(f'[%(levelname)s] [{name}] %(message)s'))
             self._log.addHandler(handler)
             self._log.setLevel(logging.INFO)
 
@@ -163,13 +248,25 @@ class MqttNode:
 
     def publish_raw(self, full_topic: str, payload,
                     qos: int = 0, retain: bool = False):
-        """Publish to an arbitrary MQTT topic (no robot_id prefix)."""
+        """Publish to an arbitrary MQTT topic (no robot_id prefix).
+
+        If a correlation_id is set in the current context (e.g. inside a
+        message-handling callback), it is injected into outgoing dict
+        payloads as `_cid` for cross-node trace propagation.
+        """
         if isinstance(payload, dict):
-            data = json.dumps(payload, separators=(',', ':'))
+            cid = current_correlation_id()
+            if cid and '_cid' not in payload:
+                # Copy to avoid mutating caller's dict — payload may be reused.
+                payload = dict(payload)
+                payload['_cid'] = cid
+            data = _json_dumps_bytes(payload)
+        elif isinstance(payload, list):
+            data = _json_dumps_bytes(payload)
         elif isinstance(payload, (bytes, bytearray)):
             data = payload
         elif isinstance(payload, bool):
-            data = json.dumps(payload)
+            data = b'true' if payload else b'false'
         elif isinstance(payload, (int, float)):
             data = str(payload)
         else:
@@ -210,16 +307,32 @@ class MqttNode:
             raw = mqtt_msg.payload
             if parse_json:
                 try:
-                    data = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                    data = _json_loads(raw)
+                except (ValueError, UnicodeDecodeError):
+                    # orjson raises orjson.JSONDecodeError (subclass of ValueError);
+                    # stdlib raises json.JSONDecodeError (also ValueError subclass).
                     data = raw.decode('utf-8', errors='replace')
             else:
                 data = raw
+            # Extract correlation_id if present in the payload, so any log
+            # events / publishes inside the callback inherit it. Fresh cid
+            # generated when the inbound message has none — gives every
+            # message-driven action a traceable id even if the producer
+            # didn't bother to set one.
+            inbound_cid: Optional[str] = None
+            if isinstance(data, dict):
+                cid_val = data.get('_cid')
+                if isinstance(cid_val, str) and cid_val:
+                    inbound_cid = cid_val
+            cid = inbound_cid or new_correlation_id()
+            token = set_correlation_id(cid)
             t0 = time.monotonic()
             try:
                 callback(mqtt_msg.topic, data)
             except Exception as exc:
                 self._log.error('Callback error on %s: %s', mqtt_msg.topic, exc)
+            finally:
+                _correlation_id.reset(token)
             elapsed = time.monotonic() - t0
             elapsed_ms = elapsed * 1000
             if elapsed_ms > self._perf_cb_max_ms:
@@ -284,6 +397,9 @@ class MqttNode:
     def start(self):
         """Connect to broker and start all timers. Call once."""
         self._running = True
+        # Auth — must be set BEFORE connect_async (paho применяет в SUBSCRIBE/CONNECT)
+        if self._mqtt_user is not None:
+            self._client.username_pw_set(self._mqtt_user, self._mqtt_pwd)
         # keepalive=15s — broker detects dead client faster (default was 60s)
         self._client.connect_async(self._broker, self._port, keepalive=15)
         self._client.loop_start()
@@ -293,8 +409,9 @@ class MqttNode:
         self.create_timer(heartbeat_period, self._heartbeat, name=f'{self.name}_heartbeat')
         for t in self._timers:
             t.start()
-        self._log.info('%s started (broker=%s:%d, id=%s)',
-                       self.name, self._broker, self._port, self._robot_id)
+        auth_str = f' user={self._mqtt_user}' if self._mqtt_user else ' anonymous'
+        self._log.info('%s started (broker=%s:%d, id=%s,%s)',
+                       self.name, self._broker, self._port, self._robot_id, auth_str)
 
     def _heartbeat(self):
         """Periodic heartbeat to keep MQTT alive and detect dead connections."""
@@ -343,7 +460,7 @@ class MqttNode:
             try:
                 self._client.publish(
                     f'samurai/{self._robot_id}/perf/{self.name}',
-                    json.dumps(report, separators=(',', ':')), qos=0)
+                    _json_dumps_bytes(report), qos=0)
             except Exception:
                 pass
         # Reset counters
@@ -404,14 +521,18 @@ class MqttNode:
         """Publish error/warning to centralized log topic for dashboard aggregation."""
         if self._mqtt_connected:
             try:
+                payload = {
+                    'node': self.name,
+                    'level': level,
+                    'msg': text[:200],
+                    'ts': time.time(),
+                }
+                cid = current_correlation_id()
+                if cid:
+                    payload['cid'] = cid
                 self._client.publish(
                     f'samurai/{self._robot_id}/log/events',
-                    json.dumps({
-                        'node': self.name,
-                        'level': level,
-                        'msg': text[:200],
-                        'ts': time.time(),
-                    }, separators=(',', ':')),
+                    _json_dumps_bytes(payload),
                     qos=0)
             except Exception:
                 pass  # never let logging crash the node

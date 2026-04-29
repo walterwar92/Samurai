@@ -2,16 +2,16 @@ import { useState, type KeyboardEvent } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Send } from 'lucide-react'
-import { useSocket } from '@/providers/SocketProvider'
+import { useSend } from '@/stores/selectors'
 
 export function CommandInput() {
   const [text, setText] = useState('')
-  const { sendCommand } = useSocket()
+  const send = useSend()
 
   const handleSend = () => {
     const trimmed = text.trim()
     if (!trimmed) return
-    sendCommand(trimmed)
+    send(trimmed)
     setText('')
   }
 

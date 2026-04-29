@@ -87,6 +87,30 @@ odometry:
   deadzone_angular: 0.05   # rad/s — ниже = не вращаемся
   cmd_vel_timeout: 0.5     # sec — auto-stop без новых команд (быстрая остановка при потере связи)
 
+  # Источник fused-позиции, публикуемой в samurai/{id}/odom как primary x, y.
+  # wheel         — dead-reckoning от cmd_vel (legacy, точно при ровной езде)
+  # imu           — только IMU (AccelPositionEstimator), без wheel
+  # complementary — α·wheel + (1-α)·imu, weighted blend
+  # ekf           — Калман-фильтр с wheel и IMU как двумя измерениями
+  # Переключается на лету через MQTT samurai/{id}/odometry/source = "ekf"
+  source: wheel
+
+  # Modeling motor inertia. Без этого позиция «опережает» реальность на
+  # каждом старт/стопе на ~100-200 мс × текущая скорость = ~2-4 см.
+  # tau_sec — время отклика 1-го порядка (характерное для DC моторов
+  # через PWM). enabled: false → отключить (legacy behaviour).
+  motor_lag:
+    enabled: true
+    tau_sec: 0.15
+
+  fusion:
+    complementary_alpha: 0.7   # 1.0 = только wheel, 0.0 = только IMU
+    ekf_q_pos: 0.05            # process noise позиции (m²/tick)
+    ekf_q_vel: 0.10            # process noise скорости ((m/s)²/tick)
+    ekf_r_wheel: 0.04          # шум измерения wheel position (m²)
+    ekf_r_imu: 0.20            # шум измерения IMU position (m²) — больше = меньше доверия
+    ekf_r_imu_vel: 0.10        # шум измерения IMU velocity ((m/s)²)
+
 # Accelerometer position estimator
 accel_position:
   latitude: 55.75            # широта для компенсации вращения Земли (Москва)
@@ -200,10 +224,19 @@ precision_drive:
 # Профили хранятся в calibration_profiles.yaml (зависят от поверхности/места)
 # Активный профиль загружается motor_node при старте
 wheel_calibration:
+  wheel_base: 0.17             # м — расстояние между гусеницами (физическая константа шасси)
   scale_linear_fwd: 1.235      # вперёд: реальное / одометрическое (робот едет дальше нормы)
   scale_linear_bwd: 0.988      # назад:  FWD × 0.80 (мотор менее эффективен назад)
   motor_trim_pct:  -12.003     # угловая поправка % (правый мотор слабее: даём ему +12%)
   scale_angular: 1.0           # угловой масштаб (не калиброван)
+
+# Двигатели и collision guard (#46)
+# Tunable так чтобы под другой ширины коридор/арену можно было настроить без кода.
+motor:
+  collision_guard_stop_m: 0.20      # м — полная остановка
+  collision_guard_slow_m: 0.40      # м — начало замедления
+  collision_avoid_angular: 0.6      # рад/с — скорость поворота при объезде препятствия
+  manual_override_timeout: 0.5      # с — таймаут ручного управления (joystick → autonomous)
 
 # SLAM карта (ультразвук + одометрия)
 slam_map:
@@ -288,8 +321,139 @@ mqtt:
   broker: "127.0.0.1"          # Mosquitto on Pi (override via --broker)
   port: 1883
   robot_id: "robot1"
-  camera_fps: 20               # MQTT camera framerate (was 12, увеличено для отзывчивости)
-  camera_jpeg_quality: 70      # повышено с 60 для лучшего качества детекции
+  # ── Camera (H.264 over TCP, не JPEG over MQTT) ─────────────────────────
+  # Раньше: JPEG в MQTT topic → ~2.5 МБ/с при 640x480 q=65 20fps.
+  # Теперь: H.264 (Pi hardware encoder) через TCP → ~200-500 КБ/с.
+  # Discovery: retained MQTT topic samurai/{robot_id}/camera/endpoint.
+  camera_fps: 20               # camera framerate
+  camera_h264_port: 8554       # TCP server port (Pi → клиенты NAL units)
+  camera_h264_bitrate: 2000000 # 2 Mbps default (можно снизить до 1 Mbps на узком WiFi)
+  camera_h264_iperiod: 30      # I-frame каждые N кадров (30 = 1.5с @ 20fps)
+  # camera_jpeg_quality удалено — JPEG режим больше не поддерживается
   keepalive: 15                # MQTT keepalive (sec) — быстрое обнаружение потери связи
   reconnect_min: 0.5           # MQTT reconnect min delay (sec)
   reconnect_max: 5             # MQTT reconnect max delay (sec)
+
+  # ── Optional authentication ────────────────────────────────────────────
+  # Включить через ./samurai.sh auth init (генерирует файл ~/.samurai/mqtt.passwd)
+  # или через ENV: SAMURAI_MQTT_USER + SAMURAI_MQTT_PASS.
+  #
+  # Приоритет credentials (config_loader.get_mqtt_credentials()):
+  #   1. ENV vars SAMURAI_MQTT_USER / SAMURAI_MQTT_PASS
+  #   2. Файл ~/.samurai/mqtt.passwd
+  #   3. Эта секция (только для dev — не коммить пароли в git!)
+  #
+  # Чтобы принудительно ОТКЛЮЧИТЬ auth не удаляя файл — установить enabled: false.
+  # auth:
+  #   enabled: true            # явный выключатель (опционально)
+  #   username: "samurai"      # дев-режим: пароль в config.yaml (НЕ для production)
+  #   password: "samurai"
+
+# =============================================================================
+# Control — state-space regulator (LQR / MPC / modal)
+# =============================================================================
+# Offline-проектирование в matlab/main.m → экспорт сюда → онлайн-применение
+# в pi_nodes/control/. Полный мат.аппарат — в latex_doc/control_theory/.
+#
+# Состояние (n=5):  x = [px, py, theta, v, omega]
+# Управление (r=2): u = [u_v, u_omega]
+#
+# Меняйте параметры → перезапустите motor_node — поведение робота изменится
+# без перекомпиляции.  Для «ошибочных» демонстраций см. главу 3 latex_doc.
+# === control: section auto-generated by matlab/main.m ===
+# Edit weights/limits/poles below; rerun matlab/main.m to update matrices.
+# === control: section auto-generated by matlab/main.m ===
+# Edit weights/limits/poles below; rerun matlab/main.m to update matrices.
+# Подробное описание: latex_doc/control_theory/main.pdf
+# === control: section auto-generated by matlab/main.m ===
+# Edit weights/limits/poles below; rerun matlab/main.m to update matrices.
+# Подробное описание: latex_doc/control_theory/main.pdf
+control:
+  mode: "off"           # off | lqr | mpc | modal
+
+  plant:
+    v0:    0.2000
+    tau_v: 0.1500
+    tau_w: 0.1000
+    Ts:    0.0500
+
+  weights:
+    Q_diag: [10, 10, 5, 1, 1]
+    R_diag: [1, 1]
+
+  limits:
+    u_min: [-0.3, -2]
+    u_max: [0.3, 2]
+
+  mpc:
+    horizon_N: 10
+    solver:    "clip"   # clip | qp
+
+  modal:
+    poles_continuous: [-2, -3, -4, -8, -10]
+    observer_speedup: 5.0
+
+  matrices:
+    override: false      # set true to disable matlab/main.m updates
+    A:  [[1, 0, 0, 0.0425203, 0], [0, 1, 0.01, 0, 0.000213061], [0, 0, 1, 0, 0.0393469], [0, 0, 0, 0.716531, 0], [0, 0, 0, 0, 0.606531]]
+    B:  [[0.0074797, 0], [0, 3.69387e-05], [0, 0.0106531], [0.283469, 0], [0, 0.393469]]
+    K:     [[2.80934, -1.70854e-15, 5.3862e-15, 0.599087, 1.03394e-16], [3.54655e-15, 2.73812, 2.30741, 2.10352e-16, 0.438487]]     # LQR gain (2 x n) — used in mode: lqr
+    K_mpc: [[2.80934, -5.3362e-17, 5.04768e-16, 0.599087, 3.67338e-17], [4.77346e-16, 2.73812, 2.30741, 5.25256e-17, 0.438487]]     # MPC explicit first-step gain — used in mode: mpc
+    L:  [[0.438448, 0, 0, 0.0425203, 0], [0, 0.897003, 0.01, 0, 0.000213061], [0, 0, 0.969099, 0, 0.0393469], [0, 0, 0, 0.0403747, 0], [0, 0, 0, 0, -0.324084]]     # observer gain
+    Pf: [[113.841, 9.27714e-14, 1.04499e-13, 9.5533, 5.88004e-15], [9.27714e-14, 842.699, 100.858, 1.68636e-14, 6.47209], [1.04499e-13, 100.858, 85.694, 9.11974e-15, 5.39942], [9.5533, 1.68636e-14, 9.11974e-15, 2.73992, 5.62901e-16], [5.88004e-15, 6.47209, 5.39942, 5.62901e-16, 1.79924]]     # terminal cost
+# === end of auto-generated control: block ===
+
+  # ── Параметры объекта (физика) ───────────────────────────────────────
+  # Используются для пересчёта A, B если matrices.A/B = null.
+  plant:
+    v0:    0.20      # м/с    — опорная линейная скорость
+    tau_v: 0.15      # с      — постоянная времени мотора (linear)
+    tau_w: 0.10      # с      — постоянная времени мотора (angular)
+    Ts:    0.05      # с      — период дискретизации (= 1/20 Hz)
+
+  # ── Веса критерия J = Σ(x'Qx + u'Ru) ─────────────────────────────────
+  # Бо́льшие Q[i] → точнее держит i-ю координату.
+  # Бо́льшие R[j] → бережёт j-е управление, реакции медленнее.
+  weights:
+    Q_diag: [10.0, 10.0, 5.0, 1.0, 1.0]   # px, py, theta, v, omega
+    R_diag: [1.0, 1.0]                    # u_v, u_omega
+
+  # ── Физические ограничения управления ────────────────────────────────
+  # Те же что simulator.max_linear / max_angular, но повторены здесь
+  # чтобы регулятор знал свои пределы независимо от симулятора.
+  limits:
+    u_min: [-0.30, -2.0]
+    u_max: [+0.30, +2.0]
+
+  # ── MPC ──────────────────────────────────────────────────────────────
+  mpc:
+    horizon_N: 10        # шагов прогноза (× Ts = 0.5 с при Ts=0.05)
+    solver:    "clip"    # clip — явное решение + проекция на бокс
+                         # qp   — полный QP через scipy (точнее, но дороже)
+
+  # ── Модальный регулятор (pole placement) ─────────────────────────────
+  # Желаемые непрерывные полюса замкнутой системы.
+  # Условие устойчивости: все Re(λ) < 0.
+  # Хотите ОШИБОЧНОЕ поведение для демонстрации — поставьте +1.0
+  # (положительные полюса → робот «убегает» по экспоненте).
+  modal:
+    poles_continuous: [-2.0, -3.0, -4.0, -8.0, -10.0]
+    observer_speedup: 5.0    # полюса наблюдателя в N раз быстрее регулятора
+
+  # ── Матрицы (рассчитываются matlab/main.m, экспортируются автоматически)
+  # Если null — Python вычислит их сам из plant + weights при старте
+  # (требуется scipy). Явно записанные значения имеют приоритет.
+  #
+  # Чтобы заблокировать перезапись из MATLAB — установите override: true.
+  matrices:
+    override: false
+    A:       null    # 5x5 — дискретная матрица состояния
+    B:       null    # 5x2 — дискретная матрица управления
+    K:       null    # 2x5 — LQR-регулятор
+    K_mpc:   null    # 2x5 — MPC явный коэффициент (первого шага)
+    K_modal: null    # 2x5 — модальный регулятор (pole placement)
+    L:       null    # 5x5 — наблюдатель Луенбергера
+    Pf:      null    # 5x5 — терминальный штраф MPC (= P из DARE)
+
+
+

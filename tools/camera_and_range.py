@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# DEPRECATED (2026-04, #9): camera_node на Pi больше не публикует JPEG в
+# samurai/{id}/camera. Поток теперь H.264 через TCP (port 8554).
+# Этот tool работать НЕ будет до миграции на H.264 (PyAV + TCP discovery).
+# Альтернатива: запустить ./samurai.sh detector и смотреть детекции через
+# samurai/{id}/yolo/annotated (там JPEG annotated, ноут энкодит).
 """
 camera_and_range.py — Получает изображение с камеры и данные ультразвука.
 

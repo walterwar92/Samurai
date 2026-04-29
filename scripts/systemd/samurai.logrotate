@@ -1,0 +1,27 @@
+# /etc/logrotate.d/samurai — log rotation for manual `./samurai.sh` runs (#54)
+#
+# Install:
+#   sudo cp scripts/systemd/samurai.logrotate /etc/logrotate.d/samurai
+#
+# Manual command-line runs of samurai.sh that redirect stdout (e.g. via
+# `./samurai.sh robot 2>&1 | tee -a /var/lib/samurai/logs/robot.log`) end
+# up writing into /var/lib/samurai/logs/. systemd-managed runs go through
+# journalctl which has its own rotation, so this rule covers the gap for
+# developer / on-pi shell sessions.
+#
+# Policy: keep 7 daily files, compress old ones, never more than 50 MB total
+# per file before forced rotation. Don't error if a log file is missing —
+# the directory is created by `scripts/systemd/install.sh` but a fresh dev
+# checkout that never ran the installer simply has nothing to rotate.
+
+/var/lib/samurai/logs/*.log {
+    daily
+    rotate 7
+    maxsize 50M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0644 pi pi
+}

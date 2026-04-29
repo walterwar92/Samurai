@@ -1,27 +1,23 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, memo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { MapToolbar } from './MapToolbar'
 import { useMapCanvas } from '@/hooks/useMapCanvas'
 import { useZoneDrawing } from '@/hooks/useZoneDrawing'
+import type { MapTransform } from '@/lib/mapMath'
 import type { RobotState } from '@/types/robot'
 
 interface MapCanvasProps {
   state: RobotState | null
 }
 
-export function MapCanvas({ state }: MapCanvasProps) {
+export const MapCanvas = memo(function MapCanvas({ state }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  const { transformRef } = useMapCanvas(canvasRef, {
-    mapInfo: state?.map_info ?? null,
-    pose: state?.pose ?? null,
-    scanPoints: state?.scan_points ?? [],
-    plannedPath: state?.planned_path ?? [],
-    zones: state?.zones ?? [],
-    yaw: state?.pose?.yaw ?? 0,
-    drawPreview: null, // Will be set from zone drawing
-  })
+  // Shared transform: useMapCanvas populates it during draw; useZoneDrawing
+  // reads it on mouse events to convert canvas coords back to world coords.
+  // Owning the ref here lets us call useMapCanvas exactly once instead of
+  // twice (the previous double-call wasted a full canvas redraw per frame).
+  const transformRef = useRef<MapTransform | null>(null)
 
   const {
     mode,
@@ -32,16 +28,19 @@ export function MapCanvas({ state }: MapCanvasProps) {
     handleMouseUp,
   } = useZoneDrawing(canvasRef, transformRef)
 
-  // Re-draw with zone preview
-  useMapCanvas(canvasRef, {
-    mapInfo: state?.map_info ?? null,
-    pose: state?.pose ?? null,
-    scanPoints: state?.scan_points ?? [],
-    plannedPath: state?.planned_path ?? [],
-    zones: state?.zones ?? [],
-    yaw: state?.pose?.yaw ?? 0,
-    drawPreview,
-  })
+  useMapCanvas(
+    canvasRef,
+    {
+      mapInfo: state?.map_info ?? null,
+      pose: state?.pose ?? null,
+      scanPoints: state?.scan_points ?? [],
+      plannedPath: state?.planned_path ?? [],
+      zones: state?.zones ?? [],
+      yaw: state?.pose?.yaw ?? 0,
+      drawPreview,
+    },
+    transformRef,
+  )
 
   // Resize canvas to container
   useEffect(() => {
@@ -85,4 +84,4 @@ export function MapCanvas({ state }: MapCanvasProps) {
       </CardContent>
     </Card>
   )
-}
+})

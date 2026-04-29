@@ -1,0 +1,39 @@
+[Unit]
+Description=Samurai Robot — Pi-side MQTT nodes
+Documentation=https://github.com/walterwar92/Samurai
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=__SAMURAI_USER__
+Group=__SAMURAI_USER__
+WorkingDirectory=__SAMURAI_ROOT__
+
+# Не пытаться устанавливать пакеты — должны быть установлены до enable.
+Environment="SAMURAI_SKIP_PIP_INSTALL=1"
+# Лог-директория
+Environment="SAMURAI_STATE_DIR=/var/lib/samurai"
+# Опциональный MQTT auth — раскомментируй и подставь реальные creds,
+# либо положи их в ~/.samurai/mqtt.passwd (config_loader сам подхватит).
+# Environment="SAMURAI_MQTT_USER=samurai"
+# Environment="SAMURAI_MQTT_PASS=samurai"
+
+# --no-mqtt-restart: mosquitto настраивается отдельно через mosquitto.service.
+# Скрипт не должен пересоздавать конфиг при каждом запуске.
+ExecStart=__SAMURAI_ROOT__/samurai.sh robot --no-mqtt-restart
+
+Restart=on-failure
+RestartSec=5s
+
+# Логи через journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=samurai-robot
+
+# Безопасность (минимальные ограничения, нужны GPIO/I2C)
+NoNewPrivileges=false
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target

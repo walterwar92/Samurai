@@ -85,6 +85,9 @@ Desktop.ini
 *.logs
 log/
 logs/
+# Exception: source-code component directory named "log" is not a logs dir.
+!compute_node/frontend/src/components/log/
+!compute_node/frontend/src/components/log/**
 
 # --- Temporary Files ---
 *.tmp
@@ -92,6 +95,26 @@ logs/
 *.bak
 *.backup
 *.cache
+
+# --- LaTeX build artefacts (#66) ---
+# main.tex и chapters/*.tex остаются в репо; артефакты pdflatex/latexmk — нет.
+*.aux
+*.fls
+*.fdb_latexmk
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+*.synctex.gz
+
+# --- Locked requirements (#70) ---
+# Generated on the deployment platform via ./scripts/lock-requirements.sh.
+# Platform-specific (arm64 vs x86_64 wheel hashes) — never commit.
+requirements.lock
+
+# --- MkDocs build output (#67) ---
+site/
 
 # --- Claude Code ---
 .claude/
@@ -109,6 +132,9 @@ secrets.yaml
 credentials.json
 *.pem
 *.key
+
+# --- MOIS HTTP-агент (содержит api_token) ---
+compute_node/mois_agent/config.json
 
 # --- Generated documentation ---
 docs/_build/

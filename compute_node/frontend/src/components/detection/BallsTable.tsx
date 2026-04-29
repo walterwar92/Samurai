@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import {
   Table,
   TableBody,
@@ -15,7 +16,7 @@ interface BallsTableProps {
   balls: BallInfo[]
 }
 
-export function BallsTable({ balls }: BallsTableProps) {
+export const BallsTable = memo(function BallsTable({ balls }: BallsTableProps) {
   return (
     <Card>
       <CardHeader className="py-2 px-3">
@@ -71,4 +72,4 @@ export function BallsTable({ balls }: BallsTableProps) {
       </CardContent>
     </Card>
   )
-}
+})

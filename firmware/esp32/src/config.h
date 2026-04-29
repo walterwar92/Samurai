@@ -20,6 +20,14 @@
 // Topic prefix: samurai/robot1/
 #define TOPIC_PREFIX    "samurai/" MQTT_ROBOT_ID "/"
 
+// ── MQTT auth (опционально) ──────────────────────────────────────
+// Раскомментируй ОБЕ строки если на брокере включена аутентификация
+// (./samurai.sh auth init на Pi). По умолчанию — anonymous подключение.
+// Формат должен совпадать с ~/.samurai/mqtt.passwd на Pi.
+//
+// #define MQTT_USER       "samurai"
+// #define MQTT_PASS       "samurai"
+
 // ── I2C ──────────────────────────────────────────────────────────
 #define I2C_SDA         21
 #define I2C_SCL         22

@@ -122,7 +122,7 @@ sudo bash Diagnostic/setup_robot.sh
 ```
 [INFO]  All packages installed successfully!
 [INFO]  Mosquitto is running (port 1883)
-[INFO]  После перезагрузки запуск робота: cd ~/Samurai && ./start_robot_mqtt.sh
+[INFO]  После перезагрузки запуск робота: cd ~/Samurai && ./samurai.sh robot
 ```
 
 После завершения:
@@ -145,7 +145,7 @@ Pi и ноутбук в **одной Wi-Fi сети**. Больше ничего
 2. Подключить к нему Pi (через `raspi-config` → Network → Wi-Fi) и ноутбук
 3. На ноутбуке запускать с флагом `--hotspot`:
    ```bash
-   ./start_laptop_robot.sh --hotspot
+   ./samurai.sh compute --hotspot
    ```
 
 ### Вариант В: Прямое Ethernet-подключение Pi → Ноутбук
@@ -166,15 +166,21 @@ arp -n | grep -i "b8:27\|dc:a6\|e4:5f\|28:cd"  # MAC-адреса Raspberry Pi
 
 ```bash
 # На Pi (из папки ~/Samurai):
-./start_robot_mqtt.sh
+./samurai.sh robot
 ```
 
-Скрипт автоматически:
+Единый CLI заменил `start_robot_mqtt.sh` (старая обёртка осталась с
+deprecation-предупреждением — её можно использовать, но новый скрипт
+короче и логичнее). Запуск автоматически:
 1. Проверяет Python и зависимости
 2. Проверяет I2C (выводит таблицу устройств)
 3. Запускает Mosquitto если не запущен
 4. Создаёт конфиг LAN-доступа если нужно
 5. Запускает все 11 нод через `robot_launcher.py`
+
+Прочие подкоманды (`./samurai.sh status`, `./samurai.sh stop`,
+`./samurai.sh sim`, `./samurai.sh bridge`, `./samurai.sh planner`,
+`./samurai.sh voice-llm`, …) описаны в README раздел «Startup».
 
 **Ожидаемый вывод:**
 ```
@@ -196,8 +202,13 @@ arp -n | grep -i "b8:27\|dc:a6\|e4:5f\|28:cd"  # MAC-адреса Raspberry Pi
 ### 6.2 Автозапуск при старте Pi (опционально)
 
 ```bash
-# Создать systemd сервис
-sudo tee /etc/systemd/system/samurai.service <<'EOF'
+# Готовый юнит установит хелпер из репо:
+sudo ./scripts/systemd/install.sh
+sudo systemctl enable samurai-robot
+sudo systemctl start samurai-robot
+
+# Или вручную (если нужно кастомизировать):
+sudo tee /etc/systemd/system/samurai-robot.service <<'EOF'
 [Unit]
 Description=Samurai Robot MQTT Nodes
 After=network-online.target mosquitto.service
@@ -207,7 +218,7 @@ Wants=network-online.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/Samurai
-ExecStart=/home/pi/Samurai/start_robot_mqtt.sh
+ExecStart=/home/pi/Samurai/samurai.sh robot
 Restart=on-failure
 RestartSec=10
 
@@ -215,11 +226,11 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl enable samurai
-sudo systemctl start samurai
+sudo systemctl enable samurai-robot
+sudo systemctl start samurai-robot
 
 # Просмотр логов:
-journalctl -u samurai -f
+journalctl -u samurai-robot -f
 ```
 
 ---
@@ -232,23 +243,26 @@ journalctl -u samurai -f
 # На ноутбуке:
 git clone https://github.com/ТВОЙ_АККАУНТ/Samurai.git
 cd Samurai
-chmod +x start_laptop_robot.sh start_laptop_sim.sh
+chmod +x samurai.sh
 ```
 
 ### 7.2 Запустить управление реальным роботом
 
 ```bash
 # Авто-обнаружение Pi через mDNS:
-./start_laptop_robot.sh
+./samurai.sh compute
 
 # Или указать IP вручную:
-./start_laptop_robot.sh --pi 192.168.1.50
+./samurai.sh compute --pi 192.168.1.50
 
 # Хотспот-режим:
-./start_laptop_robot.sh --hotspot
+./samurai.sh compute --hotspot
 
 # Первый запуск (пересборка Docker образа ~15 мин):
-./start_laptop_robot.sh --rebuild
+./samurai.sh compute --rebuild
+
+# Симулятор Flask (без железа):
+./samurai.sh sim
 ```
 
 **Что делает скрипт:**
@@ -433,7 +447,7 @@ sudo reboot
 
 ```bash
 # Пересобрать с нуля:
-docker rmi samurai 2>/dev/null; ./start_laptop_robot.sh --rebuild
+docker rmi samurai 2>/dev/null; ./samurai.sh compute --rebuild
 
 # Проверить логи Docker:
 docker build -t samurai . 2>&1 | tail -50
@@ -465,14 +479,19 @@ mosquitto_pub -h raspberrypi.local \
 
 ```bash
 # ── Pi ───────────────────────────────────────────
-ssh pi@raspberrypi.local          # подключиться к Pi
-cd ~/Samurai && ./start_robot_mqtt.sh   # запустить робота
-journalctl -u samurai -f          # логи автозапуска
+ssh pi@raspberrypi.local                # подключиться к Pi
+cd ~/Samurai && ./samurai.sh robot      # запустить робота
+./samurai.sh status                     # что сейчас работает
+./samurai.sh stop                       # остановить всё
+journalctl -u samurai-robot -f          # логи systemd-юнита
 
 # ── Ноутбук ─────────────────────────────────────
-./start_laptop_robot.sh           # запустить управление
-./start_laptop_robot.sh --pi IP   # вручную задать IP Pi
-./start_laptop_sim.sh             # запустить симулятор
+./samurai.sh compute                    # запустить управление
+./samurai.sh compute --pi IP            # вручную задать IP Pi
+./samurai.sh sim                        # запустить симулятор
+./samurai.sh bridge                     # USB-bridge для второго робота
+./samurai.sh planner                    # A* path planner
+./samurai.sh voice-llm                  # LLM voice intent (Qwen)
 
 # ── MQTT отладка ─────────────────────────────────
 mosquitto_sub -h raspberrypi.local -t 'samurai/#' -v

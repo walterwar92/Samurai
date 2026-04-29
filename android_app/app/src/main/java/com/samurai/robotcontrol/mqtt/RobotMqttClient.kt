@@ -29,7 +29,16 @@ class RobotMqttClient {
     private var robotId = "robot1"
 
     // ── Connect ─────────────────────────────────────────────
-    fun connect(brokerIp: String, robotIdParam: String = "robot1") {
+    /**
+     * @param username MQTT username (empty string = anonymous)
+     * @param password MQTT password (used only if username non-empty)
+     */
+    fun connect(
+        brokerIp: String,
+        robotIdParam: String = "robot1",
+        username: String = "",
+        password: String = "",
+    ) {
         robotId = robotIdParam
         val serverUri = "tcp://$brokerIp:1883"
         try {
@@ -41,6 +50,11 @@ class RobotMqttClient {
                 isAutomaticReconnect = true
                 isCleanSession = true
                 connectionTimeout = 10
+                if (username.isNotBlank()) {
+                    userName = username
+                    this.password = password.toCharArray()
+                    Log.i(TAG, "MQTT auth: user=$username")
+                }
             }
             client?.setCallback(object : MqttCallbackExtended {
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {

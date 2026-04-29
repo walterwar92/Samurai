@@ -39,6 +39,14 @@ MAP_SIZE_M = 10.0          # map covers ±5m from origin (10×10m total)
 CELL_SIZE_M = 0.05         # 5 cm per cell → 200×200 grid
 MAP_CELLS = int(MAP_SIZE_M / CELL_SIZE_M)  # 200
 
+# Dynamic origin (sliding grid, #4 — 2026-04):
+# Когда робот приближается к краю grid'а ближе чем SHIFT_MARGIN_M,
+# мы сдвигаем origin так чтобы робот вернулся в центр. Старые ячейки
+# копируются с offset — карта ведёт себя как «движущееся окно». Это
+# позволяет роботу свободно ездить дальше изначальной 10×10 области
+# без потери данных в новой зоне.
+SHIFT_MARGIN_M = 1.5       # м — порог: ближе чем этого к краю → shift
+
 # Log-odds update values
 L_OCC = 0.85               # log-odds increment for occupied cell
 L_FREE = -0.40             # log-odds increment for free cell (beam passed)
@@ -214,18 +222,88 @@ class SlamMapNode(MqttNode):
             self.log_info('Объект устарел, удалён: %s %s', obj['colour'], obj['class'])
 
     def _reset_cb(self, topic, data):
-        """Reset map when position resets."""
+        """Reset map when position resets — origin тоже сбрасывается в дефолт."""
         self._grid = [0.0] * (MAP_CELLS * MAP_CELLS)
+        self._origin_x = -MAP_SIZE_M / 2.0
+        self._origin_y = -MAP_SIZE_M / 2.0
         self._trail = []
         self._last_trail_x = 0.0
         self._last_trail_y = 0.0
         self._objects = {}
         self.log_info('SLAM map reset (включая реестр объектов)')
 
+    # ── Dynamic origin (sliding grid) ──────────────────────────
+    def _maybe_shift_origin(self):
+        """Если робот ближе SHIFT_MARGIN_M к краю grid'а — сдвинуть origin
+        так чтобы робот оказался ближе к центру. Старые ячейки копируются
+        с offset (sliding window).
+
+        Сдвиг кратен CELL_SIZE_M, поэтому копия cell-to-cell без re-sample.
+        Возвращает True если был сдвиг (для логирования).
+        """
+        # Позиция робота в координатах grid (доли ячеек)
+        rel_x_cells = (self._x - self._origin_x) / CELL_SIZE_M
+        rel_y_cells = (self._y - self._origin_y) / CELL_SIZE_M
+
+        margin_cells = SHIFT_MARGIN_M / CELL_SIZE_M
+        center = MAP_CELLS / 2.0
+
+        # Нужен ли сдвиг по X / Y?
+        shift_i = 0  # column offset (положительный = origin сдвигается вправо)
+        shift_j = 0
+        if rel_x_cells < margin_cells:
+            shift_i = int(round(center - rel_x_cells))
+        elif rel_x_cells > MAP_CELLS - margin_cells:
+            shift_i = int(round(center - rel_x_cells))
+        if rel_y_cells < margin_cells:
+            shift_j = int(round(center - rel_y_cells))
+        elif rel_y_cells > MAP_CELLS - margin_cells:
+            shift_j = int(round(center - rel_y_cells))
+
+        if shift_i == 0 and shift_j == 0:
+            return False
+
+        self._shift_grid(shift_i, shift_j)
+        return True
+
+    def _shift_grid(self, shift_i: int, shift_j: int):
+        """Сдвинуть _grid на (shift_i, shift_j) ячеек, обновить origin.
+
+        Семантика: new_grid[i, j] = old_grid[i - shift_i, j - shift_j].
+        Ячейки выходящие за границу старой карты заполняются 0 (unknown).
+        Origin сдвигается противоположно: new_origin -= shift * CELL_SIZE.
+        """
+        new_grid = [0.0] * (MAP_CELLS * MAP_CELLS)
+        # Диапазон валидных source-ячеек после сдвига
+        i_dst_min = max(0, shift_i)
+        i_dst_max = min(MAP_CELLS, MAP_CELLS + shift_i)
+        j_dst_min = max(0, shift_j)
+        j_dst_max = min(MAP_CELLS, MAP_CELLS + shift_j)
+
+        for j_dst in range(j_dst_min, j_dst_max):
+            j_src = j_dst - shift_j
+            for i_dst in range(i_dst_min, i_dst_max):
+                i_src = i_dst - shift_i
+                new_grid[j_dst * MAP_CELLS + i_dst] = (
+                    self._grid[j_src * MAP_CELLS + i_src]
+                )
+
+        self._grid = new_grid
+        self._origin_x -= shift_i * CELL_SIZE_M
+        self._origin_y -= shift_j * CELL_SIZE_M
+        self.log_info(
+            'Map shifted by (%d, %d) cells; new origin: (%.2f, %.2f)',
+            shift_i, shift_j, self._origin_x, self._origin_y,
+        )
+
     # ── Map Update (ray tracing) ───────────────────────────────
     def _update_map(self):
         if not self._pose_valid:
             return
+
+        # Прежде чем писать в grid — проверим не нужно ли его сдвинуть
+        # (sliding window для случая когда робот уехал далеко).
+        self._maybe_shift_origin()
 
         # Skip if robot hasn't moved enough
         dx = self._x - self._last_update_x

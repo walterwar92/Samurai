@@ -1,4 +1,4 @@
-import { Crosshair, Battery, Cpu, Gauge, Square, Thermometer } from 'lucide-react'
+import { Crosshair, Battery, Gauge, Square, Thermometer } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { FSM_COLORS, COLOUR_CSS, COLOUR_RU, ACTION_RU } from '@/lib/constants'

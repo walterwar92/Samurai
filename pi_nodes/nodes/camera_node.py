@@ -1,22 +1,38 @@
 #!/usr/bin/env python3
 """
-camera_node — Raspberry Pi CSI Camera -> MQTT JPEG stream.
+camera_node — Raspberry Pi CSI Camera → H.264 TCP stream.
 
-Publishes:
-    samurai/{robot_id}/camera  — JPEG binary @ 15 fps (configurable)
+Раньше публиковал JPEG кадры в MQTT (~2.5 МБ/с при q=65, 640x480, 20fps).
+Теперь — H.264 (Pi hardware encoder) через прямой TCP сокет.
+Bandwidth снижен до ~200-500 КБ/с при том же визуальном качестве.
 
-Uses RGB888 pixel format — on this hardware Picamera2 RGB888
-outputs BGR byte order, which cv2.imencode accepts directly.
+TCP server:
+    Port: cfg('mqtt.camera_h264_port', 8554)
+    Format: Annex B raw H.264 NAL units (start codes 0x000001)
+    Late-joiners: получают накопленный init buffer (SPS/PPS + первый IDR)
+                  чтобы декодер сразу мог начать без ожидания следующего keyframe
+
+MQTT discovery (retained, опубликовано при connect):
+    samurai/{robot_id}/camera/endpoint
+    {
+      "protocol": "tcp", "host": "<pi_ip>", "port": 8554,
+      "codec": "h264", "format": "annex-b",
+      "width": 640, "height": 480, "fps": 20, "bitrate": 2000000
+    }
+
+Клиенты (compute_node/detectors/H264TCPFrameSource, dashboard /ws/h264 proxy)
+читают этот retained topic чтобы найти Pi без хардкодинга IP.
 """
 
+import json
 import os
+import socket
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from pi_nodes.mqtt_node import MqttNode
+from pi_nodes.mqtt_node import MqttNode, get_local_ip
 
 try:
     from config_loader import cfg
@@ -24,133 +40,240 @@ except ImportError:
     cfg = lambda k, d=None: d
 
 try:
-    import cv2
     from picamera2 import Picamera2
+    from picamera2.encoders import H264Encoder
+    from picamera2.outputs import FileOutput
     _HW = True
 except ImportError:
     _HW = False
 
-# Максимальное время ожидания кадра от камеры (сек).
-_CAPTURE_TIMEOUT_S = 1.0
+
+class TCPStreamServer:
+    """
+    Multiplexing TCP сервер для H.264 потока.
+
+    Принимает множественные клиентские соединения и шлёт каждому одинаковый
+    поток NAL units. Поддерживает late-joiners через init_buffer (SPS/PPS +
+    первый IDR), чтобы новый клиент мог начать декодирование сразу.
+    """
+
+    # Сколько байт начала потока сохранить для late-joiners.
+    # SPS+PPS обычно ~50 байт, первый IDR ~50KB, плюс запас.
+    INIT_BUFFER_SIZE = 128 * 1024
+    SOCKET_BUFFER = 256 * 1024
+
+    def __init__(self, port: int, log_fn):
+        self._port = port
+        self._sock: socket.socket | None = None
+        self._clients: list[socket.socket] = []
+        self._lock = threading.Lock()
+        self._running = False
+        self._accept_thread: threading.Thread | None = None
+        self._log = log_fn
+        self._init_buffer = bytearray()
+
+    def start(self):
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(('0.0.0.0', self._port))
+        self._sock.listen(8)
+        self._sock.settimeout(1.0)  # позволяет accept выйти при stop()
+        self._running = True
+        self._accept_thread = threading.Thread(
+            target=self._accept_loop,
+            name='camera_tcp_accept',
+            daemon=True)
+        self._accept_thread.start()
+        self._log('H.264 TCP server listening on :%d', self._port)
+
+    def stop(self):
+        self._running = False
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        with self._lock:
+            for client in self._clients:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+            self._clients.clear()
+
+    def _accept_loop(self):
+        while self._running:
+            try:
+                client_sock, addr = self._sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+            client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF,
+                                   self.SOCKET_BUFFER)
+            self._log('New H.264 client: %s', addr)
+
+            with self._lock:
+                # Отправляем накопленный init_buffer (SPS/PPS + первый IDR).
+                # Без этого декодер вынужден ждать следующего keyframe.
+                if self._init_buffer:
+                    try:
+                        client_sock.sendall(bytes(self._init_buffer))
+                    except OSError as e:
+                        self._log('Init send failed for %s: %s', addr, e)
+                        try:
+                            client_sock.close()
+                        except OSError:
+                            pass
+                        continue
+                self._clients.append(client_sock)
+
+    def write_frame(self, data: bytes):
+        """Раздать NAL unit всем подключенным клиентам."""
+        if not data:
+            return
+
+        # Накопить начало потока для late-joiners
+        if len(self._init_buffer) < self.INIT_BUFFER_SIZE:
+            need = self.INIT_BUFFER_SIZE - len(self._init_buffer)
+            self._init_buffer.extend(data[:need])
+
+        with self._lock:
+            dead = []
+            for client in self._clients:
+                try:
+                    client.sendall(data)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    dead.append(client)
+            for d in dead:
+                try:
+                    d.close()
+                except OSError:
+                    pass
+                self._clients.remove(d)
+                self._log('H.264 client disconnected (now %d)',
+                          len(self._clients))
+
+    @property
+    def client_count(self) -> int:
+        with self._lock:
+            return len(self._clients)
+
+
+class _StreamFileWrapper:
+    """File-like объект для FileOutput → шлёт байты в TCPStreamServer."""
+
+    def __init__(self, server: TCPStreamServer):
+        self._server = server
+
+    def write(self, data):
+        self._server.write_frame(bytes(data))
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
 
 
 class CameraNode(MqttNode):
     def __init__(self, **kwargs):
         super().__init__('camera_node', **kwargs)
 
-        self._quality = cfg('mqtt.camera_jpeg_quality', 65)
-        self._fps = cfg('mqtt.camera_fps', 10)
+        self._h264_port = int(cfg('mqtt.camera_h264_port', 8554))
+        self._bitrate = int(cfg('mqtt.camera_h264_bitrate', 2_000_000))
+        self._iperiod = int(cfg('mqtt.camera_h264_iperiod', 30))
+        self._fps = int(cfg('mqtt.camera_fps', 20))
         self._w, self._h = 640, 480
 
-        self._cam = None
-        self._capturing = False      # non-blocking flag instead of Lock
-        self._capture_start = 0.0    # when current capture started
-        self._error_count = 0
-        self._total_restarts = 0
-        self._max_restarts = 10      # max auto-restarts before giving up
-        self._pool = ThreadPoolExecutor(max_workers=1,
-                                        thread_name_prefix='cam_cap')
-        # Pre-allocate JPEG encode params (avoid list creation per frame)
-        self._encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._quality] if _HW else []
+        self._tcp: TCPStreamServer | None = None
+        self._cam: Picamera2 | None = None
+        self._encoder = None
+        self._discovery_topic = 'camera/endpoint'
 
         if not _HW:
-            self.log_error('picamera2/cv2 not available — camera disabled')
+            self.log_error('picamera2 not available — camera disabled')
             return
 
-        self._start_camera(self._w, self._h, self._fps)
+        self._tcp = TCPStreamServer(self._h264_port, self.log_info)
+        self._tcp.start()
 
-    def _start_camera(self, w: int, h: int, fps: int):
-        """Инициализировать и запустить Picamera2. Можно вызывать повторно при сбое."""
+        self._start_camera()
+        # Periodic discovery republish (раз в 5с — на случай retained drift
+        # или подключения новых broker'ов)
+        self.create_timer(5.0, self._publish_discovery)
+
+    def _start_camera(self):
         try:
-            if self._cam is not None:
-                try:
-                    self._cam.stop()
-                except Exception:
-                    pass
             self._cam = Picamera2()
-            # RGB888 — на данном железе Picamera2 отдаёт BGR byte order,
-            # что совпадает с ожиданиями cv2.imencode (конвертация не нужна)
-            config = self._cam.create_preview_configuration(
-                main={'size': (w, h), 'format': 'RGB888'},
-                buffer_count=4,
+            config = self._cam.create_video_configuration(
+                main={'size': (self._w, self._h), 'format': 'YUV420'},
+                controls={'FrameRate': self._fps},
             )
             self._cam.configure(config)
-            self._cam.start()
-            self._error_count = 0
-            self.log_info('Camera started %dx%d @ %d fps (JPEG q=%d, RGB888)',
-                          w, h, fps, self._quality)
-            self.create_timer(1.0 / fps, self._capture)
+
+            self._encoder = H264Encoder(
+                bitrate=self._bitrate,
+                iperiod=self._iperiod,
+                # repeat=True даёт SPS/PPS перед каждым IDR — late-joiners
+                # видят headers сразу, не ждут следующего конфига
+                repeat=True,
+            )
+            output = FileOutput(_StreamFileWrapper(self._tcp))
+            self._cam.start_recording(self._encoder, output)
+            self.log_info(
+                'Camera started: %dx%d @ %d fps, H.264 bitrate=%d, iperiod=%d',
+                self._w, self._h, self._fps, self._bitrate, self._iperiod)
         except Exception as exc:
-            self.log_error('Camera init failed: %s — disabled', exc)
+            self.log_error('Camera/H.264 init failed: %s', exc)
             self._cam = None
 
-    def _try_restart_camera(self):
-        """Attempt to restart camera after errors."""
-        self._total_restarts += 1
-        if self._total_restarts > self._max_restarts:
-            self.log_error('Camera restart limit (%d) reached — giving up',
-                           self._max_restarts)
+    # Override — публикуем discovery после успешного MQTT connect.
+    def _on_connect(self, client, userdata, flags, rc):
+        super()._on_connect(client, userdata, flags, rc)
+        if rc == 0:
+            self._publish_discovery()
+
+    def _publish_discovery(self):
+        """Retained discovery message — клиенты находят Pi по этому топику."""
+        if not self._mqtt_connected or self._tcp is None:
             return
-        self.log_warn('Restarting camera (attempt %d/%d)...',
-                      self._total_restarts, self._max_restarts)
-        time.sleep(1.0)  # brief pause before restart
-        self._start_camera(self._w, self._h, self._fps)
-
-    def _capture(self):
-        if self._cam is None:
-            return
-
-        # Backpressure: skip frames while MQTT broker is disconnected
-        if not self._mqtt_connected:
-            return
-
-        # Non-blocking: skip if previous capture still in flight
-        if self._capturing:
-            elapsed = time.monotonic() - self._capture_start
-            if elapsed > _CAPTURE_TIMEOUT_S:
-                self._capturing = False
-                self._error_count += 1
-                self.log_warn('Camera capture timed out (%d/5)', self._error_count)
-                if self._error_count >= 5:
-                    self.log_error('Camera hung repeatedly — attempting restart')
-                    self._cam = None
-                    threading.Thread(target=self._try_restart_camera,
-                                     daemon=True).start()
-            return
-
-        self._capturing = True
-        self._capture_start = time.monotonic()
-
-        self._pool.submit(self._do_capture)
-
-    def _do_capture(self):
-        try:
-            frame = self._cam.capture_array()
-            if frame is None:
-                return
-
-            self._error_count = 0
-            ok, enc = cv2.imencode('.jpg', frame, self._encode_params)
-            if ok:
-                self.publish('camera', enc.tobytes())
-        except Exception as exc:
-            self._error_count += 1
-            self.log_error('Camera capture error: %s (%d/5)',
-                           exc, self._error_count)
-            if self._error_count >= 5:
-                self.log_error('Too many errors — attempting restart')
-                self._cam = None
-                self._pool.submit(self._try_restart_camera)
-        finally:
-            self._capturing = False
+        endpoint = {
+            'protocol': 'tcp',
+            'host': get_local_ip(),
+            'port': self._h264_port,
+            'codec': 'h264',
+            'format': 'annex-b',
+            'width': self._w,
+            'height': self._h,
+            'fps': self._fps,
+            'bitrate': self._bitrate,
+            'iperiod': self._iperiod,
+            'clients': self._tcp.client_count,
+        }
+        self.publish(self._discovery_topic, endpoint, qos=1, retain=True)
 
     def on_shutdown(self):
-        self._pool.shutdown(wait=False)
+        # Очищаем retained discovery message чтобы клиенты знали что offline
+        if self._mqtt_connected:
+            try:
+                self._client.publish(
+                    self.topic(self._discovery_topic),
+                    payload=b'', qos=1, retain=True)
+            except Exception:
+                pass
+
         if self._cam is not None:
             try:
+                self._cam.stop_recording()
                 self._cam.stop()
             except Exception:
                 pass
+
+        if self._tcp is not None:
+            self._tcp.stop()
 
 
 def main():

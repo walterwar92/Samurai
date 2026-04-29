@@ -1,0 +1,235 @@
+% ============================================================
+%  Глава 3 — Model Predictive Control (MPC)
+% ============================================================
+\chapter{Прогнозирующее управление (MPC)}
+\label{ch:mpc}
+
+ЛКР, рассмотренный в главе~\ref{ch:synthesis}, даёт оптимальный регулятор
+\textbf{без учёта ограничений} на управление. Реальный робот SAMURAI имеет
+жёсткие физические лимиты:
+\begin{equation}
+  |u_v| \leq u_v^{\max} = 0{,}3 \text{ м/с}, \quad
+  |u_\omega| \leq u_\omega^{\max} = 2{,}0 \text{ рад/с}.
+  \label{eq:robot_limits}
+\end{equation}
+Если ЛКР рассчитывает $u_v = 0{,}5$ м/с, актуатор насытит на $0{,}3$ ---
+возникает анти-винд-ап эффект, и оптимальность теряется.
+
+\textbf{Model Predictive Control} (MPC) решает эту задачу: на каждом
+шаге решается \emph{оптимизационная задача} с явным учётом ограничений
+на горизонте $N$ шагов вперёд.
+
+\section{Идея метода}
+\label{sec:mpc_idea}
+
+В момент времени $t = kT_s$:
+\begin{enumerate}
+  \item Измеряется текущее состояние $\vect{x}_k$ (или его оценка
+        $\hat{\vect{x}}_k$ от наблюдателя).
+  \item Решается задача оптимизации: найти последовательность
+        $\vect{u}_k, \vect{u}_{k+1}, \ldots, \vect{u}_{k+N-1}$,
+        минимизирующую функционал на горизонте.
+  \item Применяется только \emph{первый} элемент $\vect{u}_k$.
+  \item На следующем шаге $k+1$ горизонт сдвигается ---
+        \textbf{принцип сдвигаемого горизонта} (receding horizon).
+\end{enumerate}
+
+\begin{notebox}
+MPC можно рассматривать как ЛКР с конечным горизонтом плюс ограничения.
+При $N \to \infty$ и без ограничений MPC сводится к ЛКР с тем же
+матрицей $\mat{K}$.
+\end{notebox}
+
+\section{Математическая постановка}
+\label{sec:mpc_formulation}
+
+Для дискретной модели \eqref{eq:discrete_model}:
+
+\begin{formulabox}[title={Задача MPC на горизонте $N$}]
+\begin{align}
+  \min_{\{\vect{u}_i\}_{i=k}^{k+N-1}}
+  &\quad J = \sum_{i=k}^{k+N-1}\!\!\big(\vect{x}_i\T\mat{Q}\vect{x}_i + \vect{u}_i\T\mat{R}\vect{u}_i\big)
+            + \vect{x}_{k+N}\T\mat{P}_f\,\vect{x}_{k+N}
+  \label{eq:mpc_cost}\\[4pt]
+  \text{при условиях:}
+  &\quad \vect{x}_{i+1} = \mat{A}_d\vect{x}_i + \mat{B}_d\vect{u}_i,
+  \quad i = k, \ldots, k+N-1,
+  \label{eq:mpc_dynamics}\\
+  &\quad \vect{u}_{\min} \leq \vect{u}_i \leq \vect{u}_{\max},
+  \label{eq:mpc_input_constr}\\
+  &\quad \vect{x}_{\min} \leq \vect{x}_i \leq \vect{x}_{\max}.
+  \label{eq:mpc_state_constr}
+\end{align}
+\end{formulabox}
+
+Здесь $\mat{P}_f$ --- терминальный штраф (terminal cost), обычно
+выбирается как решение уравнения Риккати $\mat{P}_\infty$ ---
+это гарантирует устойчивость замкнутой системы при $N$ достаточно большом.
+
+\section{Сведение к QP}
+\label{sec:mpc_qp}
+
+Задача \eqref{eq:mpc_cost}--\eqref{eq:mpc_state_constr} ---
+\textbf{квадратичная программа} (QP) по переменной
+$\vect{U} = (\vect{u}_k\T, \ldots, \vect{u}_{k+N-1}\T)\T \in \mathbb{R}^{rN}$.
+
+\subsection{Развёртка динамики}
+
+Подставив \eqref{eq:mpc_dynamics} итеративно, выразим все будущие состояния
+через текущее $\vect{x}_k$ и $\vect{U}$:
+\begin{equation}
+  \begin{pmatrix}\vect{x}_{k+1}\\ \vect{x}_{k+2}\\ \vdots\\ \vect{x}_{k+N}\end{pmatrix}
+  =
+  \underbrace{\begin{pmatrix}\mat{A}_d\\ \mat{A}_d^2\\ \vdots\\ \mat{A}_d^N\end{pmatrix}}_{\bm{\Phi}}\,\vect{x}_k
+  +
+  \underbrace{\begin{pmatrix}
+    \mat{B}_d & 0 & \cdots & 0\\
+    \mat{A}_d\mat{B}_d & \mat{B}_d & \cdots & 0\\
+    \vdots & \vdots & \ddots & \vdots\\
+    \mat{A}_d^{N-1}\mat{B}_d & \mat{A}_d^{N-2}\mat{B}_d & \cdots & \mat{B}_d
+  \end{pmatrix}}_{\bm{\Gamma}}
+  \,\vect{U}.
+  \label{eq:lifting}
+\end{equation}
+
+\subsection{QP в стандартной форме}
+
+Подставим \eqref{eq:lifting} в \eqref{eq:mpc_cost}, получим:
+
+\begin{formulabox}[title={Стандартная QP-задача MPC}]
+\begin{equation}
+  \min_{\vect{U}} \;\tfrac{1}{2}\vect{U}\T \mat{H}\,\vect{U} + \vect{f}\T(\vect{x}_k)\,\vect{U}
+  \quad \text{при} \quad
+  \mat{G}\vect{U} \leq \vect{g}(\vect{x}_k),
+  \label{eq:qp_standard}
+\end{equation}
+\end{formulabox}
+
+где
+\begin{equation*}
+  \mat{H} = 2\big(\bm{\Gamma}\T\bar{\mat{Q}}\bm{\Gamma} + \bar{\mat{R}}\big),
+  \qquad
+  \vect{f}(\vect{x}_k) = 2\bm{\Gamma}\T\bar{\mat{Q}}\bm{\Phi}\,\vect{x}_k,
+\end{equation*}
+$\bar{\mat{Q}} = \operatorname{blkdiag}(\mat{Q}, \ldots, \mat{Q}, \mat{P}_f)$,
+$\bar{\mat{R}} = \operatorname{blkdiag}(\mat{R}, \ldots, \mat{R})$.
+
+Матрица $\mat{H}$ постоянна (не зависит от $\vect{x}_k$) и может быть
+вычислена offline. Вектор $\vect{f}$ и правая часть $\vect{g}$
+ограничений пересчитываются на каждом шаге.
+
+\section{Алгоритм решения}
+\label{sec:mpc_algorithm}
+
+Для робота SAMURAI используется простой и надёжный подход:
+
+\subsection{Без ограничений: явное решение}
+
+Если ограничения \eqref{eq:mpc_input_constr} неактивны
+(управление лежит внутри допустимой области), QP \eqref{eq:qp_standard}
+имеет аналитическое решение:
+\begin{equation}
+  \vect{U}^* = -\mat{H}^{-1}\vect{f}(\vect{x}_k) = -\mat{K}_{\text{MPC}}\,\vect{x}_k,
+  \label{eq:mpc_unconstrained}
+\end{equation}
+где $\mat{K}_{\text{MPC}} \in \mathbb{R}^{rN \times n}$ ---
+\emph{статический} коэффициент, вычисляемый один раз. Применяется первая
+строка размера $r \times n$ (первое управление $\vect{u}_k$).
+
+\textbf{Это ровно та же $\mat{K}$, что и у ЛКР, при $N\to\infty$ и
+$\mat{P}_f = \mat{P}_\infty$.} Для $N = 10\ldots 30$ результат
+близок к ЛКР, но позволяет ввести ограничения.
+
+\subsection{С ограничениями: QP-солвер}
+
+При активных ограничениях задача \eqref{eq:qp_standard} решается
+итеративно. В нашей реализации (см. главу~\ref{ch:implementation})
+используется простой \textbf{проекционный метод}: после явного решения
+\eqref{eq:mpc_unconstrained} результат проецируется на бокс
+$[\vect{u}_{\min}, \vect{u}_{\max}]$:
+\begin{equation}
+  \vect{u}_k^{\text{clip}} = \max\!\big(\vect{u}_{\min},\,\min(\vect{u}_{\max}, \vect{u}_k^*)\big).
+  \label{eq:projection}
+\end{equation}
+
+\begin{notebox}
+Это \textbf{не оптимальное} решение QP с ограничениями (для оптимальности
+нужен active-set или interior-point), но даёт корректное и устойчивое
+поведение для робота. Полноценный QP-солвер (\texttt{cvxpy}, \texttt{qpOASES},
+\texttt{scipy.optimize.minimize}) можно подключить опцией
+\texttt{control.mpc.solver: qp} в конфиге.
+\end{notebox}
+
+\subsection{Терминальный штраф $\mat{P}_f$}
+
+Согласно теореме об устойчивости MPC (Mayne et al., 2000), терминальный
+штраф $\mat{P}_f$, выбранный как решение уравнения Риккати замкнутой
+системы $\mat{A}_d - \mat{B}_d\mat{K}_\infty$, гарантирует устойчивость
+MPC при любом $N \geq 1$. Поэтому в \filepath{matlab/design\_mpc.m}
+сначала решается DARE для получения $\mat{P}_f = \mat{P}_\infty$,
+затем формируется QP.
+
+\section{Параметры MPC для SAMURAI}
+\label{sec:mpc_params}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Параметр} & \textbf{Значение} & \textbf{Комментарий}\\
+\midrule
+$T_s$ & $0{,}05$ с & период цикла \texttt{motor\_node} (20 Гц)\\
+$N$ & $10$ & горизонт $0{,}5$ с (соизмерим с $\tau_v$)\\
+$\mat{Q}$ & $\operatorname{diag}(10,10,5,1,1)$ & точность позиции/курса\\
+$\mat{R}$ & $\operatorname{diag}(1,1)$ & умеренный штраф управления\\
+$\mat{P}_f$ & решение DARE & гарантия устойчивости\\
+$\vect{u}_{\min}$ & $(-0{,}3,\,-2{,}0)$ & физические лимиты робота\\
+$\vect{u}_{\max}$ & $(+0{,}3,\,+2{,}0)$ & --- \texttt{simulator.max\_*}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+При $N = 10$, $n = 5$, $r = 2$ задача QP имеет $20$ переменных,
+$40$ ограничений-неравенств. Время решения на Raspberry Pi 4 ---
+менее 1 мс (запас порядка для 50 мс цикла).
+
+\section{Подбор поведения и «ошибочные» режимы}
+\label{sec:behavior_tuning}
+
+Параметры MPC вынесены в \filepath{config.yaml} и могут быть изменены
+без перекомпиляции. Это позволяет:
+
+\paragraph{1. Корректные поведения}
+\begin{itemize}
+  \item \textbf{Точный медленный режим}: $\mat{Q}\!\uparrow$,
+        $\mat{R}\!\uparrow$, $u_{\max}\!\downarrow$ ---
+        робот ездит медленно, но точно.
+  \item \textbf{Агрессивный режим}: $\mat{Q}_{p_x,p_y}\!\uparrow\uparrow$,
+        $\mat{R}\!\downarrow$ --- быстрая отработка, рывки.
+  \item \textbf{Длинный горизонт}: $N = 30$ --- видит дальше, плавнее
+        огибает препятствия (но дороже по CPU).
+\end{itemize}
+
+\paragraph{2. «Ошибочные» поведения для отладки}
+\begin{itemize}
+  \item \textbf{Отрицательный штраф}: $\mat{Q} = -\mat{I}$ ---
+        QP станет невыпуклой, регулятор будет «гнать» в нестабильность.
+  \item \textbf{Завышенные лимиты}: $u_{\max} = 100$ --- ЛКР перестанет
+        насыщаться, проявится колебание из-за неточностей модели.
+  \item \textbf{Полюса в правой полуплоскости} (модальный режим):
+        $\lambda^{\text{уст}} = +1$ --- замкнутая система неустойчива,
+        робот «убегает».
+  \item \textbf{Зануление обратной связи по позиции}: $\mat{Q}_{1,1}=\mat{Q}_{2,2}=0$ ---
+        робот игнорирует координаты $p_x, p_y$, движется только по
+        внутренним скоростям.
+\end{itemize}
+
+\begin{warnbox}
+Все «ошибочные» режимы безопасны в симуляторе (\texttt{./samurai.sh sim}),
+но опасны на реальном железе. Для физических испытаний:
+\begin{itemize}
+  \item Поднимайте робота на подставке --- колёса не должны касаться пола;
+  \item Включите аппаратный аварийный стоп
+        (\texttt{config.motor.collision\_guard\_stop\_m});
+  \item Не превышайте $u_{\max} = 0{,}5$ м/с.
+\end{itemize}
+\end{warnbox}

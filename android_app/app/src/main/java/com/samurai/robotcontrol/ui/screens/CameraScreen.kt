@@ -1,10 +1,7 @@
 package com.samurai.robotcontrol.ui.screens
 
 import android.graphics.Bitmap
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -13,12 +10,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.samurai.robotcontrol.api.Detection
 import com.samurai.robotcontrol.api.DetectionResult
 
@@ -64,43 +58,42 @@ fun CameraScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(640f / 480f)
+                        .background(Color.Black)
                 ) {
-                    when {
-                        // Primary: MJPEG stream via WebView (no bitmap handling → no crash)
-                        streamUrl.isNotEmpty() && isConnected -> {
-                            MjpegStreamView(
-                                url = streamUrl,
-                                modifier = Modifier.fillMaxSize()
+                    // Camera видео ВРЕМЕННО ОТКЛЮЧЕНО (#9, 2026-04).
+                    // Pi теперь шлёт H.264 поток через TCP вместо JPEG в MQTT.
+                    // Web-frontend использует WebCodecs API — для Android нужен
+                    // эквивалент через MediaCodec (TODO в RobotApiClient).
+                    // Детекции и закрытый объект ниже работают как раньше.
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                "Видео временно недоступно",
+                                fontSize = 13.sp,
+                                color = Color.Gray,
+                                fontWeight = FontWeight.Medium,
                             )
-                        }
-                        // Fallback: bitmap from polling
-                        cameraFrame != null -> {
-                            Image(
-                                bitmap = cameraFrame.asImageBitmap(),
-                                contentDescription = "Camera Feed",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.FillBounds
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "(переход на H.264 — см. issue #9)",
+                                fontSize = 10.sp,
+                                color = Color.Gray.copy(alpha = 0.7f),
                             )
-                        }
-                        // Loading
-                        else -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(
-                                        if (isConnected) "Подключение к камере..."
-                                        else "Нет подключения",
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
-                                    )
-                                }
-                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Откройте Web Dashboard в браузере",
+                                fontSize = 10.sp,
+                                color = Color.Gray.copy(alpha = 0.7f),
+                            )
                         }
                     }
+                    // Параметры для compiler — отметить cameraFrame и streamUrl как используемые
+                    @Suppress("UNUSED_EXPRESSION") cameraFrame
+                    @Suppress("UNUSED_EXPRESSION") streamUrl
+                    @Suppress("UNUSED_EXPRESSION") isConnected
                 }
             }
         }
@@ -191,38 +184,6 @@ fun CameraScreen(
     }
 }
 
-@Composable
-private fun MjpegStreamView(url: String, modifier: Modifier = Modifier) {
-    val webViewRef = remember { mutableStateOf<WebView?>(null) }
-
-    // Stop stream when composable leaves composition
-    DisposableEffect(Unit) {
-        onDispose {
-            webViewRef.value?.stopLoading()
-            webViewRef.value?.loadUrl("about:blank")
-            webViewRef.value?.destroy()
-            webViewRef.value = null
-        }
-    }
-
-    AndroidView(
-        factory = { context ->
-            WebView(context).apply {
-                settings.apply {
-                    javaScriptEnabled = false
-                    cacheMode = WebSettings.LOAD_NO_CACHE
-                    mediaPlaybackRequiresUserGesture = false
-                    builtInZoomControls = false
-                    displayZoomControls = false
-                    loadWithOverviewMode = true
-                    useWideViewPort = true
-                }
-                webViewClient = WebViewClient()
-                setBackgroundColor(android.graphics.Color.BLACK)
-                webViewRef.value = this
-                loadUrl(url)
-            }
-        },
-        modifier = modifier
-    )
-}
+// MjpegStreamView удалён 2026-04 (#9): /video_feed на dashboard больше нет.
+// Когда H.264 декодер для Android будет реализован — заменить на
+// MediaCodec-based composable с WebSocket /ws/h264 источником.

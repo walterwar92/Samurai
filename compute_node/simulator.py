@@ -8,6 +8,16 @@ FSM state machine, and serves a live web dashboard.
 Usage:
     python simulator.py
     → Open http://localhost:5000
+
+NOTE (2026-04, #9):
+    Симулятор ВРЕМЕННО рассинхронизирован с React frontend по видео.
+    Pi camera_node перешёл на H.264 через TCP. Frontend (CameraFeed) ожидает
+    WebSocket /ws/h264. Симулятор всё ещё отдаёт MJPEG через /video_feed и
+    JPEG через /api/camera/frame — они используются legacy templates/dashboard.html
+    и Android (см. CameraScreen.kt деградация).
+
+    Для теста frontend с симулятором — TODO: добавить PyAV H.264 encoder
+    + TCP сервер + MQTT discovery topic в симулятор. См. issue #9 для плана.
 """
 
 import json
@@ -105,557 +115,137 @@ PATH_SAFETY_MARGIN = 0.10  # 10 cm extra clearance around obstacles
 
 
 # ═════════════════════════════════════════════════════════════════
-# A* Pathfinder — grid-based pathfinding around forbidden zones
+# A* Pathfinder — extracted to compute_node/pathfinding.py (#44).
+# Re-exported here so existing call sites (`from simulator import find_path`)
+# keep working without modification.
 # ═════════════════════════════════════════════════════════════════
 
-import heapq
-
-def _build_grid(arena, zones, robot_radius):
-    """Build occupancy grid: True = blocked, False = free."""
-    cols = int(arena.width / PATH_GRID_RES)
-    rows = int(arena.height / PATH_GRID_RES)
-    grid = [[False] * cols for _ in range(rows)]
-    margin = robot_radius + PATH_SAFETY_MARGIN
-
-    for r in range(rows):
-        for c in range(cols):
-            wx = (c + 0.5) * PATH_GRID_RES
-            wy = (r + 0.5) * PATH_GRID_RES
-
-            # Block cells near arena walls
-            if (wx < margin or wx > arena.width - margin or
-                    wy < margin or wy > arena.height - margin):
-                grid[r][c] = True
-                continue
-
-            # Block cells inside forbidden zones (with robot radius margin)
-            for z in zones:
-                zx1 = z['x1'] - margin
-                zy1 = z['y1'] - margin
-                zx2 = z['x2'] + margin
-                zy2 = z['y2'] + margin
-                if zx1 <= wx <= zx2 and zy1 <= wy <= zy2:
-                    grid[r][c] = True
-                    break
-
-    return grid, rows, cols
-
-
-def _world_to_grid(wx, wy):
-    """Convert world metres → grid cell (col, row)."""
-    return int(wx / PATH_GRID_RES), int(wy / PATH_GRID_RES)
-
-
-def _grid_to_world(c, r):
-    """Convert grid cell → world centre metres."""
-    return (c + 0.5) * PATH_GRID_RES, (r + 0.5) * PATH_GRID_RES
-
-
-def find_path(arena, zones, start_xy, goal_xy, robot_radius=ROBOT_RADIUS):
-    """A* pathfinding from start to goal, avoiding walls and forbidden zones.
-    Returns list of (x, y) world-coordinate waypoints, or [] if no path."""
-    grid, rows, cols = _build_grid(arena, zones, robot_radius)
-
-    sc, sr = _world_to_grid(*start_xy)
-    gc, gr = _world_to_grid(*goal_xy)
-
-    # Clamp to grid bounds
-    sc = max(0, min(cols - 1, sc))
-    sr = max(0, min(rows - 1, sr))
-    gc = max(0, min(cols - 1, gc))
-    gr = max(0, min(rows - 1, gr))
-
-    # If start or goal is blocked, find nearest free cell
-    if grid[sr][sc]:
-        sr, sc = _nearest_free(grid, sr, sc, rows, cols)
-    if grid[gr][gc]:
-        gr, gc = _nearest_free(grid, gr, gc, rows, cols)
-
-    if sr is None or gr is None:
-        return []
-
-    # A* with 8-directional movement
-    DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
-            (-1, -1), (-1, 1), (1, -1), (1, 1)]
-    COSTS = [1.0, 1.0, 1.0, 1.0, 1.414, 1.414, 1.414, 1.414]
-
-    def heuristic(r1, c1, r2, c2):
-        dr = abs(r1 - r2)
-        dc = abs(c1 - c2)
-        return max(dr, dc) + 0.414 * min(dr, dc)  # octile distance
-
-    open_set = [(heuristic(sr, sc, gr, gc), 0.0, sr, sc)]
-    g_cost = {(sr, sc): 0.0}
-    came_from = {}
-
-    while open_set:
-        _f, g, r, c = heapq.heappop(open_set)
-
-        if r == gr and c == gc:
-            # Reconstruct path
-            path = []
-            while (r, c) in came_from:
-                path.append(_grid_to_world(c, r))
-                r, c = came_from[(r, c)]
-            path.append(_grid_to_world(sc, sr))
-            path.reverse()
-            return _smooth_path(path, grid, rows, cols)
-
-        if g > g_cost.get((r, c), float('inf')):
-            continue
-
-        for (dr, dc), cost in zip(DIRS, COSTS):
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < rows and 0 <= nc < cols and not grid[nr][nc]:
-                ng = g + cost
-                if ng < g_cost.get((nr, nc), float('inf')):
-                    g_cost[(nr, nc)] = ng
-                    f = ng + heuristic(nr, nc, gr, gc)
-                    came_from[(nr, nc)] = (r, c)
-                    heapq.heappush(open_set, (f, ng, nr, nc))
-
-    return []  # No path found
-
-
-def _nearest_free(grid, r, c, rows, cols):
-    """BFS to find nearest free cell."""
-    from collections import deque as dq
-    visited = set()
-    queue = dq([(r, c)])
-    visited.add((r, c))
-    while queue:
-        cr, cc = queue.popleft()
-        if not grid[cr][cc]:
-            return cr, cc
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = cr + dr, cc + dc
-            if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
-                visited.add((nr, nc))
-                queue.append((nr, nc))
-    return None, None
-
-
-def _line_of_sight(x0, y0, x1, y1, grid, rows, cols):
-    """Bresenham check: True if straight line between two world points is free."""
-    c0, r0 = _world_to_grid(x0, y0)
-    c1, r1 = _world_to_grid(x1, y1)
-    dc = abs(c1 - c0)
-    dr = abs(r1 - r0)
-    sc = 1 if c0 < c1 else -1
-    sr = 1 if r0 < r1 else -1
-    err = dc - dr
-    while True:
-        if 0 <= r0 < rows and 0 <= c0 < cols:
-            if grid[r0][c0]:
-                return False
-        else:
-            return False
-        if r0 == r1 and c0 == c1:
-            break
-        e2 = 2 * err
-        if e2 > -dr:
-            err -= dr
-            c0 += sc
-        if e2 < dc:
-            err += dc
-            r0 += sr
-    return True
-
-
-def _smooth_path(path, grid=None, rows=0, cols=0):
-    """Reduce path points using line-of-sight pruning against the grid."""
-    if len(path) <= 2:
-        return path
-    if grid is None:
-        return path
-    smoothed = [path[0]]
-    i = 0
-    while i < len(path) - 1:
-        best = i + 1
-        for j in range(len(path) - 1, i + 1, -1):
-            if _line_of_sight(path[i][0], path[i][1],
-                              path[j][0], path[j][1],
-                              grid, rows, cols):
-                best = j
-                break
-        smoothed.append(path[best])
-        i = best
-    return smoothed
+from compute_node.pathfinding import (  # noqa: E402, F401
+    find_path,
+    _build_grid,
+    _world_to_grid,
+    _grid_to_world,
+    _nearest_free,
+    _line_of_sight,
+    _smooth_path,
+)
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimArena — 2D world with walls, balls, and forbidden zones
+# SimArena — extracted to compute_node/sim_arena.py (#44 cont.)
+# Re-exported here so existing imports keep working.
 # ═════════════════════════════════════════════════════════════════
 
-class SimArena:
+from compute_node.sim_arena import SimArena as _ExternalSimArena  # noqa: E402
+
+
+class SimArena(_ExternalSimArena):  # type: ignore[misc]
+    """Bound to the simulator's defaults so call sites that did
+    `SimArena()` with no args still get the legacy 3×3 m, 2 cm-ball,
+    BGR-colour-keyed configuration."""
+
     def __init__(self):
-        self.width = ARENA_W
-        self.height = ARENA_H
-        self.balls = []
-        self.forbidden_zones = []  # list of {id, x1, y1, x2, y2}
-        self._zone_counter = 0
-        self._spawn_balls()
-
-    def _spawn_balls(self):
-        colours = list(COLOUR_BGR.keys())
-        positions = [
-            (0.8, 0.6), (2.2, 0.8), (1.5, 2.0), (0.5, 2.3), (2.5, 1.8),
-        ]
-        for i, colour in enumerate(colours):
-            x, y = positions[i]
-            self.balls.append({
-                'x': x, 'y': y,
-                'colour': colour,
-                'radius': BALL_RADIUS,
-                'grabbed': False,
-            })
-
-    def add_zone(self, x1, y1, x2, y2):
-        """Add a forbidden zone (rectangle). Returns zone id."""
-        self._zone_counter += 1
-        zone = {
-            'id': self._zone_counter,
-            'x1': min(x1, x2), 'y1': min(y1, y2),
-            'x2': max(x1, x2), 'y2': max(y1, y2),
-        }
-        self.forbidden_zones.append(zone)
-        return zone
-
-    def remove_zone(self, zone_id):
-        """Remove a forbidden zone by id. Returns True if found."""
-        for i, z in enumerate(self.forbidden_zones):
-            if z['id'] == zone_id:
-                self.forbidden_zones.pop(i)
-                return True
-        return False
-
-    def clear_zones(self):
-        """Remove all forbidden zones."""
-        self.forbidden_zones.clear()
-
-    def point_in_zone(self, x, y):
-        """Check if a world point is inside any forbidden zone."""
-        for z in self.forbidden_zones:
-            if z['x1'] <= x <= z['x2'] and z['y1'] <= y <= z['y2']:
-                return True
-        return False
-
-    def reset(self):
-        for b in self.balls:
-            b['grabbed'] = False
-        self._spawn_balls()
-        # Note: forbidden zones are preserved on reset
+        super().__init__(
+            width=ARENA_W,
+            height=ARENA_H,
+            ball_radius=BALL_RADIUS,
+            colours=tuple(COLOUR_BGR.keys()),
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimRobot — 2D robot physics
+# SimRobot — extracted to compute_node/sim_robot.py (#44 phase 3).
+# Re-exported with constructor pinned to legacy module-level constants
+# so existing call sites work unchanged.
 # ═════════════════════════════════════════════════════════════════
 
-class SimRobot:
+from compute_node.sim_robot import SimRobot as _ExternalSimRobot  # noqa: E402
+
+
+class SimRobot(_ExternalSimRobot):  # type: ignore[misc]
+    """Backward-compat shim that pins the constructor to the simulator's
+    module-level constants (ROBOT_RADIUS, MAX_LINEAR, MAX_ANGULAR,
+    COLLISION_GUARD_*) so existing `SimRobot(arena)` call sites keep
+    their original physics. The legacy `_range_m_ref` attribute is
+    preserved as a setter that mirrors into the new `range_provider`."""
+
     def __init__(self, arena: SimArena):
-        self.arena = arena
-        self.x = ARENA_W / 2.0
-        self.y = ARENA_H / 2.0
-        self.theta = 0.0  # heading (radians)
-        self.v_linear = 0.0
-        self.v_angular = 0.0
-        self.claw_open = False
-        self.head_angle = 0.0           # servo ch4 — голова (зафиксирована 0°)
-        self.arm_joints = [0.0, 120.0, 0.0, 0.0]    # ch0-ch3 home позиции
-        self._prev_v_linear = 0.0
-        self.max_speed = MAX_LINEAR  # updated by speed_profile
-        self.collision_guard = False
-        self._range_m_ref = None  # set by sim loop to SimSensors ref
+        super().__init__(
+            arena,
+            robot_radius=ROBOT_RADIUS,
+            max_linear=MAX_LINEAR,
+            max_angular=MAX_ANGULAR,
+            collision_stop=COLLISION_GUARD_STOP_M,
+            collision_slow=COLLISION_GUARD_SLOW_M,
+        )
 
-    def set_velocity(self, linear: float, angular: float):
-        # Collision guard — limit forward motion when obstacle ahead
-        if self.collision_guard and linear > 0 and self._range_m_ref is not None:
-            r = self._range_m_ref.range_m
-            if r < COLLISION_GUARD_STOP_M:
-                linear = 0.0
-            elif r < COLLISION_GUARD_SLOW_M:
-                factor = (r - COLLISION_GUARD_STOP_M) / (COLLISION_GUARD_SLOW_M - COLLISION_GUARD_STOP_M)
-                linear *= max(0.0, factor)
-        self.v_linear = max(-self.max_speed, min(self.max_speed, linear))
-        self.v_angular = max(-MAX_ANGULAR, min(MAX_ANGULAR, angular))
+    @property
+    def _range_m_ref(self):
+        # Old shape was a SimSensors instance with .range_m. Keep it
+        # accessible if anyone reads the field directly.
+        return self._range_provider() if self._range_provider else None
 
-    def stop(self):
-        self.v_linear = 0.0
-        self.v_angular = 0.0
-
-    def tick(self, dt: float):
-        self._prev_v_linear = self.v_linear
-        # Save previous position for zone collision
-        prev_x, prev_y = self.x, self.y
-        # Integrate velocities
-        self.x += self.v_linear * math.cos(self.theta) * dt
-        self.y += self.v_linear * math.sin(self.theta) * dt
-        self.theta += self.v_angular * dt
-        # Normalise theta
-        self.theta = math.atan2(math.sin(self.theta), math.cos(self.theta))
-        # Wall collision — clamp inside arena
-        margin = ROBOT_RADIUS
-        self.x = max(margin, min(self.arena.width - margin, self.x))
-        self.y = max(margin, min(self.arena.height - margin, self.y))
-        # Forbidden zone collision — push robot back
-        for z in self.arena.forbidden_zones:
-            zx1 = z['x1'] - margin
-            zy1 = z['y1'] - margin
-            zx2 = z['x2'] + margin
-            zy2 = z['y2'] + margin
-            if zx1 <= self.x <= zx2 and zy1 <= self.y <= zy2:
-                self.x = prev_x
-                self.y = prev_y
-                self.v_linear = 0.0
-                break
+    @_range_m_ref.setter
+    def _range_m_ref(self, sensors_obj):
+        # Wrap the sensors object as a callable returning itself.
+        self._range_provider = (lambda s=sensors_obj: s) if sensors_obj else None
 
 
 # ═════════════════════════════════════════════════════════════════
-# SimSensors — ultrasonic ray-cast + IMU
+# SimSensors — extracted to compute_node/sim_sensors.py (#44 phase 4).
+# Re-exported with constructor pinned to legacy module-level constants.
 # ═════════════════════════════════════════════════════════════════
 
-class SimSensors:
+from compute_node.sim_sensors import SimSensors as _ExternalSimSensors  # noqa: E402
+
+
+class SimSensors(_ExternalSimSensors):  # type: ignore[misc]
+    """Backward-compat shim: pins ULTRASONIC_MIN/MAX and SIM_DT, defaults
+    to noisy mode (matching the original behaviour)."""
+
     def __init__(self):
-        self.range_m = ULTRASONIC_MAX
-        self.imu_yaw = 0.0
-        self.imu_pitch = 0.0
-        self.imu_roll = 0.0
-        self.imu_gyro_z = 0.0
-        self.accel_x = 0.0
-
-    def update(self, robot: SimRobot, arena: SimArena):
-        self._update_ultrasonic(robot, arena)
-        self._update_imu(robot)
-
-    def _update_ultrasonic(self, robot: SimRobot, arena: SimArena):
-        """Ray-cast forward from robot to find nearest obstacle."""
-        rx, ry = robot.x, robot.y
-        dx = math.cos(robot.theta)
-        dy = math.sin(robot.theta)
-        best = ULTRASONIC_MAX
-
-        # Check walls
-        # Right wall (x = arena.width)
-        if dx > 0:
-            t = (arena.width - rx) / dx
-            if ULTRASONIC_MIN < t < best:
-                best = t
-        # Left wall (x = 0)
-        if dx < 0:
-            t = -rx / dx
-            if ULTRASONIC_MIN < t < best:
-                best = t
-        # Top wall (y = arena.height)
-        if dy > 0:
-            t = (arena.height - ry) / dy
-            if ULTRASONIC_MIN < t < best:
-                best = t
-        # Bottom wall (y = 0)
-        if dy < 0:
-            t = -ry / dy
-            if ULTRASONIC_MIN < t < best:
-                best = t
-
-        # Check balls
-        for ball in arena.balls:
-            if ball['grabbed']:
-                continue
-            bx, by = ball['x'], ball['y']
-            # Distance from ray to ball centre
-            to_ball_x = bx - rx
-            to_ball_y = by - ry
-            proj = to_ball_x * dx + to_ball_y * dy  # projection on ray
-            if proj < ULTRASONIC_MIN or proj > best:
-                continue
-            perp = abs(to_ball_x * dy - to_ball_y * dx)  # perpendicular dist
-            if perp < ball['radius'] + 0.05:  # ultrasonic cone
-                if proj < best:
-                    best = proj
-
-        # Add noise
-        noise = random.gauss(0, 0.005)
-        self.range_m = max(ULTRASONIC_MIN, min(ULTRASONIC_MAX, best + noise))
-
-    def _update_imu(self, robot: SimRobot):
-        noise = random.gauss(0, 0.3)
-        self.imu_yaw = math.degrees(robot.theta) + noise
-        self.imu_pitch = random.gauss(0, 0.2)
-        self.imu_roll = random.gauss(0, 0.2)
-        self.imu_gyro_z = robot.v_angular
-        self.accel_x = (robot.v_linear - robot._prev_v_linear) / SIM_DT
+        super().__init__(
+            ultrasonic_min=ULTRASONIC_MIN,
+            ultrasonic_max=ULTRASONIC_MAX,
+            dt=SIM_DT,
+            inject_noise=True,
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
 # SimDetector — geometric "YOLO" detection
 # ═════════════════════════════════════════════════════════════════
 
-class SimDetector:
+# SimDetector — extracted to compute_node/sim_detector.py (#44 phase 6).
+# Re-exported with constructor pinned to legacy module-level constants.
+from compute_node.sim_detector import SimDetector as _ExternalSimDetector  # noqa: E402
+
+
+class SimDetector(_ExternalSimDetector):  # type: ignore[misc]
+    """Backward-compat shim: pins CAM_W/CAM_H, FOCAL_LENGTH_PX,
+    BALL_DIAMETER_M, CAM_FOV, COLOUR_BGR to the simulator's module-level
+    constants so existing `SimDetector()` callers retain their original
+    camera projection."""
+
     def __init__(self):
-        self.detections = []
-        self.annotated_frame = None
-
-    def update(self, robot: SimRobot, arena: SimArena):
-        """Detect visible balls and render camera view."""
-        self.detections = []
-        frame = self._render_camera(robot, arena)
-        self.annotated_frame = frame
-
-    def _render_camera(self, robot: SimRobot, arena: SimArena) -> np.ndarray:
-        """Render first-person camera view."""
-        # Dark grey floor
-        frame = np.full((CAM_H, CAM_W, 3), (60, 60, 55), dtype=np.uint8)
-
-        # Horizon line at 40% from top
-        horizon_y = int(CAM_H * 0.4)
-        # Sky (lighter grey)
-        frame[:horizon_y, :] = (90, 85, 80)
-        # Floor gradient
-        for row in range(horizon_y, CAM_H):
-            t = (row - horizon_y) / (CAM_H - horizon_y)
-            grey = int(55 + t * 20)
-            frame[row, :] = (grey, grey, grey - 5)
-
-        # Render walls as perspective lines
-        self._draw_walls(frame, robot, arena, horizon_y)
-
-        # Render balls in view
-        visible = []
-        for ball in arena.balls:
-            if ball['grabbed']:
-                continue
-            bx, by = ball['x'], ball['y']
-            # Vector from robot to ball
-            dx = bx - robot.x
-            dy = by - robot.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < 0.01 or dist > 3.0:
-                continue
-
-            # Angle to ball relative to robot heading
-            angle = math.atan2(dy, dx) - robot.theta
-            angle = math.atan2(math.sin(angle), math.cos(angle))
-
-            if abs(angle) > CAM_FOV / 2:
-                continue
-
-            visible.append((dist, angle, ball))
-
-        # Sort by distance (far first, so near balls draw on top)
-        visible.sort(key=lambda v: -v[0])
-
-        for dist, angle, ball in visible:
-            # Project to screen
-            screen_x = int(CAM_W / 2 + (angle / (CAM_FOV / 2)) * (CAM_W / 2))
-
-            # Apparent size
-            apparent_px = int(FOCAL_LENGTH_PX * BALL_DIAMETER_M / dist)
-            apparent_px = max(4, min(200, apparent_px))
-
-            # Vertical position: balls are on the floor, lower = closer
-            screen_y = horizon_y + int((1.0 - 0.03 / max(0.1, dist)) *
-                                        (CAM_H - horizon_y) * 0.7)
-
-            colour_bgr = COLOUR_BGR.get(ball['colour'], (200, 200, 200))
-
-            # Draw ball (circle with highlight)
-            cv2.circle(frame, (screen_x, screen_y), apparent_px, colour_bgr, -1)
-            # Highlight
-            hl_x = screen_x - apparent_px // 4
-            hl_y = screen_y - apparent_px // 4
-            hl_r = max(1, apparent_px // 4)
-            hl_colour = tuple(min(255, c + 60) for c in colour_bgr)
-            cv2.circle(frame, (hl_x, hl_y), hl_r, hl_colour, -1)
-
-            # Shadow
-            shadow_y = screen_y + apparent_px
-            cv2.ellipse(frame, (screen_x, shadow_y),
-                        (apparent_px, apparent_px // 4), 0, 0, 360,
-                        (30, 30, 25), -1)
-
-            # Detection bounding box
-            x1 = screen_x - apparent_px
-            y1 = screen_y - apparent_px
-            w = apparent_px * 2
-            h = apparent_px * 2
-            conf = max(0.5, min(0.99, 1.0 - dist / 3.0))
-
-            det = {
-                'colour': ball['colour'],
-                'class': 'sports ball',
-                'x': max(0, x1), 'y': max(0, y1),
-                'w': w, 'h': h,
-                'conf': round(conf, 3),
-                'distance': round(dist, 3),
-            }
-            self.detections.append(det)
-
-            # Annotate
-            label = f"{ball['colour']} {conf:.2f} {dist:.2f}m"
-            cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), (0, 255, 0), 2)
-            cv2.putText(frame, label, (x1, y1 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-
-        # HUD overlay
-        self._draw_hud(frame, robot)
-
-        return frame
-
-    def _draw_walls(self, frame, robot, arena, horizon_y):
-        """Draw arena walls as simple perspective lines."""
-        corners_world = [
-            (0, 0), (arena.width, 0),
-            (arena.width, arena.height), (0, arena.height),
-        ]
-        for i in range(4):
-            cx, cy = corners_world[i]
-            dx = cx - robot.x
-            dy = cy - robot.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < 0.1:
-                continue
-            angle = math.atan2(dy, dx) - robot.theta
-            angle = math.atan2(math.sin(angle), math.cos(angle))
-            if abs(angle) > CAM_FOV / 2 + 0.3:
-                continue
-            sx = int(CAM_W / 2 + (angle / (CAM_FOV / 2)) * (CAM_W / 2))
-            wall_h = int(min(200, 80 / max(0.3, dist)))
-            cv2.line(frame, (sx, horizon_y - wall_h),
-                     (sx, horizon_y + wall_h // 2), (100, 100, 110), 2)
-
-    def _draw_hud(self, frame, robot):
-        """Draw HUD: crosshair + compass."""
-        # Crosshair
-        cx, cy = CAM_W // 2, CAM_H // 2
-        cv2.line(frame, (cx - 15, cy), (cx + 15, cy), (0, 255, 0), 1)
-        cv2.line(frame, (cx, cy - 15), (cx, cy + 15), (0, 255, 0), 1)
-
-        # Compass
-        yaw_deg = math.degrees(robot.theta)
-        cv2.putText(frame, f"YAW: {yaw_deg:.0f}", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 200), 1)
-
-    def get_closest_detection(self, target_colour: str = ''):
-        """Get closest detection matching target colour."""
-        matches = self.detections
-        if target_colour:
-            matches = [d for d in matches if d['colour'] == target_colour]
-        if not matches:
-            return None
-        return min(matches, key=lambda d: d['distance'])
+        super().__init__(
+            cam_w=CAM_W,
+            cam_h=CAM_H,
+            focal_length_px=FOCAL_LENGTH_PX,
+            ball_diameter_m=BALL_DIAMETER_M,
+            cam_fov=CAM_FOV,
+            colour_bgr=COLOUR_BGR,
+        )
 
 
 # ═════════════════════════════════════════════════════════════════
 # FSM — ported from fsm_node.py (no ROS2)
 # ═════════════════════════════════════════════════════════════════
 
-class State:
-    IDLE = 'IDLE'
-    SEARCHING = 'SEARCHING'
-    TARGETING = 'TARGETING'
-    APPROACHING = 'APPROACHING'
-    GRABBING = 'GRABBING'
-    CALLING = 'CALLING'
-    RETURNING = 'RETURNING'
+# State — extracted to compute_node/sim_fsm_states.py (#44 phase 7a).
+# Re-exported as a class so legacy `State.IDLE` access keeps working;
+# the new module uses an `Enum` for stronger typing.
+from compute_node.sim_fsm_states import State  # noqa: E402, F401
 
 
 class SimFSM:
@@ -1226,113 +816,24 @@ class SimFSM:
 # Map Renderer — top-down view of arena
 # ═════════════════════════════════════════════════════════════════
 
-class MapRenderer:
+# MapRenderer — extracted to compute_node/sim_renderer.py (#44 phase 5).
+# Re-exported with constructor pinned to legacy module-level constants.
+from compute_node.sim_renderer import MapRenderer as _ExternalMapRenderer  # noqa: E402
+
+
+class MapRenderer(_ExternalMapRenderer):  # type: ignore[misc]
+    """Backward-compat shim: pins ROBOT_RADIUS, ULTRASONIC_MAX, CAM_FOV,
+    COLOUR_BGR to the simulator's module-level constants so existing
+    `MapRenderer(arena)` calls keep their original styling."""
+
     def __init__(self, arena: SimArena, scale: int = 100):
-        self.arena = arena
-        self.scale = scale  # pixels per metre
-        self.w = int(arena.width * scale)
-        self.h = int(arena.height * scale)
-
-    def render(self, robot: SimRobot, scan_points=None,
-               planned_path=None) -> bytes:
-        img = np.full((self.h, self.w, 3), 240, dtype=np.uint8)
-
-        # Walls
-        cv2.rectangle(img, (0, 0), (self.w - 1, self.h - 1), (30, 30, 30), 3)
-
-        # Grid
-        for i in range(1, int(self.arena.width)):
-            x = int(i * self.scale)
-            cv2.line(img, (x, 0), (x, self.h), (210, 210, 210), 1)
-        for i in range(1, int(self.arena.height)):
-            y = int(i * self.scale)
-            cv2.line(img, (0, y), (self.w, y), (210, 210, 210), 1)
-
-        # Forbidden zones (semi-transparent red)
-        overlay = img.copy()
-        for zone in self.arena.forbidden_zones:
-            px1 = int(zone['x1'] * self.scale)
-            py1 = self.h - int(zone['y2'] * self.scale)  # flip Y
-            px2 = int(zone['x2'] * self.scale)
-            py2 = self.h - int(zone['y1'] * self.scale)
-            cv2.rectangle(overlay, (px1, py1), (px2, py2), (0, 0, 200), -1)
-            cv2.rectangle(img, (px1, py1), (px2, py2), (0, 0, 180), 2)
-            # Zone label
-            cx = (px1 + px2) // 2
-            cy = (py1 + py2) // 2
-            cv2.putText(img, 'X', (cx - 5, cy + 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        # Blend overlay for semi-transparency (40% opacity)
-        cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
-
-        # Balls
-        for ball in self.arena.balls:
-            if ball['grabbed']:
-                continue
-            bx = int(ball['x'] * self.scale)
-            by = self.h - int(ball['y'] * self.scale)  # flip Y
-            colour_bgr = COLOUR_BGR.get(ball['colour'], (200, 200, 200))
-            cv2.circle(img, (bx, by), max(3, int(ball['radius'] * self.scale * 2)),
-                       colour_bgr, -1)
-            cv2.circle(img, (bx, by), max(3, int(ball['radius'] * self.scale * 2)),
-                       (0, 0, 0), 1)
-
-        # Scan points
-        if scan_points:
-            for pt in scan_points:
-                sx = int(pt[0] * self.scale)
-                sy = self.h - int(pt[1] * self.scale)
-                cv2.circle(img, (sx, sy), 2, (200, 160, 60), -1)
-
-        # Planned path (yellow-green polyline)
-        if planned_path and len(planned_path) >= 2:
-            pts = []
-            for wx, wy in planned_path:
-                px = int(wx * self.scale)
-                py = self.h - int(wy * self.scale)
-                pts.append([px, py])
-            pts_arr = np.array(pts, dtype=np.int32)
-            cv2.polylines(img, [pts_arr], False, (0, 200, 100), 2,
-                          cv2.LINE_AA)
-            # Draw waypoint dots
-            for p in pts:
-                cv2.circle(img, (p[0], p[1]), 3, (0, 180, 80), -1)
-
-        # Robot
-        rx = int(robot.x * self.scale)
-        ry = self.h - int(robot.y * self.scale)
-        r_px = max(4, int(ROBOT_RADIUS * self.scale))
-
-        # Robot body
-        cv2.circle(img, (rx, ry), r_px, (79, 195, 247), -1)
-        cv2.circle(img, (rx, ry), r_px, (40, 100, 130), 2)
-
-        # Direction arrow
-        arrow_len = r_px + 8
-        ax = int(rx + arrow_len * math.cos(robot.theta))
-        ay = int(ry - arrow_len * math.sin(robot.theta))  # flip Y
-        cv2.arrowedLine(img, (rx, ry), (ax, ay), (40, 100, 130), 2,
-                        tipLength=0.3)
-
-        # FOV cone
-        fov_len = int(ULTRASONIC_MAX * self.scale * 0.4)
-        for sign in (-1, 1):
-            a = robot.theta + sign * CAM_FOV / 2
-            fx = int(rx + fov_len * math.cos(a))
-            fy = int(ry - fov_len * math.sin(a))
-            cv2.line(img, (rx, ry), (fx, fy), (150, 200, 150), 1)
-
-        _, png = cv2.imencode('.png', img)
-        return png.tobytes()
-
-    def get_map_info(self) -> dict:
-        return {
-            'width': self.w,
-            'height': self.h,
-            'resolution': 1.0 / self.scale,
-            'origin_x': 0.0,
-            'origin_y': 0.0,
-        }
+        super().__init__(
+            arena, scale=scale,
+            robot_radius=ROBOT_RADIUS,
+            ultrasonic_max=ULTRASONIC_MAX,
+            cam_fov=CAM_FOV,
+            colour_bgr=COLOUR_BGR,
+        )
 
 
 # ═════════════════════════════════════════════════════════════════

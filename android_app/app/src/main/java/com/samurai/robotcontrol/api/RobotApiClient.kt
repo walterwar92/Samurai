@@ -357,21 +357,16 @@ class RobotApiClient {
     // Image endpoints
     // ═══════════════════════════════════════════════════════════
 
+    /**
+     * @deprecated 2026-04 (#9): camera_node на Pi публикует только H.264 поток
+     * через TCP, JPEG endpoint /api/camera/frame удалён из dashboard_node.
+     * TODO: реализовать H.264 декодирование в Android (через MediaCodec API)
+     * и подключение к TCP-серверу или WebSocket /ws/h264 на dashboard.
+     * Пока — всегда возвращает null. См. CameraScreen.kt для UI fallback.
+     */
     suspend fun getCameraFrame(): Bitmap? = withContext(Dispatchers.IO) {
-        val base = _baseUrl.value.ifEmpty { return@withContext null }
-        try {
-            val request = Request.Builder().url("$base/api/camera/frame").build()
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val bytes = resp.body?.bytes() ?: return@withContext null
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e  // must not swallow — allows coroutine cancellation to work
-        } catch (e: Throwable) {
-            Log.e(TAG, "getCameraFrame failed: ${e.message}")
-            null
-        }
+        Log.w(TAG, "getCameraFrame: DEPRECATED — Pi теперь H.264 only (см. issue #9)")
+        null
     }
 
     suspend fun getMapImage(): Bitmap? = withContext(Dispatchers.IO) {
@@ -389,10 +384,12 @@ class RobotApiClient {
         }
     }
 
-    fun getCameraStreamUrl(): String {
-        val base = _baseUrl.value
-        return if (base.isNotEmpty()) "$base/video_feed" else ""
-    }
+    /**
+     * @deprecated 2026-04 (#9): /video_feed (MJPEG) удалён из dashboard.
+     * Возвращает пустую строку — CameraScreen покажет fallback с TODO.
+     * Когда H.264-decoder будет реализован — вернуть WebSocket URL `/ws/h264`.
+     */
+    fun getCameraStreamUrl(): String = ""
 
     // ═══════════════════════════════════════════════════════════
     // HTTP helpers

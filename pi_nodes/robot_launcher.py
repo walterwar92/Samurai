@@ -50,6 +50,9 @@ NODE_REGISTRY = {
     'head':         'pi_nodes.nodes.head_node.HeadNode',
     'arm':          'pi_nodes.nodes.arm_node.ArmNode',
     'fsm':          'pi_nodes.nodes.fsm_node.FSMNode',
+    # Behaviour-Tree альтернатива fsm (#1, 2026-04). Не запускать одновременно
+    # с 'fsm' — оба публикуют cmd_vel. Включается только через --nodes.
+    'fsm_bt':       'pi_nodes.nodes.fsm_bt_node.FSMBTNode',
     'watchdog':     'pi_nodes.nodes.watchdog_node.WatchdogNode',
     'voice':        'pi_nodes.nodes.voice_node.VoiceNode',
     'fallback_nav': 'pi_nodes.nodes.fallback_nav_node.FallbackNavNode',
@@ -79,12 +82,19 @@ DEFAULT_NODES = [
 # 'explorer', 'mission', 'tts', 'perf_monitor'
 
 
-def _run_node(class_path: str, broker: str, port: int, robot_id: str):
+def _run_node(class_path: str, broker: str, port: int, robot_id: str,
+              mqtt_user=None, mqtt_pwd=None):
     """Entry point for each child process."""
     module_path, class_name = class_path.rsplit('.', 1)
     module = importlib.import_module(module_path)
     node_class = getattr(module, class_name)
-    node = node_class(broker=broker, port=port, robot_id=robot_id)
+    # Передаём creds только если заданы — иначе MqttNode сам resolve через
+    # ENV/file/config (важно если creds установлены в child env, а не в args).
+    if mqtt_user is not None:
+        node = node_class(broker=broker, port=port, robot_id=robot_id,
+                          username=mqtt_user, password=mqtt_pwd)
+    else:
+        node = node_class(broker=broker, port=port, robot_id=robot_id)
     node.start()
     node.spin()
 
@@ -99,13 +109,25 @@ def main():
                         help=f'Robot identifier (default: {_DEFAULT_ROBOT_ID})')
     parser.add_argument('--nodes', default='',
                         help='Comma-separated node names (default: all)')
+    parser.add_argument('--mqtt-user', default=None,
+                        help='MQTT username (default: from ENV/~/.samurai/mqtt.passwd/config)')
+    parser.add_argument('--mqtt-pass', default=None,
+                        help='MQTT password (default: from ENV/~/.samurai/mqtt.passwd/config)')
     args = parser.parse_args()
 
     node_names = [n.strip() for n in args.nodes.split(',') if n.strip()] \
         if args.nodes else DEFAULT_NODES
 
-    log.info('Starting %d nodes (broker=%s:%d, id=%s)',
-             len(node_names), args.broker, args.port, args.robot_id)
+    # Resolve creds: CLI args → ENV/file/config → anonymous.
+    # Если пользователь явно передал --mqtt-user, используем его (даже если pass пустой)
+    if args.mqtt_user is not None:
+        mqtt_user, mqtt_pwd = args.mqtt_user, args.mqtt_pass
+    else:
+        mqtt_user, mqtt_pwd = _get_mqtt_creds()
+
+    auth_str = f', user={mqtt_user}' if mqtt_user else ', anonymous'
+    log.info('Starting %d nodes (broker=%s:%d, id=%s%s)',
+             len(node_names), args.broker, args.port, args.robot_id, auth_str)
 
     processes: list[tuple[str, multiprocessing.Process]] = []
 
@@ -116,7 +138,8 @@ def main():
             continue
         p = multiprocessing.Process(
             target=_run_node,
-            args=(NODE_REGISTRY[name], args.broker, args.port, args.robot_id),
+            args=(NODE_REGISTRY[name], args.broker, args.port, args.robot_id,
+                  mqtt_user, mqtt_pwd),
             name=f'node_{name}',
             daemon=False,
         )
@@ -150,7 +173,7 @@ def main():
                 new_p = multiprocessing.Process(
                     target=_run_node,
                     args=(NODE_REGISTRY[name], args.broker, args.port,
-                          args.robot_id),
+                          args.robot_id, mqtt_user, mqtt_pwd),
                     name=f'node_{name}',
                     daemon=False,
                 )

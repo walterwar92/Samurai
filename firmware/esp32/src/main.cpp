@@ -382,9 +382,20 @@ void mqttReconnect() {
     // LWT: mark offline if connection lost
     String lwt = String(TOPIC_PREFIX) + "esp32/status";
 
-    Serial.printf("[MQTT] Connecting to %s:%d...", MQTT_BROKER, MQTT_PORT);
+    // Optional auth — раскомментируй MQTT_USER / MQTT_PASS в config.h
+#if defined(MQTT_USER) && defined(MQTT_PASS)
+    const char* mqttUser = MQTT_USER;
+    const char* mqttPass = MQTT_PASS;
+    Serial.printf("[MQTT] Connecting to %s:%d as user=%s...",
+                  MQTT_BROKER, MQTT_PORT, mqttUser);
+#else
+    const char* mqttUser = NULL;
+    const char* mqttPass = NULL;
+    Serial.printf("[MQTT] Connecting to %s:%d (anonymous)...",
+                  MQTT_BROKER, MQTT_PORT);
+#endif
 
-    if (mqtt.connect(clientId.c_str(), NULL, NULL,
+    if (mqtt.connect(clientId.c_str(), mqttUser, mqttPass,
                      lwt.c_str(), 1, true, "offline")) {
         Serial.println(" OK");
 

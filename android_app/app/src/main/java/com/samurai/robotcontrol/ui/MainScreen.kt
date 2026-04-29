@@ -46,6 +46,10 @@ fun MainScreen(applicationContext: Context) {
     var serverIp   by remember { mutableStateOf("raspberrypi.local") }
     var serverPort by remember { mutableStateOf("5000") }
     var robotId    by remember { mutableStateOf("robot1") }
+    // MQTT credentials (опционально — пусто = anonymous)
+    // TODO: вынести в DataStore для сохранения между запусками (как serverIp)
+    var mqttUser     by remember { mutableStateOf("") }
+    var mqttPassword by remember { mutableStateOf("") }
 
     val mqttConnected    by mqttClient.connected.collectAsState()
     val apiConnected     by apiClient.connected.collectAsState()
@@ -277,6 +281,8 @@ fun MainScreen(applicationContext: Context) {
                     serverIp          = serverIp,
                     serverPort        = serverPort,
                     robotId           = robotId,
+                    mqttUser          = mqttUser,
+                    mqttPassword      = mqttPassword,
                     isConnected       = isConnected,
                     mqttConnected     = mqttConnected,
                     apiConnected      = apiConnected,
@@ -284,6 +290,8 @@ fun MainScreen(applicationContext: Context) {
                     onServerIpChange  = { serverIp = it },
                     onServerPortChange= { serverPort = it },
                     onRobotIdChange   = { robotId = it },
+                    onMqttUserChange  = { mqttUser = it },
+                    onMqttPasswordChange = { mqttPassword = it },
                     onConnect = {
                         val baseUrl = "http://$serverIp:$serverPort"
                         apiClient.setBaseUrl(baseUrl)
@@ -292,7 +300,7 @@ fun MainScreen(applicationContext: Context) {
                             ConnectionMode.ROBOT     -> {
                                 // Подключаем Socket.IO для push-обновлений (вместо polling)
                                 socketClient.connect(baseUrl)
-                                mqttClient.connect(serverIp, robotId)
+                                mqttClient.connect(serverIp, robotId, mqttUser, mqttPassword)
                                 // Первоначальный запрос списков карт/путей через REST
                                 scope.launch { apiClient.pollState(isRealRobot = true) }
                             }
