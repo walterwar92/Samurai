@@ -22,7 +22,7 @@ main() {
 Останавливает samurai-компоненты по имени.
 Без аргументов — останавливает все запущенные.
 
-Цели: robot, sim, compute, detector, bridge, all
+Цели: robot, sim, compute, detector, bridge, agent, all
 
 Примеры:
   samurai stop
@@ -32,7 +32,7 @@ EOF
         exit 0
     fi
 
-    local valid=(robot sim compute detector bridge)
+    local valid=(robot sim compute detector bridge agent)
     local targets=()
     local t v found
 

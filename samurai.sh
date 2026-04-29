@@ -18,6 +18,7 @@
 #   planner     A* path planner на ноутбуке (#3 — slam_map → goal → path)
 #   voice-llm   LLM voice intent parser (#2 — Qwen 2.5 7B через Ollama)
 #   bridge      Samcan USB bridge (FastAPI :5005)
+#   agent       MOIS HTTP-агент (мост сайт ↔ робот через dashboard :5000)
 #   build-cpp   Кросс-компиляция C++ нод для arm64
 #   status      Что запущено
 #   stop        Остановить компонент(ы)
@@ -56,7 +57,7 @@ case "$cmd" in
         source "$SAMURAI_ROOT/scripts/lib/common.sh"
         echo "samurai CLI v${SAMURAI_CLI_VERSION}"
         ;;
-    robot|sim|compute|detector|planner|bridge|status|stop|auth)
+    robot|sim|compute|detector|planner|bridge|agent|status|stop|auth)
         exec "$CMDS_DIR/${cmd}.sh" "$@"
         ;;
     voice-llm)
@@ -70,7 +71,7 @@ case "$cmd" in
     *)
         echo "ERROR: неизвестная команда '$cmd'" >&2
         echo "" >&2
-        echo "Доступные команды: robot, sim, compute, detector, planner, voice-llm, bridge, build-cpp, auth, status, stop, help" >&2
+        echo "Доступные команды: robot, sim, compute, detector, planner, voice-llm, bridge, agent, build-cpp, auth, status, stop, help" >&2
         echo "Запусти: $0 help" >&2
         exit 1
         ;;

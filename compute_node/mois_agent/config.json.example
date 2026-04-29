@@ -1,0 +1,10 @@
+{
+  "api_url": "https://YOUR-PROJECT.supabase.co/functions/v1/robot-gateway",
+  "api_token": "rt_REPLACE_WITH_YOUR_TOKEN",
+  "dashboard_url": "http://127.0.0.1:5000",
+  "samcan_url": null,
+  "robot_id": "robot1",
+  "poll_interval": 10,
+  "telemetry_interval": 30,
+  "agent_name": "samurai-mois"
+}

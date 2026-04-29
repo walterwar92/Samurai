@@ -1,0 +1,30 @@
+[Unit]
+Description=Samurai MOIS HTTP Agent — site → robot bridge через dashboard :5000
+Documentation=https://github.com/walterwar92/Samurai
+After=network-online.target samurai-compute.service
+Wants=network-online.target
+# Не "Requires" чтобы агент мог стартовать раньше compute и подключиться позже
+
+[Service]
+Type=simple
+User=__SAMURAI_USER__
+Group=__SAMURAI_USER__
+WorkingDirectory=__SAMURAI_ROOT__
+
+Environment="SAMURAI_SKIP_PIP_INSTALL=1"
+Environment="SAMURAI_STATE_DIR=/var/lib/samurai"
+# Конфиг можно положить рядом с агентом или экспортировать ENV:
+#   Environment="MOIS_API_URL=https://xxx.supabase.co/functions/v1/robot-gateway"
+#   Environment="MOIS_API_TOKEN=rt_xxxxxxxx"
+
+ExecStart=__SAMURAI_ROOT__/samurai.sh agent
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=samurai-agent
+
+[Install]
+WantedBy=multi-user.target

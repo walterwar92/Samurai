@@ -48,6 +48,12 @@ ${BOLD}Команды ноутбука:${NC}
                   --ollama-host URL  default: http://localhost:11434
   ${GREEN}bridge${NC}        Samcan USB bridge (Arduino Uno → FastAPI :5005)
                   [PORT]             COM3 / /dev/ttyUSB0 (без — auto)
+  ${GREEN}agent${NC}         MOIS HTTP-агент (мост сайт ↔ робот через dashboard :5000)
+                  --api-url URL      Supabase Edge Function (или MOIS_API_URL env)
+                  --api-token T      Bearer-токен (или MOIS_API_TOKEN env)
+                  --dashboard URL    Локальный dashboard (default: 127.0.0.1:5000)
+                  --robot-id ID      MQTT robot_id (default: robot1)
+                  --list-commands    Распечатать команды и выйти
   ${GREEN}build-cpp${NC}     Кросс-компиляция C++ нод для Pi (arm64)
                   [pi@host]          Деплой на Pi через scp
 
@@ -66,6 +72,7 @@ ${BOLD}Примеры:${NC}
   ./samurai.sh compute                  # на ноуте, реальный робот
   ./samurai.sh compute --pi 192.168.1.50 --hotspot
   ./samurai.sh bridge                   # auto-detect Arduino
+  ./samurai.sh agent                    # MOIS HTTP-агент (сайт ↔ робот)
   ./samurai.sh status                   # что работает?
   ./samurai.sh stop                     # остановить всё
 
