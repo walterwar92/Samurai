@@ -9,7 +9,21 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..client import DashboardClient
-from ._utils import HandlerResult, err, from_http, opt_param
+from ._utils import HandlerResult, bad_params, from_http, opt_param
+
+# Список команд Arduino — для UI-плашек
+SAMCAN_BASIC_CMDS = [
+    "F", "B", "L", "R", "S",  # движение
+    "O", "X", "G",            # клешня: Open/X-close/Grab
+    "P",                      # park
+    "D", "K", "C", "Z", "H",  # detach/kick/calibrate/zero/help
+]
+
+SAMCAN_SCENARIOS = [
+    "fwd_stop", "fwd_back", "square", "wiggle", "open_close", "grab_demo",
+]
+
+SAMCAN_PRESETS = ["park", "forward", "grab"]
 
 
 def _samcan(ctx) -> tuple[DashboardClient, str]:
@@ -20,22 +34,21 @@ def _samcan(ctx) -> tuple[DashboardClient, str]:
 
 
 def handle_samcan_cmd(params: Mapping[str, Any], ctx) -> HandlerResult:
-    """{"cmd": "F"|"B"|"L"|...|"M"|..., "arg": optional int}."""
+    """{"cmd": "F"|"B"|..., "arg": optional int}."""
     cmd = opt_param(params, "cmd")
     if not cmd or not isinstance(cmd, str):
-        return err("cmd: обязательная строка (F/B/L/R/S/O/X/G/M<deg>/...)")
+        return bad_params("cmd: обязательная строка (F/B/L/R/S/O/X/G/...)")
     body: dict = {"cmd": cmd}
-    if "arg" in params:
+    if "arg" in params and params["arg"] not in ("", None):
         body["arg"] = params["arg"]
     client, prefix = _samcan(ctx)
     return from_http(client.post(f"{prefix}/api/samcan/cmd", json_body=body))
 
 
 def handle_samcan_scenario(params: Mapping[str, Any], ctx) -> HandlerResult:
-    """{"scenario": "fwd_stop"|"fwd_back"|"square"|"wiggle"|"open_close"|"grab_demo"}."""
     scenario = opt_param(params, "scenario")
     if not scenario:
-        return err("scenario: обязательно")
+        return bad_params("scenario: обязательно")
     client, prefix = _samcan(ctx)
     return from_http(
         client.post(
@@ -54,7 +67,7 @@ def handle_samcan_log(params: Mapping[str, Any], ctx) -> HandlerResult:
     try:
         lines_int = int(lines)
     except (TypeError, ValueError):
-        return err("lines должен быть числом")
+        return bad_params("lines должен быть числом")
     client, prefix = _samcan(ctx)
     return from_http(
         client.get(f"{prefix}/api/samcan/log", params={"lines": lines_int})
@@ -72,10 +85,9 @@ def handle_samcan_diag(params, ctx) -> HandlerResult:
 
 
 def handle_samcan_preset_apply(params: Mapping[str, Any], ctx) -> HandlerResult:
-    """{"preset": "park"|"forward"|"grab"}."""
     preset = opt_param(params, "preset")
     if not preset:
-        return err("preset: park|forward|grab")
+        return bad_params("preset: park|forward|grab")
     client, prefix = _samcan(ctx)
     return from_http(
         client.post(
@@ -86,23 +98,24 @@ def handle_samcan_preset_apply(params: Mapping[str, Any], ctx) -> HandlerResult:
 
 COMMANDS = {
     "samcan_cmd": {
-        "description": "Samcan серво/моторы: F/B/L/R/S/O/X/G/M<deg>/N<deg>/...",
+        "description": "Samcan: одиночная Serial-команда (F/B/L/R/S/O/X/G/...)",
         "params_schema": {
-            "type": "object",
-            "properties": {
-                "cmd": {"type": "string"},
-                "arg": {"type": ["integer", "string"]},
+            "cmd": {
+                "type": "string",
+                "enum": SAMCAN_BASIC_CMDS,
+                "description": "Код команды Arduino",
             },
-            "required": ["cmd"],
         },
         "handler": handle_samcan_cmd,
     },
     "samcan_scenario": {
-        "description": "Samcan сценарий: fwd_stop|fwd_back|square|wiggle|open_close|grab_demo",
+        "description": "Samcan: запустить сценарий",
         "params_schema": {
-            "type": "object",
-            "properties": {"scenario": {"type": "string"}},
-            "required": ["scenario"],
+            "scenario": {
+                "type": "string",
+                "enum": SAMCAN_SCENARIOS,
+                "description": "Имя сценария",
+            },
         },
         "handler": handle_samcan_scenario,
     },
@@ -112,10 +125,15 @@ COMMANDS = {
         "handler": handle_samcan_state,
     },
     "samcan_log": {
-        "description": "Samcan Serial-лог (lines: N)",
+        "description": "Samcan: последние строки Serial-лога",
         "params_schema": {
-            "type": "object",
-            "properties": {"lines": {"type": "integer", "default": 50}},
+            "lines": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 50,
+                "description": "Сколько последних строк",
+            },
         },
         "handler": handle_samcan_log,
     },
@@ -130,11 +148,13 @@ COMMANDS = {
         "handler": handle_samcan_diag,
     },
     "samcan_preset_apply": {
-        "description": "Применить пресет Samcan: park|forward|grab",
+        "description": "Применить пресет Samcan",
         "params_schema": {
-            "type": "object",
-            "properties": {"preset": {"type": "string"}},
-            "required": ["preset"],
+            "preset": {
+                "type": "string",
+                "enum": SAMCAN_PRESETS,
+                "description": "Имя пресета",
+            },
         },
         "handler": handle_samcan_preset_apply,
     },
