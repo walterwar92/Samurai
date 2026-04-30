@@ -170,6 +170,118 @@ def create_app(
         allow_headers=['*'],
     )
 
+    # ── Security headers ──────────────────────────────────────────────
+    # Defence-in-depth для SPA: даже если рендерим untrusted текст
+    # (имя зоны, имя пресета, log-сообщение — всё пишется операторами,
+    # но прилетает через REST), хотим ограничить blast radius если
+    # XSS прорвётся.
+    #
+    # Override via env:
+    #   SAMURAI_SECURITY_HEADERS=off — отключить middleware
+    #   SAMURAI_CSP=<policy>        — заменить CSP целиком
+    #   SAMURAI_HSTS=on             — добавлять Strict-Transport-Security
+    #                                  (включай только когда фронтит HTTPS-прокси)
+    if os.environ.get('SAMURAI_SECURITY_HEADERS', 'on').lower() != 'off':
+        # Default CSP подобран под Vite-сборку фронта:
+        # - 'self' для скриптов/стилей (хешированные assets под /assets/)
+        # - 'unsafe-inline' для стилей: Vite иногда инжектит inline <style>
+        # - data:/blob: для картинок (camera frame, map.png)
+        # - ws:/wss:/http:/https: для connect-src (Socket.IO + WebSocket H264)
+        # - frame-ancestors 'none' блокирует встраивание в <iframe>
+        _DEFAULT_CSP = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws: wss: http: https:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'"
+        )
+        _csp = os.environ.get('SAMURAI_CSP', _DEFAULT_CSP).strip()
+        _hsts_on = os.environ.get('SAMURAI_HSTS', 'off').lower() == 'on'
+
+        @app.middleware('http')
+        async def security_headers(request: Request, call_next):
+            response = await call_next(request)
+            # Не перетираем заголовки если handler уже выставил свой CSP
+            # (полезно для редких случаев — например, если openapi-ui
+            # требует более слабый policy).
+            response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+            response.headers.setdefault('X-Frame-Options', 'DENY')
+            response.headers.setdefault('Referrer-Policy',
+                                        'strict-origin-when-cross-origin')
+            if _csp:
+                response.headers.setdefault('Content-Security-Policy', _csp)
+            if _hsts_on:
+                response.headers.setdefault(
+                    'Strict-Transport-Security',
+                    'max-age=31536000; includeSubDomains',
+                )
+            return response
+
+        log.info('Security headers active (CSP=%d chars, HSTS=%s)',
+                 len(_csp), _hsts_on)
+
+    # ── Opt-in Bearer auth ────────────────────────────────────────────
+    # By default the dashboard runs without auth — Pi и laptop в одной
+    # домашней сети, фронт ходит без токена. Когда роутер пробрасывает
+    # порт наружу или dashboard смотрит в WAN, оператор задаёт
+    # SAMURAI_DASHBOARD_TOKEN — и тогда любой запрос на /api/v1/*
+    # требует `Authorization: Bearer <exact token>`.
+    #
+    # Сравнение через hmac.compare_digest — constant-time, без
+    # timing-leak. exempt-список покрывает SPA-static, OpenAPI-doc,
+    # SocketIO и H264 WS (для них auth — отдельный механизм или нет
+    # клиентов которые умеют слать токен через handshake).
+    _dashboard_token = os.environ.get('SAMURAI_DASHBOARD_TOKEN', '').strip()
+    if _dashboard_token:
+        import hmac
+
+        _AUTH_EXEMPT_PREFIXES = (
+            '/docs', '/redoc', '/openapi.json',
+            '/assets/', '/static/',
+            '/socket.io/', '/ws/h264',
+        )
+        _AUTH_EXEMPT_PATHS = {'/', '/dashboard', '/admin', '/3d'}
+        _PROTECTED_PREFIX = '/api/'
+
+        def _extract_bearer(header: str) -> Optional[str]:
+            # Принимаем ровно `Bearer <token>` с одним пробелом —
+            # `Bearer  token` (двойной пробел) отвергаем (regression
+            # против MOIS finding `auth_bypass`).
+            if not header.startswith('Bearer '):
+                return None
+            token = header[len('Bearer '):]
+            if not token or token.startswith(' ') or token.endswith((' ', '\n', '\r', '\t')):
+                return None
+            return token
+
+        @app.middleware('http')
+        async def bearer_auth(request: Request, call_next):
+            path = request.url.path
+            if path in _AUTH_EXEMPT_PATHS or \
+                    any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES) or \
+                    not path.startswith(_PROTECTED_PREFIX):
+                return await call_next(request)
+
+            authz = request.headers.get('authorization', '')
+            received = _extract_bearer(authz)
+            if received is None or not hmac.compare_digest(received, _dashboard_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={'error': 'unauthorized',
+                             'detail': 'valid Bearer token required'},
+                    headers={'WWW-Authenticate': 'Bearer realm="samurai"'},
+                )
+            return await call_next(request)
+
+        log.info('Bearer auth active on %s* (token len=%d)',
+                 _PROTECTED_PREFIX, len(_dashboard_token))
+    else:
+        log.info('Bearer auth disabled (SAMURAI_DASHBOARD_TOKEN not set)')
+
     # ── Rate limiting (write verbs only) ──────────────────────────────
     # Defence against runaway clients (buggy script, stuck retry loop) and
     # a soft DoS protection on the command pipeline. Reads (GET) are NOT
