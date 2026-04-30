@@ -170,60 +170,6 @@ def create_app(
         allow_headers=['*'],
     )
 
-    # ── Security headers ──────────────────────────────────────────────
-    # Defence-in-depth для SPA: даже если рендерим untrusted текст
-    # (имя зоны, имя пресета, log-сообщение — всё пишется операторами,
-    # но прилетает через REST), хотим ограничить blast radius если
-    # XSS прорвётся.
-    #
-    # Override via env:
-    #   SAMURAI_SECURITY_HEADERS=off — отключить middleware
-    #   SAMURAI_CSP=<policy>        — заменить CSP целиком
-    #   SAMURAI_HSTS=on             — добавлять Strict-Transport-Security
-    #                                  (включай только когда фронтит HTTPS-прокси)
-    if os.environ.get('SAMURAI_SECURITY_HEADERS', 'on').lower() != 'off':
-        # Default CSP подобран под Vite-сборку фронта:
-        # - 'self' для скриптов/стилей (хешированные assets под /assets/)
-        # - 'unsafe-inline' для стилей: Vite иногда инжектит inline <style>
-        # - data:/blob: для картинок (camera frame, map.png)
-        # - ws:/wss:/http:/https: для connect-src (Socket.IO + WebSocket H264)
-        # - frame-ancestors 'none' блокирует встраивание в <iframe>
-        _DEFAULT_CSP = (
-            "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob:; "
-            "font-src 'self' data:; "
-            "connect-src 'self' ws: wss: http: https:; "
-            "object-src 'none'; "
-            "base-uri 'self'; "
-            "frame-ancestors 'none'"
-        )
-        _csp = os.environ.get('SAMURAI_CSP', _DEFAULT_CSP).strip()
-        _hsts_on = os.environ.get('SAMURAI_HSTS', 'off').lower() == 'on'
-
-        @app.middleware('http')
-        async def security_headers(request: Request, call_next):
-            response = await call_next(request)
-            # Не перетираем заголовки если handler уже выставил свой CSP
-            # (полезно для редких случаев — например, если openapi-ui
-            # требует более слабый policy).
-            response.headers.setdefault('X-Content-Type-Options', 'nosniff')
-            response.headers.setdefault('X-Frame-Options', 'DENY')
-            response.headers.setdefault('Referrer-Policy',
-                                        'strict-origin-when-cross-origin')
-            if _csp:
-                response.headers.setdefault('Content-Security-Policy', _csp)
-            if _hsts_on:
-                response.headers.setdefault(
-                    'Strict-Transport-Security',
-                    'max-age=31536000; includeSubDomains',
-                )
-            return response
-
-        log.info('Security headers active (CSP=%d chars, HSTS=%s)',
-                 len(_csp), _hsts_on)
-
     # ── Opt-in Bearer auth ────────────────────────────────────────────
     # By default the dashboard runs without auth — Pi и laptop в одной
     # домашней сети, фронт ходит без токена. Когда роутер пробрасывает
@@ -260,6 +206,10 @@ def create_app(
 
         @app.middleware('http')
         async def bearer_auth(request: Request, call_next):
+            # CORS preflight никогда не несёт Authorization — пропускаем,
+            # иначе ломаем cross-origin клиентов (mobile WebView, dev :3000).
+            if request.method == 'OPTIONS':
+                return await call_next(request)
             path = request.url.path
             if path in _AUTH_EXEMPT_PATHS or \
                     any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES) or \
@@ -420,6 +370,66 @@ def create_app(
                             headers={k: v for k, v in response.headers.items()
                                      if k.lower() not in ('content-length',)})
         return response
+
+    # ── Security headers ──────────────────────────────────────────────
+    # Defence-in-depth для SPA: даже если рендерим untrusted текст
+    # (имя зоны, имя пресета, log-сообщение — всё пишется операторами,
+    # но прилетает через REST), хотим ограничить blast radius если
+    # XSS прорвётся.
+    #
+    # Регистрируется ПОСЛЕДНИМ — Starlette `add_middleware` делает
+    # `insert(0)`, поэтому последний зарегистрированный становится
+    # самым внешним в стеке. Это критично: 401 от bearer_auth и
+    # 429 от rate_limit поднимаются через security_headers и тоже
+    # получают CSP/X-Frame-Options/etc.
+    #
+    # Override via env:
+    #   SAMURAI_SECURITY_HEADERS=off — отключить middleware
+    #   SAMURAI_CSP=<policy>        — заменить CSP целиком
+    #   SAMURAI_HSTS=on             — добавлять Strict-Transport-Security
+    #                                  (включай только когда фронтит HTTPS-прокси)
+    if os.environ.get('SAMURAI_SECURITY_HEADERS', 'on').lower() != 'off':
+        # Default CSP подобран под Vite-сборку фронта:
+        # - 'self' для скриптов/стилей (хешированные assets под /assets/)
+        # - 'unsafe-inline' для стилей: Vite иногда инжектит inline <style>
+        # - data:/blob: для картинок (camera frame, map.png)
+        # - ws:/wss:/http:/https: для connect-src (Socket.IO + WebSocket H264)
+        # - frame-ancestors 'none' блокирует встраивание в <iframe>
+        _DEFAULT_CSP = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws: wss: http: https:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'"
+        )
+        _csp = os.environ.get('SAMURAI_CSP', _DEFAULT_CSP).strip()
+        _hsts_on = os.environ.get('SAMURAI_HSTS', 'off').lower() == 'on'
+
+        @app.middleware('http')
+        async def security_headers(request: Request, call_next):
+            response = await call_next(request)
+            # Не перетираем заголовки если handler уже выставил свой CSP
+            # (полезно для редких случаев — например, если openapi-ui
+            # требует более слабый policy).
+            response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+            response.headers.setdefault('X-Frame-Options', 'DENY')
+            response.headers.setdefault('Referrer-Policy',
+                                        'strict-origin-when-cross-origin')
+            if _csp:
+                response.headers.setdefault('Content-Security-Policy', _csp)
+            if _hsts_on:
+                response.headers.setdefault(
+                    'Strict-Transport-Security',
+                    'max-age=31536000; includeSubDomains',
+                )
+            return response
+
+        log.info('Security headers active (CSP=%d chars, HSTS=%s)',
+                 len(_csp), _hsts_on)
 
     # ── /api/v1/ routers ──────────────────────────────────────────────
     # robot
