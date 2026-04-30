@@ -1,0 +1,61 @@
+[
+  {
+    "name": "auth_bypass",
+    "severity": "critical",
+    "finding": "200 OK без валидного Bearer ('Bearer + лишний пробел')",
+    "evidence": {
+      "label": "Bearer + лишний пробел",
+      "status": 200,
+      "body": "{\"requests\":[],\"commands\":[],\"poll_interval\":30}"
+    }
+  },
+  {
+    "name": "missing_security_headers",
+    "severity": "medium",
+    "finding": "Edge Function отдаёт ответ без: content-security-policy, x-frame-options. Само API это не ломает, но усиливает impact XSS на UI.",
+    "evidence": {
+      "missing": [
+        "content-security-policy",
+        "x-frame-options"
+      ],
+      "got": {
+        "date": "Wed, 29 Apr 2026 18:04:45 GMT",
+        "content-type": "application/json",
+        "content-length": "62",
+        "connection": "keep-alive",
+        "cf-ray": "9f403b1cbffdec28-ZAG",
+        "cf-cache-status": "DYNAMIC",
+        "access-control-allow-origin": "*",
+        "content-encoding": "gzip",
+        "server": "cloudflare",
+        "vary": "Accept-Encoding",
+        "x-content-type-options": "nosniff",
+        "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+        "endpoint-load-metrics": "application_utilization:10,named_metrics.queue_depth:10",
+        "sb-gateway-version": "1",
+        "sb-project-ref": "omokscturcoekkkqkksl",
+        "sb-request-id": "019dda6a-2dfa-7b28-a78a-4627e541d941",
+        "x-deno-execution-id": "b9ced0de-1b72-4a1c-a403-e5adfeabea64",
+        "x-sb-edge-region": "eu-central-1",
+        "x-served-by": "supabase-edge-runtime",
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "alt-svc": "h3=\":443\"; ma=86400"
+      }
+    }
+  },
+  {
+    "name": "timing_leak_suspect",
+    "severity": "low",
+    "finding": "Разница медиан таймингов 401 = 68.4мс — потенциальная утечка через timing",
+    "evidence": {
+      "spread_ms": 68.4322000015527,
+      "medians_ms": [
+        405.4561000011745,
+        364.6331999989343,
+        337.0238999996218,
+        357.4545000010403,
+        353.89710000163177
+      ]
+    }
+  }
+]
