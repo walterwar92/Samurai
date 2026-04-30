@@ -4,12 +4,14 @@ Read-only / non-destructive проверки для API Samurai-стека.
 
 ## Цели
 
-- **`mois`** — внешний robot-gateway (Supabase Edge Function), куда Pi
-  пушит телеметрию и забирает команды. Запускается под валидным
-  студенческим токеном.
-- **`local`** — локальный dashboard (FastAPI :5000) и Samcan-bridge
-  (FastAPI :5005). Бьёт по `127.0.0.1`, проверяет защиту собственного
-  API робота.
+- **`probe.py`** — внешний robot-gateway MOIS (Supabase Edge Function),
+  куда Pi пушит телеметрию и забирает команды. Запускается под
+  валидным студенческим токеном.
+- **`probe_local.py`** — локальный dashboard (FastAPI :5000) и
+  Samcan-bridge (FastAPI :5005). Бьёт по `127.0.0.1`, проверяет защиту
+  собственного API робота: security headers, CORS preflight,
+  опциональный Bearer auth, rate-limit (#58), idempotency (#59),
+  method/path spoofing.
 
 ## Что НЕ делает probe
 
@@ -29,11 +31,17 @@ Read-only / non-destructive проверки для API Samurai-стека.
 ### Локальный dashboard
 
     # без аутентификации (default — auth выключен)
-    python tools/security_probe/probe.py --target local
+    python tools/security_probe/probe_local.py
 
     # с включённым SAMURAI_DASHBOARD_TOKEN
     export SAMURAI_DASHBOARD_TOKEN=$(cat ~/.samurai/dashboard.token)
-    python tools/security_probe/probe.py --target local --token "$SAMURAI_DASHBOARD_TOKEN"
+    python tools/security_probe/probe_local.py --token "$SAMURAI_DASHBOARD_TOKEN"
+
+    # против Pi через VPN
+    python tools/security_probe/probe_local.py --dashboard-url http://10.0.0.5:5000
+
+    # exit-code: 0 = чисто, 1 = есть medium/high, 2 = есть critical
+    python tools/security_probe/probe_local.py --out-json findings_local.json
 
 ## Severity
 
