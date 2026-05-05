@@ -15,6 +15,9 @@ const Visualization3DPage = lazy(() =>
   import('@/pages/Visualization3DPage').then(m => ({ default: m.Visualization3DPage })))
 const HardwarePage = lazy(() => import('@/pages/HardwarePage').then(m => ({ default: m.HardwarePage })))
 const SamcanPage = lazy(() => import('@/pages/SamcanPage').then(m => ({ default: m.SamcanPage })))
+// /mps — учебный модуль курсовой Козлова (feat/mps). Lazy: страница тянет
+// 5 mps/* компонентов и Recharts-графики, не нужно на главной.
+const MpsPage = lazy(() => import('@/pages/MpsPage').then(m => ({ default: m.MpsPage })))
 
 function PageLoadingFallback() {
   return (
@@ -45,6 +48,7 @@ export default function App() {
             <Route path="/3d" element={<Visualization3DPage />} />
             <Route path="/hardware" element={<HardwarePage />} />
             <Route path="/samcan" element={<SamcanPage />} />
+            <Route path="/mps" element={<MpsPage />} />
           </Routes>
         </Suspense>
       </BrowserRouter>
