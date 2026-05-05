@@ -264,6 +264,9 @@ class MQTTHandlers:
             )
 
     def _h_temperature(self, payload: bytes):
+        # temperature_node.py публикует голый float (`self.publish('temperature', 42.5)`),
+        # старые publishers могли слать dict {value, unit}. json.loads успешно парсит
+        # `b'42.5'` как float — без isinstance-ветки d.get() упадёт AttributeError.
         try:
             d = json.loads(payload)
         except Exception:
@@ -271,6 +274,10 @@ class MQTTHandlers:
                 d = {'value': float(payload), 'unit': 'C'}
             except Exception:
                 return
+        if isinstance(d, (int, float)):
+            d = {'value': float(d), 'unit': 'C'}
+        elif not isinstance(d, dict):
+            return
         with self._state.lock:
             self._state.sensors.temperature = TemperatureData(
                 value=d.get('value', -1.0),
