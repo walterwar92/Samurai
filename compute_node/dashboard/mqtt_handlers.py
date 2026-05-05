@@ -67,6 +67,12 @@ _SUBSCRIBE_TOPICS = [
     'log/events',
     # LED панель
     'led/state',
+    # МПС — Модель Пространства Состояний (учебный модуль, feat/mps).
+    # Telemetry — 50 Гц QoS 0; остальные QoS 1.
+    'mps/matrices/applied',
+    'mps/scenario/finished',
+    'mps/telemetry',
+    'mps/error',
 ]
 
 
@@ -622,6 +628,108 @@ class MQTTHandlers:
         """Подписка для трейса; payload игнорируется."""
         pass
 
+    # ── МПС — Модель Пространства Состояний (feat/mps) ────────────
+    # Hook для broadcast в WebSocket /ws/mps/telemetry. Регистрируется
+    # из app.py при создании WebSocket-эндпойнта; None по умолчанию —
+    # тогда фрейм просто оседает в state.last_telemetry.
+    _mps_ws_broadcaster: Optional[Callable] = None
+
+    def set_mps_ws_broadcaster(self, broadcaster: Optional[Callable]) -> None:
+        """Plumbing: app.py регистрирует функцию `broadcast(frame: dict)`."""
+        self._mps_ws_broadcaster = broadcaster
+
+    def _broadcast_mps(self, frame: dict) -> None:
+        cb = self._mps_ws_broadcaster
+        if cb is None:
+            return
+        try:
+            cb(frame)
+        except Exception as exc:
+            log.warning('mps WS broadcast failed: %s', exc)
+
+    def _h_mps_matrices_applied(self, payload: bytes):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        from .schemas.mps import MpsMatrices
+        try:
+            m = MpsMatrices.model_validate(d.get('matrices', {}))
+        except Exception as exc:
+            log.warning('mps/matrices/applied: bad payload: %s', exc)
+            return
+        with self._state.lock:
+            self._state.mps.applied = m
+            self._state.mps.draft = None
+
+    def _h_mps_scenario_finished(self, payload: bytes):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        from .schemas.mps import MpsScenarioResult
+        # robot publishes без telemetry; добиваем буфером из state.
+        with self._state.lock:
+            telemetry = list(self._state.mps.last_telemetry)
+            applied = self._state.mps.applied
+        d.setdefault('telemetry', telemetry)
+        d.setdefault('matrices_snapshot', applied.model_dump() if applied else None)
+        try:
+            result = MpsScenarioResult.model_validate(d)
+        except Exception as exc:
+            log.warning('mps/scenario/finished: bad payload: %s', exc)
+            return
+        with self._state.lock:
+            self._state.mps.history.appendleft(result)
+            if (self._state.mps.active_run is not None and
+                    self._state.mps.active_run.run_id == result.run_id):
+                self._state.mps.active_run = None
+            self._state.mps.last_telemetry.clear()
+        self._broadcast_mps({
+            'type': 'finished',
+            'run_id': result.run_id,
+            'result': result.model_dump(mode='json'),
+        })
+
+    def _h_mps_telemetry(self, payload: bytes):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        from .schemas.mps import MpsTelemetryPoint
+        run_id = str(d.get('run_id', ''))
+        try:
+            point = MpsTelemetryPoint.model_validate(d.get('point', {}))
+        except Exception:
+            return
+        with self._state.lock:
+            self._state.mps.last_telemetry.append(point)
+            # Update active_run.telemetry on the fly (in case fronт делает poll).
+            active = self._state.mps.active_run
+            if active is not None and active.run_id == run_id:
+                # Pydantic immutable list — пересоберём через model_copy.
+                # Но active_run.telemetry — это list, его можно append'ать.
+                active.telemetry.append(point)
+        self._broadcast_mps({
+            'type': 'telemetry',
+            'run_id': run_id,
+            'point': point.model_dump(mode='json'),
+        })
+
+    def _h_mps_error(self, payload: bytes):
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        log.warning('mps error from Pi: %s', d.get('message', d))
+        # Прокинем во фронт через WS если есть подписчики.
+        self._broadcast_mps({
+            'type': 'error',
+            'run_id': d.get('run_id'),
+            'error_type': d.get('error_type', 'other'),
+            'message': str(d.get('message', '')),
+        })
+
     # ── Топик → handler dispatch ────────────────────────────────────
     # Заполняется ниже после определения класса (Python требует сначала
     # завершить class body чтобы методы стали bound).
@@ -667,4 +775,9 @@ MQTTHandlers._dispatch = {
     'yolo/status': MQTTHandlers._h_yolo_status,
     'log/events': MQTTHandlers._h_log_event,
     'led/state': MQTTHandlers._h_led_state,
+    # МПС — Модель Пространства Состояний (учебный модуль, feat/mps)
+    'mps/matrices/applied': MQTTHandlers._h_mps_matrices_applied,
+    'mps/scenario/finished': MQTTHandlers._h_mps_scenario_finished,
+    'mps/telemetry': MQTTHandlers._h_mps_telemetry,
+    'mps/error': MQTTHandlers._h_mps_error,
 }

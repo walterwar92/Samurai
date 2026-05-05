@@ -62,15 +62,23 @@ class StateSpaceModel:
 
     Matrices come from config.yaml when constructed without arguments.
     Pass explicit Ad/Bd to override (used by tests and design scripts).
+
+    For the MPS course module (`feat/mps`) the model also carries
+    output matrices Cd, Dd. They are NOT used in `step()` — output
+    propagation is decoupled from state propagation. The course UI
+    visualises y = Cd·x + Dd·u alongside x(t); by default Cd = I_n
+    and Dd = 0 so y == x.
     """
 
-    __slots__ = ("Ad", "Bd", "n", "r", "Ts")
+    __slots__ = ("Ad", "Bd", "Cd", "Dd", "n", "r", "k", "Ts")
 
     def __init__(
         self,
         Ad: Optional[np.ndarray] = None,
         Bd: Optional[np.ndarray] = None,
         Ts: Optional[float] = None,
+        Cd: Optional[np.ndarray] = None,
+        Dd: Optional[np.ndarray] = None,
     ) -> None:
         if Ad is None or Bd is None:
             Ad, Bd, Ts_cfg = self._load_or_compute()
@@ -83,6 +91,19 @@ class StateSpaceModel:
 
         if self.Ad.shape != (self.n, self.n):
             raise ValueError(f"Ad shape {self.Ad.shape} incompatible with Bd {self.Bd.shape}")
+
+        # Output matrices — default identity so y == x (k = n).
+        if Cd is None:
+            Cd = np.eye(self.n)
+        if Dd is None:
+            Dd = np.zeros((Cd.shape[0], self.r))
+        self.Cd = np.asarray(Cd, dtype=float)
+        self.Dd = np.asarray(Dd, dtype=float)
+        self.k = self.Cd.shape[0]
+        if self.Cd.shape != (self.k, self.n):
+            raise ValueError(f"Cd shape {self.Cd.shape} must be (k, {self.n})")
+        if self.Dd.shape != (self.k, self.r):
+            raise ValueError(f"Dd shape {self.Dd.shape} must be ({self.k}, {self.r})")
 
     @staticmethod
     def _load_or_compute() -> tuple[np.ndarray, np.ndarray, float]:
@@ -114,6 +135,72 @@ class StateSpaceModel:
             X[k + 1] = self.step(X[k], U[k])
         return X
 
+    # ── Output equation (y = Cd x + Dd u) ──────────────────────────
+    def output(self, x: np.ndarray, u: Optional[np.ndarray] = None) -> np.ndarray:
+        """Compute y = Cd·x + Dd·u for UI visualisation.
+
+        Course-only: not used by the state propagation in `step()`. When
+        `u` is omitted only the state contribution Cd·x is returned —
+        matches the `Dd = 0` default.
+        """
+        x = np.asarray(x, dtype=float)
+        y = self.Cd @ x
+        if u is not None:
+            y = y + self.Dd @ np.asarray(u, dtype=float)
+        return y
+
+    # ── Hot reload (between scenario runs) ─────────────────────────
+    def reload(
+        self,
+        Ad: Optional[np.ndarray] = None,
+        Bd: Optional[np.ndarray] = None,
+        Cd: Optional[np.ndarray] = None,
+        Dd: Optional[np.ndarray] = None,
+    ) -> None:
+        """Atomically replace matrices with shape validation.
+
+        Validates ALL shapes BEFORE mutating any field — if anything is
+        wrong, the model is left untouched. Designed to be called between
+        scenario runs (NOT during `step()`); race-safety against the
+        regulator is the caller's responsibility.
+        """
+        new_Ad = np.asarray(Ad, dtype=float) if Ad is not None else self.Ad
+        new_Bd = np.asarray(Bd, dtype=float) if Bd is not None else self.Bd
+        new_n, new_r = new_Bd.shape
+        if new_Ad.shape != (new_n, new_n):
+            raise ValueError(
+                f"reload: Ad shape {new_Ad.shape} incompatible with Bd {new_Bd.shape}"
+            )
+
+        # Cd/Dd default to identity / zeros if k is implied by new Ad.
+        if Cd is not None:
+            new_Cd = np.asarray(Cd, dtype=float)
+        elif new_n != self.n:
+            new_Cd = np.eye(new_n)        # n changed → reset to identity
+        else:
+            new_Cd = self.Cd
+        if new_Cd.shape[1] != new_n:
+            raise ValueError(
+                f"reload: Cd cols {new_Cd.shape[1]} must equal n={new_n}"
+            )
+        new_k = new_Cd.shape[0]
+
+        if Dd is not None:
+            new_Dd = np.asarray(Dd, dtype=float)
+        elif new_n != self.n or new_r != self.r:
+            new_Dd = np.zeros((new_k, new_r))
+        else:
+            new_Dd = self.Dd
+        if new_Dd.shape != (new_k, new_r):
+            raise ValueError(
+                f"reload: Dd shape {new_Dd.shape} must be ({new_k}, {new_r})"
+            )
+
+        # All checks passed — commit.
+        self.Ad, self.Bd = new_Ad, new_Bd
+        self.Cd, self.Dd = new_Cd, new_Dd
+        self.n, self.r, self.k = new_n, new_r, new_k
+
     # ── Diagnostic helpers ─────────────────────────────────────────
     def is_stable(self) -> bool:
         """Open-loop stable iff all |λ(Ad)| < 1."""
@@ -128,7 +215,10 @@ class StateSpaceModel:
         return self.controllability_rank() == self.n
 
     def __repr__(self) -> str:
-        return f"StateSpaceModel(n={self.n}, r={self.r}, Ts={self.Ts}, stable={self.is_stable()})"
+        return (
+            f"StateSpaceModel(n={self.n}, r={self.r}, k={self.k}, "
+            f"Ts={self.Ts}, stable={self.is_stable()})"
+        )
 
 
 # Default robot operating point (used when no config overrides) ──────

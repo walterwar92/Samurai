@@ -158,6 +158,123 @@ class MPCController:
         self.H, self.f_mat = H, f_mat
         self.K_first = K_first
 
+    # ── Hot reload (between scenario runs) ───────────────────────
+    def rebuild(
+        self,
+        *,
+        Ad: Optional[np.ndarray] = None,
+        Bd: Optional[np.ndarray] = None,
+        Q_diag: Optional[Sequence[float]] = None,
+        R_diag: Optional[Sequence[float]] = None,
+        N: Optional[int] = None,
+        u_min: Optional[Sequence[float]] = None,
+        u_max: Optional[Sequence[float]] = None,
+        Pf: Optional[np.ndarray] = None,
+    ) -> None:
+        """Recompute Phi/Gamma/H/K_first after model/weights/horizon change.
+
+        Only the supplied arguments override current state — anything
+        omitted is preserved. Solver mode (`clip` / `qp`) is preserved.
+        Pf is recomputed via DARE if not provided AND any of (Ad/Bd/Q/R)
+        changed.
+
+        Designed to be called between scenario runs in `mps_node`. If
+        the new matrices fail validation the controller is rolled back
+        to the previous configuration (no half-applied state).
+        """
+        # Snapshot for rollback.
+        snapshot = (
+            self.Ad.copy(), self.Bd.copy(),
+            self.Q.copy(), self.R.copy(),
+            self.Pf.copy(),
+            self.N,
+            self.u_min.copy(), self.u_max.copy(),
+            self.Phi.copy(), self.Gamma.copy(),
+            self.H.copy(), self.f_mat.copy(),
+            self.K_first.copy(),
+        )
+
+        try:
+            # Plant
+            if Ad is not None:
+                Ad_arr = np.asarray(Ad, dtype=float)
+                if Ad_arr.ndim != 2 or Ad_arr.shape[0] != Ad_arr.shape[1]:
+                    raise ValueError(f"Ad must be square 2D, got {Ad_arr.shape}")
+                self.Ad = Ad_arr
+            if Bd is not None:
+                Bd_arr = np.asarray(Bd, dtype=float)
+                if Bd_arr.ndim != 2 or Bd_arr.shape[0] != self.Ad.shape[0]:
+                    raise ValueError(
+                        f"Bd shape {Bd_arr.shape} incompatible with Ad {self.Ad.shape}"
+                    )
+                self.Bd = Bd_arr
+            self.n, self.r = self.Bd.shape
+
+            # Weights
+            weights_changed = False
+            if Q_diag is not None:
+                Q_arr = np.asarray(Q_diag, dtype=float)
+                if Q_arr.shape != (self.n,):
+                    raise ValueError(f"Q_diag must have {self.n} elements")
+                self.Q = np.diag(Q_arr)
+                weights_changed = True
+            if R_diag is not None:
+                R_arr = np.asarray(R_diag, dtype=float)
+                if R_arr.shape != (self.r,):
+                    raise ValueError(f"R_diag must have {self.r} elements")
+                if np.any(R_arr <= 0):
+                    raise ValueError("R_diag must be strictly positive")
+                self.R = np.diag(R_arr)
+                weights_changed = True
+
+            # Horizon
+            if N is not None:
+                if int(N) < 1:
+                    raise ValueError(f"horizon must be >= 1, got {N}")
+                self.N = int(N)
+
+            # Limits
+            if u_min is not None:
+                u_min_arr = np.asarray(u_min, dtype=float)
+                if u_min_arr.shape != (self.r,):
+                    raise ValueError(f"u_min must have {self.r} elements")
+                self.u_min = u_min_arr
+            if u_max is not None:
+                u_max_arr = np.asarray(u_max, dtype=float)
+                if u_max_arr.shape != (self.r,):
+                    raise ValueError(f"u_max must have {self.r} elements")
+                self.u_max = u_max_arr
+            if np.any(self.u_min >= self.u_max):
+                raise ValueError("u_min must be < u_max element-wise")
+
+            # Terminal penalty: explicit Pf wins; otherwise re-DARE if
+            # plant or weights changed.
+            if Pf is not None:
+                Pf_arr = np.asarray(Pf, dtype=float)
+                if Pf_arr.shape != (self.n, self.n):
+                    raise ValueError(f"Pf must be ({self.n}, {self.n})")
+                self.Pf = Pf_arr
+            elif (Ad is not None) or (Bd is not None) or weights_changed:
+                from scipy.linalg import solve_discrete_are
+                self.Pf = solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
+
+            # Re-build lifted dynamics + QP matrices + K_first.
+            self._build_qp_matrices()
+        except Exception:
+            # Rollback on ANY failure — leave the controller in its prior state.
+            (
+                self.Ad, self.Bd,
+                self.Q, self.R,
+                self.Pf,
+                self.N,
+                self.u_min, self.u_max,
+                self.Phi, self.Gamma,
+                self.H, self.f_mat,
+                self.K_first,
+            ) = snapshot
+            self.n, self.r = self.Bd.shape
+            raise
+
     # ── Online step ──────────────────────────────────────────────
     def step(self, x: np.ndarray, x_ref: Optional[np.ndarray] = None) -> np.ndarray:
         """Solve one MPC step and return the first control u_0."""
