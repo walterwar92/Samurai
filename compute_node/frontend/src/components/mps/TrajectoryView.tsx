@@ -97,9 +97,32 @@ export function TrajectoryView({ result, liveTelemetry }: TrajectoryViewProps) {
               </>
             )
           })()}
+          {/* legend (top-left) */}
+          <g transform={`translate(${PADDING + 4}, 14)`} fontSize={10} fontFamily="monospace">
+            <line x1={0} y1={0} x2={20} y2={0} stroke="#2563eb" strokeWidth={1.5} />
+            <text x={26} y={3} fill="#2563eb">путь</text>
+            <circle cx={70} cy={0} r={4} fill="none" stroke="#16a34a" strokeWidth={1.5} />
+            <text x={80} y={3} fill="#16a34a">target</text>
+            <circle cx={130} cy={0} r={3} fill="#dc2626" />
+            <text x={138} y={3} fill="#dc2626">текущая</text>
+          </g>
+          {/* scale bar (bottom-left): 1 метр */}
+          {(() => {
+            const scaleBarPx = scale
+            const x0 = PADDING + 4
+            const y0 = H - 12
+            return (
+              <g fontSize={10} fontFamily="monospace" fill="#475569">
+                <line x1={x0} y1={y0} x2={x0 + scaleBarPx} y2={y0} stroke="#475569" strokeWidth={1.5} />
+                <line x1={x0} y1={y0 - 3} x2={x0} y2={y0 + 3} stroke="#475569" />
+                <line x1={x0 + scaleBarPx} y1={y0 - 3} x2={x0 + scaleBarPx} y2={y0 + 3} stroke="#475569" />
+                <text x={x0 + scaleBarPx / 2} y={y0 + 14} textAnchor="middle">1 м</text>
+              </g>
+            )
+          })()}
         </svg>
         <div className="mt-1 text-xs text-muted-foreground">
-          Масштаб подобран автоматически. Робот движется вдоль курса θ.
+          Робот движется вдоль курса θ. Масштаб подобран автоматически.
         </div>
       </CardContent>
     </Card>
