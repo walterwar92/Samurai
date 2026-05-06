@@ -50,7 +50,7 @@ class ImuData(BaseModel):
 class BatteryStatus(BaseModel):
     """Состояние батареи (2S LiPo через ADS7830)."""
     voltage: float = Field(default=-1.0, description='Напряжение в вольтах. -1 = нет данных')
-    percent: int = Field(default=-1, description='0..100, -1 = нет данных')
+    percent: float = Field(default=-1.0, description='0..100 (float — battery_node округляет до 0.1%), -1 = нет данных')
     status: Optional[str] = Field(
         default=None,
         description='Опциональный статус: ok / low / critical'

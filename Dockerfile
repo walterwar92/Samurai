@@ -6,13 +6,23 @@
 # который может получать breaking-changes при обновлении базового образа.
 FROM ros:humble-ros-base-jammy
 
-# Применяем security-патчи из upstream (часть уязвимостей базового образа
-# закрывается обновлением системных пакетов)
-RUN apt-get update && apt-get upgrade -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+# Зеркало apt: yandex быстрее archive.ubuntu.com из RU.
+# Отключить (использовать дефолт): --build-arg APT_MIRROR=
+ARG APT_MIRROR=mirror.yandex.ru
 
-# Только нужные ROS2 пакеты
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Намеренно НЕ запускаем `apt-get upgrade`: security-патчи приходят с
+# обновлением базового тега `ros:humble-ros-base-jammy` (docker pull
+# раз в неделю — рекомендуемая практика). Upgrade в Dockerfile = +500MB,
+# +5-10 минут, невоспроизводимая сборка.
+#
+# BuildKit cache mounts ускоряют пересборки в разы: индексы и .deb файлы
+# переиспользуются, в слой образа не попадают (rm не нужен).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    if [ -n "${APT_MIRROR}" ]; then \
+        sed -i "s|http://archive.ubuntu.com|http://${APT_MIRROR}|g; s|http://security.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
     ros-humble-slam-toolbox \
@@ -24,14 +34,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     avahi-daemon \
     avahi-utils \
     libnss-mdns \
-    dbus \
-    && rm -rf /var/lib/apt/lists/*
+    dbus
 
 # Python зависимости:
 #   - onnxruntime вместо torch+torchvision CPU → -500MB RAM, +50% инференс
 #   - ultralytics нужен только для экспорта .pt → .onnx (первый запуск)
 #   - fastapi+uvicorn вместо flask+socketio → async, меньше CPU
-RUN pip3 install --no-cache-dir \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install \
     "numpy<2" \
     "ultralytics>=8.0" \
     onnxruntime \
