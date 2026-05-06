@@ -242,7 +242,7 @@ class CameraNode(MqttNode):
             return
         endpoint = {
             'protocol': 'tcp',
-            'host': get_local_ip(),
+            'host': get_local_ip(broker_hint=self._broker),
             'port': self._h264_port,
             'codec': 'h264',
             'format': 'annex-b',
