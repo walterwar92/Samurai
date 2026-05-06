@@ -6,17 +6,37 @@ interface EigenvaluePanelProps {
   closed: ComplexNumber[]
   isPlantStable: boolean
   isClosedLoopStable: boolean
+  warnings?: string[]
+  lastValidatedAt?: string | null
 }
 
-const SIZE = 220
-const RADIUS = 90
+const SIZE = 240
+const RADIUS = 95
 const CENTER = SIZE / 2
 
-function projectToSvg(z: ComplexNumber): { x: number; y: number } {
-  // Map complex disk |z|≤2 → SVG circle. Стабильность — внутри RADIUS.
-  const x = CENTER + z.re * RADIUS
-  const y = CENTER - z.im * RADIUS  // Y инвертирован
-  return { x, y }
+function projectToSvg(z: ComplexNumber) {
+  return { x: CENTER + z.re * RADIUS, y: CENTER - z.im * RADIUS }
+}
+
+function isStablePoint(z: ComplexNumber): boolean {
+  return Math.hypot(z.re, z.im) < 1
+}
+
+function formatComplex(z: ComplexNumber): string {
+  const sign = z.im >= 0 ? '+' : '−'
+  return `${z.re.toFixed(3)} ${sign} ${Math.abs(z.im).toFixed(3)}i`
+}
+
+function ChecklistRow({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
+  return (
+    <div className="flex items-start gap-2 text-xs">
+      <span className={ok ? 'text-green-600' : 'text-red-600'}>{ok ? '✓' : '✗'}</span>
+      <div>
+        <div className={ok ? 'text-foreground' : 'text-red-700 font-medium'}>{label}</div>
+        {hint && <div className="text-muted-foreground">{hint}</div>}
+      </div>
+    </div>
+  )
 }
 
 export function EigenvaluePanel({
@@ -24,20 +44,22 @@ export function EigenvaluePanel({
   closed,
   isPlantStable,
   isClosedLoopStable,
+  warnings = [],
+  lastValidatedAt,
 }: EigenvaluePanelProps) {
+  const hasPoles = open.length > 0 || closed.length > 0
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Собственные значения</CardTitle>
+        <CardTitle>Анализ устойчивости</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap gap-4 items-start">
-          <svg width={SIZE} height={SIZE} role="img" aria-label="unit circle eigenvalues">
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-4 items-start">
+          <svg width={SIZE} height={SIZE} role="img" aria-label="полюса в единичной окружности">
             <rect width={SIZE} height={SIZE} fill="transparent" />
-            {/* axes */}
             <line x1={0} y1={CENTER} x2={SIZE} y2={CENTER} stroke="#94a3b8" strokeWidth={0.5} />
             <line x1={CENTER} y1={0} x2={CENTER} y2={SIZE} stroke="#94a3b8" strokeWidth={0.5} />
-            {/* unit circle */}
             <circle
               cx={CENTER}
               cy={CENTER}
@@ -45,28 +67,24 @@ export function EigenvaluePanel({
               fill="none"
               stroke="#64748b"
               strokeWidth={1.5}
-              strokeDasharray="3 3"
+              strokeDasharray="4 4"
             />
-            {/* eigenvalues — open */}
             {open.map((z, i) => {
               const { x, y } = projectToSvg(z)
-              const stable = Math.hypot(z.re, z.im) < 1
               return (
                 <circle
                   key={`o-${i}`}
                   cx={x}
                   cy={y}
                   r={5}
-                  fill={stable ? '#16a34a' : '#dc2626'}
+                  fill={isStablePoint(z) ? '#16a34a' : '#dc2626'}
                   stroke="#0f172a"
                   strokeWidth={0.5}
                 />
               )
             })}
-            {/* eigenvalues — closed */}
             {closed.map((z, i) => {
               const { x, y } = projectToSvg(z)
-              const stable = Math.hypot(z.re, z.im) < 1
               return (
                 <rect
                   key={`c-${i}`}
@@ -74,65 +92,89 @@ export function EigenvaluePanel({
                   y={y - 4}
                   width={8}
                   height={8}
-                  fill={stable ? '#0ea5e9' : '#f97316'}
+                  fill={isStablePoint(z) ? '#0ea5e9' : '#f97316'}
                   stroke="#0f172a"
                   strokeWidth={0.5}
                 />
               )
             })}
+            <text x={CENTER + RADIUS - 8} y={CENTER - 6} fontSize={10} fill="#64748b">
+              Re
+            </text>
+            <text x={CENTER + 6} y={14} fontSize={10} fill="#64748b">
+              Im
+            </text>
           </svg>
 
-          <div className="text-xs space-y-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
             <div>
-              <span className="inline-block w-3 h-3 rounded-full mr-2 align-middle"
-                    style={{ background: '#16a34a' }} />
-              λ(A) — устойчивость объекта:{' '}
-              <strong className={isPlantStable ? 'text-green-600' : 'text-red-600'}>
-                {isPlantStable ? 'OK' : 'UNSTABLE'}
-              </strong>
+              <div className="font-sans text-muted-foreground mb-1 flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-green-600" />
+                λ(A) — открытый контур
+              </div>
+              {open.length === 0 ? (
+                <div className="text-muted-foreground italic">нет данных</div>
+              ) : (
+                open.map((z, i) => (
+                  <div key={i} className={isStablePoint(z) ? '' : 'text-red-600'}>
+                    {formatComplex(z)} {isStablePoint(z) ? '◯' : '⚠'}
+                  </div>
+                ))
+              )}
             </div>
             <div>
-              <span className="inline-block w-3 h-3 mr-2 align-middle"
-                    style={{ background: '#0ea5e9' }} />
-              λ(A − B·K) — замкнутая система:{' '}
-              <strong className={isClosedLoopStable ? 'text-green-600' : 'text-red-600'}>
-                {isClosedLoopStable ? 'OK' : 'UNSTABLE'}
-              </strong>
-            </div>
-            <div className="text-muted-foreground">
-              Внутри пунктирной окружности — |λ| &lt; 1.
+              <div className="font-sans text-muted-foreground mb-1 flex items-center gap-1">
+                <span className="inline-block w-3 h-3 bg-sky-500" />
+                λ(A − B·K) — замкнутый
+              </div>
+              {closed.length === 0 ? (
+                <div className="text-muted-foreground italic">нет данных</div>
+              ) : (
+                closed.map((z, i) => (
+                  <div key={i} className={isStablePoint(z) ? '' : 'text-orange-600'}>
+                    {formatComplex(z)} {isStablePoint(z) ? '◻' : '⚠'}
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
 
-        {(open.length > 0 || closed.length > 0) && (
-          <details>
-            <summary className="text-xs text-muted-foreground cursor-pointer">
-              Численные значения
-            </summary>
-            <div className="text-xs font-mono mt-2 grid grid-cols-2 gap-4">
-              <div>
-                <div className="text-muted-foreground">λ(A)</div>
-                {open.map((z, i) => (
-                  <div key={i}>
-                    {z.re.toFixed(3)}
-                    {z.im >= 0 ? ' + ' : ' − '}
-                    {Math.abs(z.im).toFixed(3)}i
-                  </div>
-                ))}
-              </div>
-              <div>
-                <div className="text-muted-foreground">λ(A − B·K)</div>
-                {closed.map((z, i) => (
-                  <div key={i}>
-                    {z.re.toFixed(3)}
-                    {z.im >= 0 ? ' + ' : ' − '}
-                    {Math.abs(z.im).toFixed(3)}i
-                  </div>
-                ))}
-              </div>
+        <div className="rounded border bg-muted/20 p-3 space-y-2">
+          <ChecklistRow
+            ok={isPlantStable}
+            label={isPlantStable ? 'Объект (A) устойчив' : 'Объект НЕ устойчив'}
+            hint="все |λ(A)| < 1"
+          />
+          <ChecklistRow
+            ok={isClosedLoopStable}
+            label={
+              isClosedLoopStable
+                ? 'Замкнутая система (A − B·K) устойчива'
+                : 'Замкнутая система НЕ устойчива'
+            }
+            hint="все |λ(A − B·K)| < 1 — MPC стабилизирует объект"
+          />
+          {warnings.length > 0 && (
+            <div className="border-t pt-2 space-y-1">
+              {warnings.map((w, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs text-amber-700">
+                  <span>⚠</span>
+                  <span>{w}</span>
+                </div>
+              ))}
             </div>
-          </details>
+          )}
+        </div>
+
+        {lastValidatedAt && (
+          <div className="text-xs text-muted-foreground">Последняя проверка: {lastValidatedAt}</div>
+        )}
+
+        {!hasPoles && (
+          <div className="text-xs text-muted-foreground italic">
+            Нажмите Validate в редакторе матриц, чтобы вычислить полюса.
+          </div>
         )}
       </CardContent>
     </Card>
