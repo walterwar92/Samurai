@@ -8,7 +8,6 @@ import { MatrixEditor } from '@/components/mps/MatrixEditor'
 import { ResultPlots } from '@/components/mps/ResultPlots'
 import { ScenarioControls } from '@/components/mps/ScenarioControls'
 import { TrajectoryView } from '@/components/mps/TrajectoryView'
-import { TuningSliders } from '@/components/mps/TuningSliders'
 import { ValidationBadge } from '@/components/mps/ValidationBadge'
 import { useMpsHistory } from '@/hooks/useMpsHistory'
 import { useMpsLiveTelemetry } from '@/hooks/useMpsLiveTelemetry'
@@ -181,12 +180,6 @@ export function MpsPage() {
           <TrajectoryView
             result={primaryResult}
             liveTelemetry={liveEnabled ? live.points : undefined}
-          />
-
-          <TuningSliders
-            applied={matricesHook.applied}
-            onSimResult={setPrimaryResult}
-            onPromote={(m) => void matricesHook.saveDraft(m)}
           />
 
           {(matricesHook.error || runHook.error || validateHook.error) && (
