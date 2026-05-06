@@ -106,17 +106,90 @@ class _CidJsonFormatter(logging.Formatter):
         return json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
 
 
-def get_local_ip(timeout: float = 2.0) -> str:
-    """Auto-detect local network IP (non-routed UDP trick, no packets sent)."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(timeout)
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-        s.close()
+def get_local_ip(broker_hint: str | None = None, timeout: float = 2.0) -> str:
+    """Auto-detect local network IP, robust to hotspot/no-internet setups.
+
+    Why this is non-trivial: the classic UDP-connect-to-8.8.8.8 trick relies
+    on a default route. A Pi in WiFi-AP (hotspot) mode has no default route,
+    so the trick raises ENETUNREACH and naive code falls back to 127.0.0.1 —
+    which then gets published as the camera_node H.264 endpoint host, and the
+    laptop dashboard ends up trying to TCP-connect to its OWN loopback :8554.
+
+    Strategy (first non-loopback wins):
+      1. SAMURAI_PI_IP env override — manual escape hatch.
+      2. UDP-probe broker_hint (if not loopback) — works on local subnets.
+      3. UDP-probe 8.8.8.8 — works on internet-connected setups.
+      4. Enumerate interfaces via SIOCGIFADDR ioctl, priority wlan > eth > rest.
+      5. Last resort: 127.0.0.1.
+    """
+    override = os.environ.get('SAMURAI_PI_IP', '').strip()
+    if override:
+        return override
+
+    targets: list[str] = []
+    if (broker_hint
+            and not broker_hint.startswith('127.')
+            and broker_hint.lower() not in ('localhost', '0.0.0.0', '')):
+        targets.append(broker_hint)
+    targets.append('8.8.8.8')
+
+    for tgt in targets:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(timeout)
+                s.connect((tgt, 80))
+                ip = s.getsockname()[0]
+            if ip and not ip.startswith('127.'):
+                return ip
+        except OSError:
+            continue
+
+    ip = _enumerate_interface_ip()
+    if ip:
         return ip
-    except OSError:
-        return '127.0.0.1'
+
+    return '127.0.0.1'
+
+
+def _enumerate_interface_ip() -> str | None:
+    """Linux SIOCGIFADDR fallback. wlan* and eth* preferred over VPN-like ifaces.
+
+    Returns the first non-loopback IPv4 found, or None on non-Linux / no
+    suitable interface.
+    """
+    try:
+        import fcntl  # Linux-only — lazy import keeps Windows pytest happy
+        import struct
+    except ImportError:
+        return None
+
+    SIOCGIFADDR = 0x8915
+
+    try:
+        names = [name for _, name in socket.if_nameindex() if name != 'lo']
+    except (OSError, AttributeError):
+        return None
+
+    def _priority(name: str) -> tuple[int, str]:
+        if name.startswith('wlan'):
+            return (0, name)
+        if name.startswith('eth'):
+            return (1, name)
+        return (2, name)
+
+    names.sort(key=_priority)
+
+    for name in names:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                packed = struct.pack('256s', name[:15].encode())
+                ip_bytes = fcntl.ioctl(s.fileno(), SIOCGIFADDR, packed)[20:24]
+                ip = socket.inet_ntoa(ip_bytes)
+            if ip and not ip.startswith('127.'):
+                return ip
+        except OSError:
+            continue
+    return None
 
 
 class MqttNode:
