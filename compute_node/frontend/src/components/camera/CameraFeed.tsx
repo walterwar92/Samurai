@@ -6,11 +6,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
  *
  * Pipeline (с 2026-04, заменил MJPEG/JPEG-WS):
  *   WebSocket /ws/h264 (dashboard прокси)
- *     → первое сообщение JSON {codec, width, height, fps}
+ *     → первое сообщение JSON {codec, width, height, fps}  (только для display)
  *     → бинарные NAL units (Annex B) от Pi camera_node
- *     → NAL parser → EncodedVideoChunk
- *     → VideoDecoder → VideoFrame
+ *     → NAL parser → парсинг SPS → построение точного avc1.PPCCLL
+ *     → VideoDecoder.configure → EncodedVideoChunk → VideoFrame
  *     → canvas drawImage
+ *
+ * BUGFIX 2026-05: codec НЕ хардкодим. picamera2 H264Encoder на Pi 4
+ * (V4L2 M2M / vc4-hw-encode) по умолчанию выдаёт High profile (avc1.640028),
+ * а не Main 4.0. Если сконфигурировать decoder под Main, а получить High,
+ * Chrome тихо дропает кадры (без error callback). Парсим первый SPS NAL
+ * (байты profile_idc / constraint_set / level_idc) и собираем точный
+ * codec string динамически.
  *
  * Требования: Chrome 94+, Edge 94+, Android Chrome 94+.
  * Safari/iOS — WebCodecs только в Technology Preview, fallback показывает ошибку.
@@ -25,9 +32,32 @@ interface EndpointInfo {
   fps?: number
 }
 
-// Кодек string по умолчанию (Main 4.0 — поддерживает 1080p и почти всё что
-// picamera2 H264Encoder может выдать на Pi 4 с 640×480 / 720p).
-const DEFAULT_CODEC = 'avc1.4D0028'
+// Fallback codec string если SPS почему-то не распарсился (Main 4.0).
+// В нормальной ситуации мы строим codec из реального SPS, см. parseSpsCodec().
+const FALLBACK_CODEC = 'avc1.4D0028'
+
+/**
+ * Извлекает avc1.PPCCLL из SPS NAL unit (Annex B).
+ *
+ * SPS layout (после start code + NAL header byte 0x67):
+ *   byte 0: profile_idc            (0x42=Baseline, 0x4D=Main, 0x64=High, ...)
+ *   byte 1: constraint_set_flags   (8 bits packed)
+ *   byte 2: level_idc              (0x1F=3.1, 0x28=4.0, 0x29=4.1, ...)
+ */
+function parseSpsCodec(nalWithStart: Uint8Array): string | null {
+  let scLen = 3
+  if (nalWithStart[0] === 0 && nalWithStart[1] === 0
+      && nalWithStart[2] === 0 && nalWithStart[3] === 1) {
+    scLen = 4
+  }
+  // start code (3-4) + NAL header byte (1) + 3 байта SPS = scLen + 4
+  if (nalWithStart.byteLength < scLen + 4) return null
+  const profile = nalWithStart[scLen + 1]
+  const constraint = nalWithStart[scLen + 2]
+  const level = nalWithStart[scLen + 3]
+  const hex = (n: number) => n.toString(16).padStart(2, '0').toUpperCase()
+  return `avc1.${hex(profile)}${hex(constraint)}${hex(level)}`
+}
 
 export function CameraFeed() {
   const [hasError, setHasError] = useState(false)
@@ -76,8 +106,11 @@ export function CameraFeed() {
 
     let pendingAU: Uint8Array[] = []  // накопленные NAL units текущего access unit
     let auHasIDR = false              // содержит ли текущий AU IDR slice
-    let configured = false
+    let configured = false             // decoder.configure() вызван
     let chunkTimestamp = 0
+    // Интервал между фреймами в микросекундах. По умолчанию ~30fps,
+    // обновляется из JSON header (ep.fps) когда дашборд его пришлёт.
+    let frameIntervalUs = 33333
 
     const ws = new WebSocket(wsUrl)
     ws.binaryType = 'arraybuffer'
@@ -108,6 +141,13 @@ export function CameraFeed() {
 
     const flushAU = (forceKey = false) => {
       if (pendingAU.length === 0) return
+      // До первого SPS decoder ещё не настроен — буферизуем (но если AU
+      // не содержит IDR, его всё равно бесполезно держать). Дроп.
+      if (!configured) {
+        pendingAU = []
+        auHasIDR = false
+        return
+      }
       const totalLen = pendingAU.reduce((s, n) => s + n.byteLength, 0)
       const buf = new Uint8Array(totalLen)
       let off = 0
@@ -122,7 +162,7 @@ export function CameraFeed() {
           timestamp: chunkTimestamp,
           data: buf,
         }))
-        chunkTimestamp += 33333  // ~30fps timestamps (микросекунды) — placeholder
+        chunkTimestamp += frameIntervalUs
       } catch (e) {
         console.error('[CameraFeed] EncodedVideoChunk error:', e)
       }
@@ -148,6 +188,30 @@ export function CameraFeed() {
       // 7 = SPS, 8 = PPS, 6 = SEI → служебные, накапливаем в текущем AU
       const isSlice = (nalType === 1 || nalType === 5)
       const isAUD = (nalType === 9)
+
+      // Configure decoder при первом SPS — единственный надёжный способ
+      // узнать profile/level потока. JSON header от dashboard несёт только
+      // 'h264' без точного codec string (см. routers/camera.py).
+      if (nalType === 7 && !configured) {
+        const codec = parseSpsCodec(nalWithStart) ?? FALLBACK_CODEC
+        try {
+          decoder.configure({ codec, optimizeForLatency: true })
+          configured = true
+          console.info('[CameraFeed] decoder configured:', codec)
+        } catch (e) {
+          // SPS не дал валидной строки — пробуем fallback (Main 4.0)
+          console.warn('[CameraFeed] configure failed for', codec, '→ fallback', e)
+          try {
+            decoder.configure({ codec: FALLBACK_CODEC, optimizeForLatency: true })
+            configured = true
+          } catch (e2) {
+            console.error('[CameraFeed] fallback configure failed:', e2)
+            setHasError(true)
+            setErrorText('VideoDecoder: codec не поддерживается')
+            return
+          }
+        }
+      }
 
       if (isAUD || (isSlice && pendingAU.some(_isSlice))) {
         // Это начало нового access unit — flush предыдущий
@@ -193,18 +257,17 @@ export function CameraFeed() {
     ws.onmessage = (event) => {
       const data = event.data
       if (typeof data === 'string') {
-        // JSON header (endpoint info)
+        // JSON header — только display metadata. decoder.configure() переехал
+        // в handleNAL() (на первый SPS), потому что точный codec string мы
+        // знаем только из SPS, а не из dashboard endpoint info.
         try {
           const ep = JSON.parse(data) as EndpointInfo
           if (ep.type === 'endpoint') {
-            const codec = ep.codec === 'h264' ? DEFAULT_CODEC : DEFAULT_CODEC
-            decoder.configure({
-              codec,
-              optimizeForLatency: true,
-            })
-            configured = true
             if (ep.width && ep.height) {
               setResolution({ w: ep.width, h: ep.height })
+            }
+            if (ep.fps && ep.fps > 0) {
+              frameIntervalUs = Math.round(1_000_000 / ep.fps)
             }
           }
         } catch (e) {
@@ -213,9 +276,9 @@ export function CameraFeed() {
         return
       }
 
-      if (!configured) return  // ждём JSON header перед binary
-
-      // Binary chunk — добавляем к streamBuf и парсим NAL units
+      // Binary chunk — добавляем к streamBuf и парсим NAL units.
+      // SPS триггерит configure() внутри handleNAL — так что НЕ ждём JSON,
+      // парсим всегда (JSON header может прийти из proxy, может не прийти).
       const newBytes = new Uint8Array(data as ArrayBuffer)
       const merged = new Uint8Array(streamBuf.byteLength + newBytes.byteLength)
       merged.set(streamBuf, 0)
