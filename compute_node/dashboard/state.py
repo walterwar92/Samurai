@@ -33,6 +33,7 @@ from typing import Any, Optional
 from .schemas.actuators import ArmState, ClawState, HeadState, LedState
 from .schemas.detection import BallInfo, Detection, DetectionResult
 from .schemas.maps import ForbiddenZone, MapInfo, SlamMapData
+from .schemas.mps import MpsMatrices, MpsScenarioResult, MpsTelemetryPoint
 from .schemas.robot import OdometrySources, RobotPose, RobotStatus, VelocityDetail
 from .schemas.sensors import (
     BatteryStatus,
@@ -145,6 +146,24 @@ class _ControlBlock:
 
 
 @dataclass
+class _MpsBlock:
+    """МПС — Модель Пространства Состояний (course module, feat/mps).
+
+    `applied` — матрицы, активные сейчас на роботе (synced via MQTT
+    `mps/matrices/applied`). `draft` — изменённые в UI, не отправленные.
+    `history` — последние 20 завершённых прогонов (FIFO). `active_run` —
+    прогон в статусе running (только один на source 'robot' за раз).
+    `last_telemetry` — кольцевой буфер 200 точек для подключения посреди
+    стрима (WS replay).
+    """
+    applied: Optional[MpsMatrices] = None
+    draft: Optional[MpsMatrices] = None
+    history: deque = field(default_factory=lambda: deque(maxlen=20))
+    active_run: Optional[MpsScenarioResult] = None
+    last_telemetry: deque = field(default_factory=lambda: deque(maxlen=200))
+
+
+@dataclass
 class _CameraBlock:
     """Discovery + status H.264 потока (с #9, 2026-04)."""
     h264_endpoint: Optional[dict] = None
@@ -196,6 +215,7 @@ class DashboardState:
         self.control = _ControlBlock()
         self.camera = _CameraBlock()
         self.system = _SystemBlock()
+        self.mps = _MpsBlock()
 
     # ── Dirty-flag helpers (#21) ───────────────────────────────────────
     def mark_dirty(self) -> None:

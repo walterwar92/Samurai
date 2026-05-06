@@ -70,6 +70,7 @@ from .routers import (
     detection,
     fsm,
     maps,
+    mps,
     robot,
     samcan,
     sensors,
@@ -473,6 +474,14 @@ def create_app(
     # camera (HTTP) + samcan (proxy)
     app.include_router(camera.router, prefix='/api/v1/camera')
     app.include_router(samcan.router, prefix='/api/v1/samcan')
+    # МПС — Модель Пространства Состояний (учебный модуль курсовой Козлова, feat/mps)
+    app.include_router(mps.router, prefix='/api/v1/mps')
+    # WebSocket /ws/mps/telemetry — без /api префикса, не трогается middleware-ом.
+    app.include_router(mps.ws_router)
+    # Подключаем MQTT broadcaster → WS broker. mqtt_handlers зовёт _broadcast_mps()
+    # из своего thread'а, broker делает call_soon_threadsafe в asyncio loop.
+    if mqtt is not None:
+        mqtt.set_mps_ws_broadcaster(mps.mps_broker.broadcast)
 
     # WebSocket /ws/h264 (без /api префикса — middleware его не трогает)
     app.include_router(camera.ws_router)
@@ -497,7 +506,7 @@ def create_app(
     async def serve_root():
         return _serve_spa()
 
-    for spa_path in ('/dashboard', '/admin', '/3d'):
+    for spa_path in ('/dashboard', '/admin', '/3d', '/mps'):
         app.add_api_route(spa_path, _serve_spa, methods=['GET'])
 
     # ── Static mounts ─────────────────────────────────────────────────

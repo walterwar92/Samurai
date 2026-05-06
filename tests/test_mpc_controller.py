@@ -129,3 +129,103 @@ def test_mpc_invalid_horizon_raises():
     with pytest.raises(ValueError):
         MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=0,
                       u_min=[-0.3, -2], u_max=[0.3, 2])
+
+
+# ── rebuild() — MPS feature additions ─────────────────────────────────
+def test_rebuild_changes_horizon(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=5,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    H_old_shape = mpc.H.shape
+    Phi_old_shape = mpc.Phi.shape
+
+    mpc.rebuild(N=20)
+
+    assert mpc.N == 20
+    # Lifted dynamics grew (rN rows for Phi, 2rN×rN for H).
+    assert mpc.H.shape != H_old_shape
+    assert mpc.Phi.shape != Phi_old_shape
+    assert mpc.K_first.shape == (2, 5)
+    assert mpc.is_stable()
+    # With Pf = DARE, K_first ≈ LQR gain regardless of N — K_first
+    # itself isn't a sensitive horizon proxy. The H/Phi reshape above
+    # is the real check that lifted matrices were rebuilt.
+
+
+def test_rebuild_changes_weights_keeps_solver_mode(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2],
+                        solver='qp')
+    mpc.rebuild(Q_diag=[100.0, 100.0, 50.0, 1.0, 1.0])
+    assert mpc._solver == 'qp'
+    assert mpc.is_stable()
+
+
+def test_rebuild_replaces_plant(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    Ad_new = Ad * 0.5
+    mpc.rebuild(Ad=Ad_new)
+    np.testing.assert_allclose(mpc.Ad, Ad_new)
+    assert mpc.is_stable()
+
+
+def test_rebuild_invalid_shape_rolls_back(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    K_old = mpc.K_first.copy()
+    Ad_old = mpc.Ad.copy()
+
+    Ad_bad = np.eye(4)  # 4×4 — incompatible with Bd 5×2
+    with pytest.raises(ValueError):
+        mpc.rebuild(Ad=Ad_bad)
+
+    # Verify rollback: nothing mutated.
+    np.testing.assert_allclose(mpc.Ad, Ad_old)
+    np.testing.assert_allclose(mpc.K_first, K_old)
+    assert mpc.is_stable()
+
+
+def test_rebuild_invalid_R_rejected(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    with pytest.raises(ValueError, match="R_diag"):
+        mpc.rebuild(R_diag=[0.0, 1.0])  # R must be > 0
+
+
+def test_rebuild_inverted_limits_rejected(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    with pytest.raises(ValueError, match="u_min"):
+        mpc.rebuild(u_min=[1.0, 1.0], u_max=[0.5, 0.5])
+
+
+def test_rebuild_recomputes_pf_when_plant_changes(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    Pf_old = mpc.Pf.copy()
+    mpc.rebuild(Ad=Ad * 0.7)
+    assert not np.allclose(mpc.Pf, Pf_old)
+
+
+def test_rebuild_explicit_pf_is_used(plant_mats, Q_R):
+    Ad, Bd = plant_mats
+    Q, R = Q_R
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2], u_max=[0.3, 2])
+    Pf_user = np.eye(5) * 7.0
+    mpc.rebuild(Pf=Pf_user)
+    np.testing.assert_allclose(mpc.Pf, Pf_user)

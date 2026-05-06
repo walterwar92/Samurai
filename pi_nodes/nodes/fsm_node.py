@@ -66,6 +66,11 @@ class State:
     PATROLLING = 'PATROLLING'
     FOLLOWING = 'FOLLOWING'
     PATH_REPLAY = 'PATH_REPLAY'
+    # МПС — учебный режим «D метров вперёд» под MPC.
+    # Source-of-truth для MPS-сценария живёт в pi_nodes/nodes/mps_node.py;
+    # FSM лишь признаёт state и блокирует прочие переходы (см. _voice_cb,
+    # _ball_cb, _intent_cb — они no-op в этом state).
+    DRIVE_FORWARD_MPS = 'DRIVE_FORWARD_MPS'
 
 
 _ALL_STATES = frozenset({
@@ -73,6 +78,7 @@ _ALL_STATES = frozenset({
     State.APPROACHING, State.GRABBING,
     State.CALLING, State.RETURNING, State.PATROLLING,
     State.FOLLOWING, State.PATH_REPLAY,
+    State.DRIVE_FORWARD_MPS,
 })
 
 
