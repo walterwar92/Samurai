@@ -12,6 +12,7 @@ interface ScenarioControlsProps {
   onAbort: () => void
   source: ScenarioSource
   onSourceChange: (s: ScenarioSource) => void
+  progress?: number
 }
 
 export function ScenarioControls({
@@ -22,6 +23,7 @@ export function ScenarioControls({
   onAbort,
   source,
   onSourceChange,
+  progress,
 }: ScenarioControlsProps) {
   const [distance, setDistance] = useState(defaultDistance)
   const [vTarget, setVTarget] = useState(defaultVTarget)
@@ -33,48 +35,56 @@ export function ScenarioControls({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Сценарий</CardTitle>
+        <CardTitle>Сценарий «проехать D м вперёд»</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-muted-foreground w-32">Дистанция D, м</label>
-          <Input
-            value={String(distance)}
-            onChange={(e) => setDistance(Number(e.target.value))}
-            type="number"
-            min={0.1}
-            max={5.0}
-            step={0.1}
-            className={['h-8 text-sm w-24', !distanceOk ? 'border-red-500' : ''].join(' ')}
-            aria-label="distance"
-          />
-          <span className="text-xs text-muted-foreground">≤ 5.0</span>
-        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-mono text-muted-foreground">D, м</label>
+            <Input
+              type="number"
+              min={0.1}
+              max={5.0}
+              step={0.1}
+              value={String(distance)}
+              onChange={(e) => setDistance(Number(e.target.value))}
+              disabled={running}
+              className={[
+                'h-8 text-sm w-20 font-mono',
+                !distanceOk ? 'border-red-500' : '',
+              ].join(' ')}
+              aria-label="distance"
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-mono text-muted-foreground">v_target</label>
+            <Input
+              type="number"
+              min={0.05}
+              max={0.30}
+              step={0.05}
+              value={String(vTarget)}
+              onChange={(e) => setVTarget(Number(e.target.value))}
+              disabled={running}
+              className={[
+                'h-8 text-sm w-20 font-mono',
+                !vTargetOk ? 'border-red-500' : '',
+              ].join(' ')}
+              aria-label="v_target"
+            />
+            <span className="text-xs text-muted-foreground">м/с</span>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-muted-foreground w-32">v_target, м/с</label>
-          <Input
-            value={String(vTarget)}
-            onChange={(e) => setVTarget(Number(e.target.value))}
-            type="number"
-            min={0.05}
-            max={0.30}
-            step={0.05}
-            className={['h-8 text-sm w-24', !vTargetOk ? 'border-red-500' : ''].join(' ')}
-            aria-label="v_target"
-          />
-          <span className="text-xs text-muted-foreground">≤ 0.30</span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground w-32">Источник</span>
           <div className="flex rounded-md border overflow-hidden text-xs">
             <button
               type="button"
               onClick={() => onSourceChange('sim')}
+              disabled={running}
               className={[
-                'px-3 py-1',
-                source === 'sim' ? 'bg-primary text-primary-foreground' : 'bg-transparent',
+                'px-3 py-1 transition-colors',
+                source === 'sim'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-transparent hover:bg-muted',
               ].join(' ')}
             >
               Sim
@@ -82,34 +92,43 @@ export function ScenarioControls({
             <button
               type="button"
               onClick={() => onSourceChange('robot')}
+              disabled={running}
               className={[
-                'px-3 py-1 border-l',
-                source === 'robot' ? 'bg-primary text-primary-foreground' : 'bg-transparent',
+                'px-3 py-1 border-l transition-colors',
+                source === 'robot'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-transparent hover:bg-muted',
               ].join(' ')}
             >
               Robot
             </button>
           </div>
+
+          <div className="ml-auto flex gap-2">
+            <Button
+              size="sm"
+              onClick={() => onRun({ distance, v_target: vTarget, source })}
+              disabled={!valid || running}
+            >
+              {running ? '⏳ Прогон…' : `▶ Run on ${source === 'sim' ? 'Sim' : 'Robot'}`}
+            </Button>
+            <Button size="sm" variant="destructive" onClick={onAbort} disabled={!running}>
+              ⏹ Abort
+            </Button>
+          </div>
         </div>
 
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            onClick={() =>
-              onRun({ distance, v_target: vTarget, source })
-            }
-            disabled={!valid || running}
-          >
-            {running ? 'Идёт прогон…' : `Run on ${source === 'sim' ? 'Sim' : 'Robot'}`}
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={onAbort}
-            disabled={!running}
-          >
-            Abort
-          </Button>
+        {running && progress !== undefined && progress >= 0 && (
+          <div className="h-1.5 bg-muted rounded overflow-hidden">
+            <div
+              className="h-full bg-primary transition-all duration-150"
+              style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }}
+            />
+          </div>
+        )}
+
+        <div className="text-xs text-muted-foreground">
+          ⓘ Sim: ~100 мс. Robot: ≈ D / v_target секунд физически.
         </div>
       </CardContent>
     </Card>
