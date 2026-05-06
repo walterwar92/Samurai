@@ -52,6 +52,7 @@ export function Header({ isAdmin, simTime, onDebugOpen }: HeaderProps) {
             {navLink('/admin', 'Админ')}
             {navLink('/3d', '3D Карта')}
             {navLink('/hardware', 'Оборудование')}
+            {navLink('/mps', 'МПС')}
           </nav>
         )}
       </div>

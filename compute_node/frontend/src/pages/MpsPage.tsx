@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Header } from '@/components/layout/Header'
 import { DraftStatus } from '@/components/mps/DraftStatus'
 import { EigenvaluePanel } from '@/components/mps/EigenvaluePanel'
 import { HistoryPanel } from '@/components/mps/HistoryPanel'
@@ -97,7 +98,9 @@ export function MpsPage() {
   )
 
   return (
-    <div className="min-h-screen p-3 max-w-[1920px] mx-auto">
+    <div className="min-h-screen">
+      <Header />
+      <div className="p-3 max-w-[1920px] mx-auto">
       <div className="flex items-center justify-between mb-3 gap-2">
         <h1 className="text-2xl font-semibold">МПС — Модель Пространства Состояний</h1>
         <div className="flex items-center gap-2">
@@ -199,6 +202,7 @@ export function MpsPage() {
             </Card>
           )}
         </div>
+      </div>
       </div>
     </div>
   )
