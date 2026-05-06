@@ -112,11 +112,32 @@ async def ws_h264(ws: WebSocket, state: StateDep):
         await ws.close(code=1011, reason=f'TCP connect failed: {e}')
         return
 
+    # Timeout на первый чанк: TCP connect может succeed (encoder сервер
+    # запущен), но picamera2 H264Encoder может не выдавать данные если
+    # libcamera упал или камера занята. Без timeout фронт зависает с
+    # чёрным canvas навсегда. С timeout — закрываем WS с понятной ошибкой.
+    first_chunk_timeout = 5.0
+    got_data = False
     try:
         while True:
-            data = await reader.read(64 * 1024)
+            try:
+                # Первый чанк ждём с timeout, остальные — без (поток уже идёт).
+                if not got_data:
+                    data = await asyncio.wait_for(
+                        reader.read(64 * 1024), timeout=first_chunk_timeout)
+                else:
+                    data = await reader.read(64 * 1024)
+            except asyncio.TimeoutError:
+                log.warning('WS h264: no data from Pi within %.1fs '
+                            '(encoder down?)', first_chunk_timeout)
+                await ws.close(
+                    code=1011,
+                    reason=f'Pi не выдаёт H.264 данные за {first_chunk_timeout:.0f}с — '
+                           'camera_node жив, но encoder/libcamera мог упасть')
+                return
             if not data:
                 break
+            got_data = True
             await ws.send_bytes(data)
     except WebSocketDisconnect:
         pass

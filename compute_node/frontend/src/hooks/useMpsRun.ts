@@ -9,6 +9,13 @@ interface UseMpsRunResult {
   result: MpsScenarioResult | null
   running: boolean
   error: string | null
+  /**
+   * Текущий run_id. Для robot-mode выставляется сразу после первого ответа
+   * сервера, ДО первого polling-тика — нужно чтобы useMpsLiveTelemetry
+   * успел подписаться на правильный run_id (без этого WS открывается с
+   * runId=undefined → телеметрия не маршрутится → робот не «едет» в UI).
+   */
+  runId: string | null
   /** Run scenario; sim returns immediately, robot polls until status≠running. */
   run: (req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>
   abort: () => Promise<void>
@@ -21,6 +28,7 @@ const POLL_MAX_TICKS = 600    // 5 минут потолок (~3·D/v_target в�
 /** Запуск сценария + автополл для source='robot'. Sim возвращает result сразу. */
 export function useMpsRun(): UseMpsRunResult {
   const [result, setResult] = useState<MpsScenarioResult | null>(null)
+  const [runId, setRunId] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pollHandle = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -38,8 +46,13 @@ export function useMpsRun(): UseMpsRunResult {
     async (req: MpsScenarioRequest): Promise<MpsScenarioResult | null> => {
       setError(null)
       setRunning(true)
+      setResult(null)
+      setRunId(null)
       try {
         const r = await mpsApi.runScenario(req)
+        // Сразу публикуем run_id — это критично для robot-mode чтобы
+        // useMpsLiveTelemetry открыл WS с правильным фильтром, а не undefined.
+        setRunId(r.run_id)
         if (r.result !== null) {
           // sim — синхронно
           setResult(r.result)
@@ -93,5 +106,5 @@ export function useMpsRun(): UseMpsRunResult {
     }
   }, [stopPolling])
 
-  return { result, running, error, run, abort, setResult }
+  return { result, runId, running, error, run, abort, setResult }
 }

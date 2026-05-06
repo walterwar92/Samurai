@@ -73,7 +73,11 @@ export function MpsPage() {
   const liveEnabled = source === 'robot' && runHook.running
   const live = useMpsLiveTelemetry({
     enabled: liveEnabled,
-    runId: runHook.result?.run_id,
+    // ВАЖНО: используем runHook.runId (выставляется СРАЗУ после POST), а не
+    // runHook.result?.run_id, который для robot-mode null до первого polling-
+    // тика. Без этого WS подписывался с undefined → телеметрия не маршрутилась
+    // → робот в UI не «едет».
+    runId: runHook.runId ?? undefined,
     onFinished: (r) => setPrimaryResult(r),
     onError: (msg) => {
       setErrors((prev) => [{ id: `ws-${Date.now()}`, kind: 'ws', msg }, ...prev].slice(0, 5))

@@ -214,9 +214,16 @@ class CameraNode(MqttNode):
             )
             self._cam.configure(config)
 
+            # profile='baseline' — Constrained Baseline (avc1.42E0xx).
+            # Универсально поддерживается всеми браузерами через WebCodecs,
+            # вкл. старые Chrome и Edge без аппаратного High-decoder. По
+            # умолчанию vc4-hw-encode выдаёт High profile → не везде
+            # декодируется; baseline — самый совместимый вариант.
+            # Для 640×480 @ 20 fps quality difference незаметная.
             self._encoder = H264Encoder(
                 bitrate=self._bitrate,
                 iperiod=self._iperiod,
+                profile='baseline',
                 # repeat=True даёт SPS/PPS перед каждым IDR — late-joiners
                 # видят headers сразу, не ждут следующего конфига
                 repeat=True,
@@ -224,8 +231,30 @@ class CameraNode(MqttNode):
             output = FileOutput(_StreamFileWrapper(self._tcp))
             self._cam.start_recording(self._encoder, output)
             self.log_info(
-                'Camera started: %dx%d @ %d fps, H.264 bitrate=%d, iperiod=%d',
+                'Camera started: %dx%d @ %d fps, H.264 baseline '
+                'bitrate=%d iperiod=%d',
                 self._w, self._h, self._fps, self._bitrate, self._iperiod)
+        except TypeError as exc:
+            # Старая picamera2 без profile= — повторяем без него.
+            self.log_warn('H.264 profile=baseline не поддерживается '
+                          'этой picamera2: %s. Fallback на default profile '
+                          '(может потребоваться High-decoder в браузере).',
+                          exc)
+            try:
+                self._encoder = H264Encoder(
+                    bitrate=self._bitrate,
+                    iperiod=self._iperiod,
+                    repeat=True,
+                )
+                output = FileOutput(_StreamFileWrapper(self._tcp))
+                self._cam.start_recording(self._encoder, output)
+                self.log_info(
+                    'Camera started (fallback): %dx%d @ %d fps, '
+                    'default profile, bitrate=%d iperiod=%d',
+                    self._w, self._h, self._fps, self._bitrate, self._iperiod)
+            except Exception as exc2:
+                self.log_error('Camera/H.264 init failed (fallback): %s', exc2)
+                self._cam = None
         except Exception as exc:
             self.log_error('Camera/H.264 init failed: %s', exc)
             self._cam = None

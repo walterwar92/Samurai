@@ -85,6 +85,16 @@ export function Visualization3DPage() {
     setUseEkf(prev => !prev)
   }, [])
 
+  // SLAM status: считаем препятствия — поле для диагностики «карты нет».
+  // Если slam_map null — Pi не публикует samurai/{id}/slam_map (slam_map_node
+  // не запущен или SLAM ещё не построил карту). UI показывает «ожидание»,
+  // чтобы пользователь не думал что дашборд сломан.
+  const slamObstacleCount = slamMap?.obstacles?.length ?? 0
+  const slamStatus: 'offline' | 'empty' | 'active' =
+    slamMap === null ? 'offline'
+      : slamObstacleCount === 0 ? 'empty'
+      : 'active'
+
   return (
     <div className="relative w-full h-screen bg-[#1a1a2e]">
       {/* Connection status */}
@@ -98,6 +108,27 @@ export function Visualization3DPage() {
         <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
         <span className="text-xs text-zinc-400">
           {connected ? 'Подключён' : 'Нет связи'}
+        </span>
+      </div>
+
+      {/* SLAM status badge — диагностика «карты нет» */}
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded bg-zinc-900/80 border border-zinc-700 backdrop-blur">
+        <div className={`w-2 h-2 rounded-full ${
+          slamStatus === 'active' ? 'bg-green-500'
+            : slamStatus === 'empty' ? 'bg-yellow-500'
+            : 'bg-zinc-500'
+        }`} />
+        <span className="text-[11px] text-zinc-300 font-mono">
+          SLAM:{' '}
+          {slamStatus === 'active' && (
+            <span className="text-green-400">{slamObstacleCount} obstacles</span>
+          )}
+          {slamStatus === 'empty' && (
+            <span className="text-yellow-400">карта пуста (нет препятствий)</span>
+          )}
+          {slamStatus === 'offline' && (
+            <span className="text-zinc-400">offline — Pi не публикует slam_map</span>
+          )}
         </span>
       </div>
 
