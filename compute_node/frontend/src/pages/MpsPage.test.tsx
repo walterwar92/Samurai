@@ -78,12 +78,11 @@ vi.mock('@/components/layout/Header', () => ({
 describe('MpsPage integration', () => {
   beforeEach(() => {
     if (typeof globalThis.ResizeObserver === 'undefined') {
-      // @ts-expect-error mock
       globalThis.ResizeObserver = class {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      } as unknown as typeof ResizeObserver
     }
   })
 

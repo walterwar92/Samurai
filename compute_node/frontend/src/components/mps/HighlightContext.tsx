@@ -1,50 +1,16 @@
-import { createContext, useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import {
+  EMPTY_STATE,
+  MpsHighlightContext,
+  type EquationIndex,
+  type HoveredCell,
+  type HoveredVector,
+  type MpsHighlightContextValue,
+  type MpsHighlightState,
+} from './highlight-context-value'
 
-export type EquationIndex = 0 | 1 | 2 | 3 | 4
-export type MatrixName = 'A' | 'B' | 'C' | 'D'
-export type VectorName = 'Q' | 'R' | 'u_min' | 'u_max'
-
-export interface HoveredCell {
-  matrix: MatrixName
-  row: number
-  col: number
-}
-
-export interface HoveredVector {
-  name: VectorName
-  index: number
-}
-
-export interface MpsHighlightState {
-  equation: EquationIndex | null
-  cell: HoveredCell | null
-  vector: HoveredVector | null
-}
-
-export interface MpsHighlightContextValue {
-  hovered: MpsHighlightState
-  setEquation: (i: EquationIndex | null) => void
-  setCell: (c: HoveredCell | null) => void
-  setVector: (v: HoveredVector | null) => void
-  clearAll: () => void
-}
-
-const EMPTY_STATE: MpsHighlightState = {
-  equation: null,
-  cell: null,
-  vector: null,
-}
-
-const NOOP_VALUE: MpsHighlightContextValue = {
-  hovered: EMPTY_STATE,
-  setEquation: () => {},
-  setCell: () => {},
-  setVector: () => {},
-  clearAll: () => {},
-}
-
-export const MpsHighlightContext = createContext<MpsHighlightContextValue>(NOOP_VALUE)
+export type { EquationIndex, HoveredCell, HoveredVector, MpsHighlightState, MatrixName, VectorName } from './highlight-context-value'
 
 interface MpsHighlightProviderProps {
   children: ReactNode

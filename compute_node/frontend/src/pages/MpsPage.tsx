@@ -64,7 +64,6 @@ export function MpsPage() {
     if (newErrors.length > 0) {
       setErrors((prev) => [...newErrors, ...prev].slice(0, 5))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matricesHook.error, runHook.error, validateHook.error])
 
   function dismissError(id: string) {

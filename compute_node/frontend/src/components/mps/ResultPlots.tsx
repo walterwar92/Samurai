@@ -99,17 +99,17 @@ function shortRunId(id: string): string {
 export function ResultPlots({ primary, overlays = [], liveTelemetry }: ResultPlotsProps) {
   const [tab, setTab] = useState<Tab>('s')
 
-  const baseTelemetry = liveTelemetry?.length ? liveTelemetry : (primary?.telemetry ?? [])
   const referenceD = primary?.request.distance ?? null
   const referenceVTarget = primary?.request.v_target ?? null
 
   const data = useMemo(() => {
+    const baseTelemetry = liveTelemetry?.length ? liveTelemetry : (primary?.telemetry ?? [])
     const base = buildRows(baseTelemetry, tab)
     const overlayPacks = overlays.map((o, idx) => ({
       rows: buildRows(o.telemetry, tab, `[${idx + 2}] `),
     }))
     return mergeOverlays(base, overlayPacks)
-  }, [baseTelemetry, overlays, tab])
+  }, [liveTelemetry, primary, overlays, tab])
 
   const seriesKeys = data.length > 0 ? Object.keys(data[0]).filter((k) => k !== 't') : []
 
