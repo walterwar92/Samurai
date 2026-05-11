@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DraftStatus } from '@/components/mps/DraftStatus'
 import { EigenvaluePanel } from '@/components/mps/EigenvaluePanel'
@@ -10,6 +10,7 @@ import { ResultPlots } from '@/components/mps/ResultPlots'
 import { ScenarioControls } from '@/components/mps/ScenarioControls'
 import { TrajectoryView } from '@/components/mps/TrajectoryView'
 import { MpsHighlightProvider } from '@/components/mps/HighlightContext'
+import { Mps3DProvider, useMps3D } from '@/components/mps/Mps3DProvider'
 import { useMpsHistory } from '@/hooks/useMpsHistory'
 import { useMpsLiveTelemetry } from '@/hooks/useMpsLiveTelemetry'
 import { useMpsMatrices } from '@/hooks/useMpsMatrices'
@@ -24,6 +25,16 @@ import type {
 } from '@/types/mps'
 
 export function MpsPage() {
+  return (
+    <MpsHighlightProvider>
+      <Mps3DProvider>
+        <MpsPageInner />
+      </Mps3DProvider>
+    </MpsHighlightProvider>
+  )
+}
+
+function MpsPageInner() {
   const matricesHook = useMpsMatrices()
   const runHook = useMpsRun()
   const validateHook = useMpsValidate()
@@ -33,6 +44,9 @@ export function MpsPage() {
   const [compareSelection, setCompareSelection] = useState<MpsScenarioResult[]>([])
   const [primaryResult, setPrimaryResult] = useState<MpsScenarioResult | null>(null)
   const [errors, setErrors] = useState<Array<{ id: string; kind: string; msg: string }>>([])
+
+  const mps3D = useMps3D()
+  const lastSeenRunIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (matricesHook.applied) {
@@ -44,6 +58,14 @@ export function MpsPage() {
   useEffect(() => {
     if (runHook.result) setPrimaryResult(runHook.result)
   }, [runHook.result])
+
+  useEffect(() => {
+    if (!primaryResult) return
+    if (primaryResult.run_id === lastSeenRunIdRef.current) return
+    if ((primaryResult.telemetry?.length ?? 0) < 2) return
+    lastSeenRunIdRef.current = primaryResult.run_id
+    mps3D.requestToast(primaryResult)
+  }, [primaryResult, mps3D])
 
   useEffect(() => {
     const newErrors: typeof errors = []
@@ -138,114 +160,112 @@ export function MpsPage() {
   )
 
   return (
-    <MpsHighlightProvider>
-      <div className="min-h-screen">
-        <PageHeader title="МПС" />
-        <div className="p-3 max-w-[1920px] mx-auto">
-          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-            <h1 className="text-2xl font-semibold">МПС — Модель Пространства Состояний</h1>
-            <div className="flex items-center gap-2">
-              <DraftStatus
-                applied={matricesHook.applied}
-                draft={matricesHook.draft}
-                isStable={isClosedLoopStable}
-                isValid={true}
-                canonicalStatus={canonicalStatus}
-              />
-              <span className="text-xs text-muted-foreground">
-                WS: {live.connected ? 'connected' : 'idle'}
-              </span>
-            </div>
-          </div>
-
-          {errors.length > 0 && (
-            <div className="space-y-1 mb-3">
-              {errors.map((e) => (
-                <div
-                  key={e.id}
-                  className="flex items-center gap-2 rounded border border-red-300 bg-red-500/10 px-3 py-1.5 text-xs"
-                  role="alert"
-                >
-                  <span className="text-red-700 font-medium">⚠ {e.kind}:</span>
-                  <span className="flex-1 text-red-800">{e.msg}</span>
-                  <button
-                    type="button"
-                    onClick={() => dismissError(e.id)}
-                    className="text-red-600 hover:text-red-900"
-                    aria-label="dismiss"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(360px,_35%)_1fr] gap-4">
-            <aside className="space-y-3 lg:sticky lg:top-16 lg:self-start lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto">
-              <OdeCard matrices={matricesHook.draft ?? matricesHook.applied} />
-              <PhysicsParams
-                applied={matricesHook.applied}
-                draft={matricesHook.draft}
-                onPatch={(m) => void matricesHook.saveDraft(m)}
-                defaults={{ tau_v: DEFAULT_TAU_V, tau_omega: DEFAULT_TAU_OMEGA }}
-              />
-            </aside>
-
-            <main className="space-y-3 min-w-0">
-              <MatrixEditor
-                applied={matricesHook.applied}
-                draft={matricesHook.draft}
-                onChange={(m: MpsMatrices) => void matricesHook.saveDraft(m)}
-                onApply={() => void matricesHook.apply()}
-                onValidate={() =>
-                  void validateHook.validate(matricesHook.draft ?? matricesHook.applied)
-                }
-                onReset={() => void matricesHook.reset()}
-                saving={matricesHook.loading}
-                validationStatus={validationStatus}
-              />
-
-              <EigenvaluePanel
-                open={validateHook.result?.eigenvalues_ad ?? []}
-                closed={validateHook.result?.eigenvalues_closed ?? []}
-                isPlantStable={isPlantStable}
-                isClosedLoopStable={isClosedLoopStable}
-                warnings={validateHook.result?.warnings ?? []}
-                lastValidatedAt={lastValidatedAt}
-              />
-
-              <ScenarioControls
-                running={runHook.running}
-                onRun={handleRun}
-                onAbort={handleAbort}
-                source={source}
-                onSourceChange={setSource}
-                progress={scenarioProgress}
-              />
-
-              <ResultPlots
-                primary={primaryResult}
-                overlays={overlays}
-                liveTelemetry={liveEnabled ? live.points : undefined}
-              />
-
-              <TrajectoryView
-                result={primaryResult}
-                liveTelemetry={liveEnabled ? live.points : undefined}
-              />
-
-              <HistoryPanel
-                history={historyHook.history}
-                onSelect={setPrimaryResult}
-                onReplay={handleReplay}
-                onCompareChange={setCompareSelection}
-                loading={historyHook.loading}
-              />
-            </main>
+    <div className="min-h-screen">
+      <PageHeader title="МПС" />
+      <div className="p-3 max-w-[1920px] mx-auto">
+        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+          <h1 className="text-2xl font-semibold">МПС — Модель Пространства Состояний</h1>
+          <div className="flex items-center gap-2">
+            <DraftStatus
+              applied={matricesHook.applied}
+              draft={matricesHook.draft}
+              isStable={isClosedLoopStable}
+              isValid={true}
+              canonicalStatus={canonicalStatus}
+            />
+            <span className="text-xs text-muted-foreground">
+              WS: {live.connected ? 'connected' : 'idle'}
+            </span>
           </div>
         </div>
+
+        {errors.length > 0 && (
+          <div className="space-y-1 mb-3">
+            {errors.map((e) => (
+              <div
+                key={e.id}
+                className="flex items-center gap-2 rounded border border-red-300 bg-red-500/10 px-3 py-1.5 text-xs"
+                role="alert"
+              >
+                <span className="text-red-700 font-medium">⚠ {e.kind}:</span>
+                <span className="flex-1 text-red-800">{e.msg}</span>
+                <button
+                  type="button"
+                  onClick={() => dismissError(e.id)}
+                  className="text-red-600 hover:text-red-900"
+                  aria-label="dismiss"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(360px,_35%)_1fr] gap-4">
+          <aside className="space-y-3 lg:sticky lg:top-16 lg:self-start lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto">
+            <OdeCard matrices={matricesHook.draft ?? matricesHook.applied} />
+            <PhysicsParams
+              applied={matricesHook.applied}
+              draft={matricesHook.draft}
+              onPatch={(m) => void matricesHook.saveDraft(m)}
+              defaults={{ tau_v: DEFAULT_TAU_V, tau_omega: DEFAULT_TAU_OMEGA }}
+            />
+          </aside>
+
+          <main className="space-y-3 min-w-0">
+            <MatrixEditor
+              applied={matricesHook.applied}
+              draft={matricesHook.draft}
+              onChange={(m: MpsMatrices) => void matricesHook.saveDraft(m)}
+              onApply={() => void matricesHook.apply()}
+              onValidate={() =>
+                void validateHook.validate(matricesHook.draft ?? matricesHook.applied)
+              }
+              onReset={() => void matricesHook.reset()}
+              saving={matricesHook.loading}
+              validationStatus={validationStatus}
+            />
+
+            <EigenvaluePanel
+              open={validateHook.result?.eigenvalues_ad ?? []}
+              closed={validateHook.result?.eigenvalues_closed ?? []}
+              isPlantStable={isPlantStable}
+              isClosedLoopStable={isClosedLoopStable}
+              warnings={validateHook.result?.warnings ?? []}
+              lastValidatedAt={lastValidatedAt}
+            />
+
+            <ScenarioControls
+              running={runHook.running}
+              onRun={handleRun}
+              onAbort={handleAbort}
+              source={source}
+              onSourceChange={setSource}
+              progress={scenarioProgress}
+            />
+
+            <ResultPlots
+              primary={primaryResult}
+              overlays={overlays}
+              liveTelemetry={liveEnabled ? live.points : undefined}
+            />
+
+            <TrajectoryView
+              result={primaryResult}
+              liveTelemetry={liveEnabled ? live.points : undefined}
+            />
+
+            <HistoryPanel
+              history={historyHook.history}
+              onSelect={setPrimaryResult}
+              onReplay={handleReplay}
+              onCompareChange={setCompareSelection}
+              loading={historyHook.loading}
+            />
+          </main>
+        </div>
       </div>
-    </MpsHighlightProvider>
+    </div>
   )
 }

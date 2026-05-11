@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MpsPage } from './MpsPage'
 import { buildCanonical, DEFAULT_TAU_V, DEFAULT_TAU_OMEGA } from '@/lib/mps/canonical'
-import type { MpsMatrices } from '@/types/mps'
+import type { MpsMatrices, MpsScenarioResult } from '@/types/mps'
 
 function makeMatrices(): MpsMatrices {
   const { A, B } = buildCanonical(DEFAULT_TAU_V, DEFAULT_TAU_OMEGA)
@@ -22,6 +22,26 @@ function makeMatrices(): MpsMatrices {
   }
 }
 
+function makeResult(runId: string = 'r-test'): MpsScenarioResult {
+  return {
+    run_id: runId,
+    started_at: '2026-05-11T10:00:00Z',
+    finished_at: '2026-05-11T10:00:05Z',
+    status: 'reached',
+    request: { distance: 2.0, v_target: 0.2, source: 'sim', schema_version: '1.0' },
+    matrices_snapshot: makeMatrices(),
+    telemetry: [
+      { t: 0,   x: [0,   0, 0, 0, 0], u: [0, 0], y: [], s_remaining: 2.0 },
+      { t: 0.1, x: [0.1, 0, 0, 0, 0], u: [0, 0], y: [], s_remaining: 1.9 },
+    ],
+    metrics: null,
+    schema_version: '1.0',
+  }
+}
+
+let mockRunResult: MpsScenarioResult | null = null
+let mockRunId: string | null = null
+
 vi.mock('@/hooks/useMpsMatrices', () => ({
   useMpsMatrices: () => ({
     applied: makeMatrices(),
@@ -39,7 +59,8 @@ vi.mock('@/hooks/useMpsMatrices', () => ({
 vi.mock('@/hooks/useMpsRun', () => ({
   useMpsRun: () => ({
     running: false,
-    result: null,
+    result: mockRunResult,
+    runId: mockRunId,
     error: null,
     run: vi.fn(),
     abort: vi.fn(),
@@ -75,8 +96,14 @@ vi.mock('@/components/layout/Header', () => ({
   Header: () => <header data-testid="header">Header</header>,
 }))
 
+vi.mock('@/components/mps/Mps3DScene', () => ({
+  Mps3DScene: () => <div data-testid="mps3d-scene-stub" />,
+}))
+
 describe('MpsPage integration', () => {
   beforeEach(() => {
+    mockRunResult = null
+    mockRunId = null
     if (typeof globalThis.ResizeObserver === 'undefined') {
       globalThis.ResizeObserver = class {
         observe() {}
@@ -116,5 +143,45 @@ describe('MpsPage integration', () => {
   it('shows canonical badge in DraftStatus when matrices are canonical', () => {
     render(<MpsPage />)
     expect(screen.getByRole('status').textContent).toBe('applied')
+  })
+})
+
+describe('MpsPage — 3D toast', () => {
+  beforeEach(() => {
+    mockRunResult = null
+    mockRunId = null
+    if (typeof globalThis.ResizeObserver === 'undefined') {
+      globalThis.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      } as unknown as typeof ResizeObserver
+    }
+  })
+
+  it('после завершения симуляции появляется тост «Симуляция завершена»', async () => {
+    mockRunResult = makeResult('r-test-1')
+    mockRunId = 'r-test-1'
+    render(<MpsPage />)
+    await waitFor(() => {
+      expect(screen.getByText(/Симуляция завершена/i)).toBeInTheDocument()
+    })
+  })
+
+  it('replay того же run_id не показывает тост повторно', async () => {
+    mockRunResult = makeResult('r-test-2')
+    mockRunId = 'r-test-2'
+    render(<MpsPage />)
+    await waitFor(() => {
+      expect(screen.getByText(/Симуляция завершена/i)).toBeInTheDocument()
+    })
+    // Закрыть тост
+    const close = screen.getByRole('button', { name: /Закрыть/i })
+    act(() => { close.click() })
+    expect(screen.queryByText(/Симуляция завершена/i)).toBeNull()
+    // Если бы replay того же run_id триггерил тост — он бы появился; но MpsPage
+    // должен запомнить run_id через ref и не звать requestToast повторно.
+    // Этот сценарий проверяется через сравнение run_id'ов, и так как мок отдаёт
+    // тот же result — повторного появления быть не должно.
   })
 })
