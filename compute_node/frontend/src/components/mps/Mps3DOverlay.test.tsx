@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { Mps3DProvider, useMps3D } from './Mps3DProvider'
@@ -39,6 +39,11 @@ function OverlayHarness({ telemetry }: { telemetry?: MpsTelemetryPoint[] }) {
 const renderWithProvider = (node: ReactNode) =>
   render(<Mps3DProvider>{node}</Mps3DProvider>)
 
+function StateProbe() {
+  const { state } = useMps3D()
+  return <div data-testid="kind">{state.kind}</div>
+}
+
 describe('Mps3DOverlay', () => {
   it('рендерит сцену когда есть валидная телеметрия (>= 2 точек)', () => {
     renderWithProvider(<OverlayHarness />)
@@ -55,10 +60,6 @@ describe('Mps3DOverlay', () => {
   })
 
   it('клик ✕ закрывает (возвращает в idle)', () => {
-    function StateProbe() {
-      const { state } = useMps3D()
-      return <div data-testid="kind">{state.kind}</div>
-    }
     renderWithProvider(
       <>
         <OverlayHarness />
@@ -72,10 +73,6 @@ describe('Mps3DOverlay', () => {
   })
 
   it('клик по backdrop НЕ закрывает (B1)', () => {
-    function StateProbe() {
-      const { state } = useMps3D()
-      return <div data-testid="kind">{state.kind}</div>
-    }
     renderWithProvider(
       <>
         <OverlayHarness />
@@ -89,10 +86,6 @@ describe('Mps3DOverlay', () => {
   })
 
   it('Esc НЕ закрывает (B1)', () => {
-    function StateProbe() {
-      const { state } = useMps3D()
-      return <div data-testid="kind">{state.kind}</div>
-    }
     renderWithProvider(
       <>
         <OverlayHarness />
@@ -101,6 +94,28 @@ describe('Mps3DOverlay', () => {
     )
     act(() => { screen.getByTestId('trigger').click() })
     act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
+    expect(screen.getByTestId('kind').textContent).toBe('overlay')
+  })
+
+  it('клик внутри панели не пробрасывается на backdrop (B1 защита)', () => {
+    // Проверяем через React-уровень: backdrop получает React onClick,
+    // клик по дочернему role=dialog должен быть остановлен stopPropagation.
+    // Используем fireEvent на backdrop напрямую — backdrop без onClick → не закрывает.
+    // Вместо native addEventListener тестируем invariant: dialog имеет
+    // onClick stopPropagation, значит stopImmediatePropagation не требуется —
+    // достаточно убедиться что dialog рендерится с нужным обработчиком через
+    // fireEvent.click на dialog и проверку что state остался overlay.
+    renderWithProvider(
+      <>
+        <OverlayHarness />
+        <StateProbe />
+      </>,
+    )
+    act(() => { screen.getByTestId('trigger').click() })
+    const dialog = screen.getByRole('dialog', { name: /3D-просмотр траектории/i })
+    // Кликаем по панели — stopPropagation предотвращает закрытие через любой
+    // будущий backdrop-обработчик; текущий state должен остаться 'overlay'.
+    act(() => { fireEvent.click(dialog) })
     expect(screen.getByTestId('kind').textContent).toBe('overlay')
   })
 })

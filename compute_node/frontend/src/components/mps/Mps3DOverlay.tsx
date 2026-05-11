@@ -64,6 +64,7 @@ function OverlayPanel({ result, onClose }: OverlayPanelProps) {
       // Клик по backdrop НЕ закрывает (B1). onClick намеренно отсутствует.
     >
       <div
+        onClick={(e) => e.stopPropagation()}
         className={[
           'relative mt-[7.5vh] w-[90vw] h-[85vh] overflow-hidden',
           'rounded-lg border border-zinc-700 bg-[#1a1a2e]',
