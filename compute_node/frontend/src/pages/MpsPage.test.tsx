@@ -168,20 +168,28 @@ describe('MpsPage — 3D toast', () => {
     })
   })
 
-  it('replay того же run_id не показывает тост повторно', async () => {
-    mockRunResult = makeResult('r-test-2')
-    mockRunId = 'r-test-2'
-    render(<MpsPage />)
+  it('replay того же run_id не показывает тост повторно (ref-guard блокирует)', async () => {
+    mockRunResult = makeResult('r-test-1')
+    mockRunId = 'r-test-1'
+    const { rerender } = render(<MpsPage />)
+    // Тост появляется на первый result
     await waitFor(() => {
       expect(screen.getByText(/Симуляция завершена/i)).toBeInTheDocument()
     })
-    // Закрыть тост
-    const close = screen.getByRole('button', { name: /Закрыть/i })
-    act(() => { close.click() })
+    // Закрываем тост вручную
+    const closeBtn = screen.getByRole('button', { name: /Закрыть/i })
+    act(() => { fireEvent.click(closeBtn) })
     expect(screen.queryByText(/Симуляция завершена/i)).toBeNull()
-    // Если бы replay того же run_id триггерил тост — он бы появился; но MpsPage
-    // должен запомнить run_id через ref и не звать requestToast повторно.
-    // Этот сценарий проверяется через сравнение run_id'ов, и так как мок отдаёт
-    // тот же result — повторного появления быть не должно.
+
+    // Симулируем "replay": тот же run_id, но новый объект (другая reference).
+    // Это меняет primaryResult по identity, useEffect перезапускается — но
+    // lastSeenRunIdRef.current === 'r-test-1' уже совпадает, requestToast не должен вызваться.
+    mockRunResult = makeResult('r-test-1')  // новый объект, тот же run_id
+    act(() => { rerender(<MpsPage />) })
+
+    // Подождать немного, чтобы потенциальный setState успел отыграть
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(screen.queryByText(/Симуляция завершена/i)).toBeNull()
   })
 })
