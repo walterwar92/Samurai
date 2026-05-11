@@ -1,5 +1,8 @@
+import { Box } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import type { MpsScenarioResult, MpsTelemetryPoint } from '@/types/mps'
+import { useMps3D } from './Mps3DProvider'
 
 interface TrajectoryViewProps {
   result: MpsScenarioResult | null
@@ -57,7 +60,10 @@ export function TrajectoryView({ result, liveTelemetry }: TrajectoryViewProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Траектория (top-down)</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle>Траектория (top-down)</CardTitle>
+          <TrajectoryOpen3DButton result={result} />
+        </div>
       </CardHeader>
       <CardContent>
         <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} role="img"
@@ -126,5 +132,24 @@ export function TrajectoryView({ result, liveTelemetry }: TrajectoryViewProps) {
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function TrajectoryOpen3DButton({ result }: { result: MpsScenarioResult | null }) {
+  const mps3D = useMps3D()
+  const disabled = !result || (result.telemetry?.length ?? 0) < 2
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={disabled}
+      onClick={() => result && mps3D.open(result)}
+      title="3D-просмотр траектории"
+      aria-label="3D-просмотр траектории"
+    >
+      <Box className="w-4 h-4" />
+      <span className="ml-1">3D</span>
+    </Button>
   )
 }
