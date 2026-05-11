@@ -46,7 +46,7 @@ interface Mps3DContextValue {
 const Mps3DContext = createContext<Mps3DContextValue | null>(null)
 
 export function Mps3DProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, { kind: 'idle' } as Mps3DState)
+  const [state, dispatch] = useReducer(reducer, { kind: 'idle' })
 
   const requestToast = useCallback((result: MpsScenarioResult) => {
     dispatch({ type: 'REQUEST_TOAST', result, now: Date.now() })

@@ -106,6 +106,15 @@ describe('Mps3DProvider — FSM', () => {
     expect(result.current.state.kind).toBe('idle')
   })
 
+  it('close() из toasting возвращает в idle и не даёт таймеру сработать', () => {
+    const { result } = renderHook(() => useMps3D(), { wrapper })
+    act(() => { result.current.requestToast(makeResult('r1')) })
+    act(() => { result.current.close() })
+    expect(result.current.state.kind).toBe('idle')
+    act(() => { vi.advanceTimersByTime(5000) })
+    expect(result.current.state.kind).toBe('idle')
+  })
+
   it('open(r) из idle сразу переводит в overlay (для R2-кнопки)', () => {
     const { result } = renderHook(() => useMps3D(), { wrapper })
     act(() => { result.current.open(makeResult('r1')) })
