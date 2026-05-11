@@ -72,6 +72,7 @@ function OverlayPanel({ result, onClose }: OverlayPanelProps) {
           entered ? 'scale-100' : 'scale-95',
         ].join(' ')}
         role="dialog"
+        aria-modal="true"
         aria-label="3D-просмотр траектории"
       >
         {/* Шапка */}
