@@ -12,6 +12,13 @@ interface RobotModelProps {
   posX: number   // meters
   posY: number   // meters
   stationary?: boolean
+  /**
+   * Если true — позиция и поворот выставляются напрямую, без lerp-сглаживания
+   * и без dead-zone. Полезно для воспроизведения готовой телеметрии, где
+   * сглаживание добавляет лишнюю задержку. По умолчанию false (сохраняется
+   * исходное поведение для real-time робота на странице /3d).
+   */
+  noSmooth?: boolean
 }
 
 const DEG2RAD = Math.PI / 180
@@ -25,7 +32,7 @@ const ROT_LERP = 0.2
 const POS_DEADZONE = 0.001   // 1 mm
 const ROT_DEADZONE = 0.001   // ~0.06°
 
-export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }: RobotModelProps) {
+export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false, noSmooth = false }: RobotModelProps) {
   const groupRef = useRef<THREE.Group>(null)
   const { scene } = useGLTF(MODEL_URL)
 
@@ -44,8 +51,8 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
 
   // ── Use ref to always have the latest props in useFrame ──
   // This prevents stale closure issues with React Three Fiber's reconciler
-  const propsRef = useRef({ yaw, pitch, roll, posX, posY, stationary })
-  propsRef.current = { yaw, pitch, roll, posX, posY, stationary }
+  const propsRef = useRef({ yaw, pitch, roll, posX, posY, stationary, noSmooth })
+  propsRef.current = { yaw, pitch, roll, posX, posY, stationary, noSmooth }
 
   // Smoothed position/rotation to avoid jitter from sensor noise
   // +PI/2 offset: model front is -Z, but robot yaw=0 faces +X in world coords
@@ -58,6 +65,27 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
 
     // Read latest props from ref (not closure) to avoid stale values
     const p = propsRef.current
+
+    // Direct mode for replay scenarios (no lerp, no deadzone)
+    if (p.noSmooth) {
+      smoothPos.current.set(p.posX, 0.05, -p.posY)
+      smoothRot.current.set(
+        p.pitch * DEG2RAD,
+        -p.yaw * DEG2RAD + Math.PI / 2,
+        p.roll * DEG2RAD,
+        'YXZ',
+      )
+      groupRef.current.position.copy(smoothPos.current)
+      groupRef.current.rotation.set(
+        smoothRot.current.x,
+        smoothRot.current.y,
+        smoothRot.current.z,
+        'YXZ',
+      )
+      return
+    }
+
+    // existing smoothing path (unchanged below this line)
     const targetX = p.posX
     const targetZ = -p.posY
     const targetPitch = p.pitch * DEG2RAD
