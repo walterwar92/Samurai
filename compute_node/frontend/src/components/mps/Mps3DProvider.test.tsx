@@ -4,6 +4,13 @@ import type { ReactNode } from 'react'
 import { Mps3DProvider, useMps3D } from './Mps3DProvider'
 import type { MpsScenarioResult } from '@/types/mps'
 
+// Заглушка Mps3DScene: provider всегда рендерит <Mps3DOverlay/>, а тот при
+// kind='overlay' пытается смонтировать настоящую R3F-сцену → ResizeObserver
+// падает в jsdom. Тот же подход уже применён в Mps3DOverlay.test.tsx.
+vi.mock('./Mps3DScene', () => ({
+  Mps3DScene: () => <div data-testid="scene-stub">scene</div>,
+}))
+
 function makeResult(runId: string = 'r1'): MpsScenarioResult {
   return {
     run_id: runId,
