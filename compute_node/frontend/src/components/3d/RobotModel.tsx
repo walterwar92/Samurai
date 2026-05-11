@@ -1,6 +1,9 @@
-import { useRef } from 'react'
+import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
+import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
+
+const MODEL_URL = '/models/Samurai.glb'
 
 interface RobotModelProps {
   yaw: number    // degrees
@@ -24,6 +27,20 @@ const ROT_DEADZONE = 0.001   // ~0.06°
 
 export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }: RobotModelProps) {
   const groupRef = useRef<THREE.Group>(null)
+  const { scene } = useGLTF(MODEL_URL)
+
+  // Clone so multiple instances don't share material state, and enable shadows
+  const modelScene = useMemo(() => {
+    const cloned = scene.clone(true)
+    cloned.traverse((obj) => {
+      const mesh = obj as THREE.Mesh
+      if (mesh.isMesh) {
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+      }
+    })
+    return cloned
+  }, [scene])
 
   // ── Use ref to always have the latest props in useFrame ──
   // This prevents stale closure issues with React Three Fiber's reconciler
@@ -82,65 +99,11 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
     )
   })
 
-  const bodyW = 0.17, bodyH = 0.08, bodyD = 0.12
-  const trackW = 0.02, trackH = 0.04, trackD = 0.14
-  const wheelR = 0.02, wheelH = 0.02
-
   return (
     <group ref={groupRef}>
-      {/* Body — coral (#CC785C) per redesign §6.13 */}
-      <mesh castShadow>
-        <boxGeometry args={[bodyW, bodyH, bodyD]} />
-        <meshStandardMaterial color="#CC785C" metalness={0.1} roughness={0.6} />
-      </mesh>
-
-      {/* Top plate — slightly lighter coral */}
-      <mesh position={[0, bodyH / 2 + 0.005, 0]} castShadow>
-        <boxGeometry args={[bodyW * 0.9, 0.01, bodyD * 0.8]} />
-        <meshStandardMaterial color="#D5876C" metalness={0.1} roughness={0.5} />
-      </mesh>
-
-      {/* Direction arrow (front indicator) */}
-      <mesh position={[0, bodyH / 2 + 0.015, -bodyD / 2 + 0.02]} rotation={[-Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.015, 0.03, 4]} />
-        <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.8} />
-      </mesh>
-
-      {/* Left track */}
-      <mesh position={[-(bodyW / 2 + trackW / 2), -bodyH / 2 + trackH / 2, 0]} castShadow>
-        <boxGeometry args={[trackW, trackH, trackD]} />
-        <meshStandardMaterial color="#2d3a4d" roughness={0.7} />
-      </mesh>
-
-      {/* Right track */}
-      <mesh position={[(bodyW / 2 + trackW / 2), -bodyH / 2 + trackH / 2, 0]} castShadow>
-        <boxGeometry args={[trackW, trackH, trackD]} />
-        <meshStandardMaterial color="#2d3a4d" roughness={0.7} />
-      </mesh>
-
-      {/* Wheels (decorative) */}
-      {[-1, 1].map(side =>
-        [-1, 0, 1].map(pos => (
-          <mesh
-            key={`${side}-${pos}`}
-            position={[
-              side * (bodyW / 2 + trackW + wheelH / 2),
-              -bodyH / 2 + trackH / 2,
-              pos * (trackD / 2 - wheelR)
-            ]}
-            rotation={[0, 0, Math.PI / 2]}
-          >
-            <cylinderGeometry args={[wheelR, wheelR, wheelH, 8]} />
-            <meshStandardMaterial color="#1e2a3d" />
-          </mesh>
-        ))
-      )}
-
-      {/* IMU sensor (small box on top) */}
-      <mesh position={[0, bodyH / 2 + 0.02, 0.01]}>
-        <boxGeometry args={[0.02, 0.01, 0.02]} />
-        <meshStandardMaterial color="#16a34a" emissive="#16a34a" emissiveIntensity={0.6} />
-      </mesh>
+      <primitive object={modelScene} scale={0.001} />
     </group>
   )
 }
+
+useGLTF.preload(MODEL_URL)

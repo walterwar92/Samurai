@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, Suspense } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 import { useRobotState } from '@/hooks/useRobotState'
@@ -177,14 +177,16 @@ export function Visualization3DPage() {
         <axesHelper args={[0.3]} />
 
         {/* Robot */}
-        <RobotModel
-          yaw={yaw}
-          pitch={pitch}
-          roll={roll}
-          posX={posX}
-          posY={posY}
-          stationary={stationary}
-        />
+        <Suspense fallback={null}>
+          <RobotModel
+            yaw={yaw}
+            pitch={pitch}
+            roll={roll}
+            posX={posX}
+            posY={posY}
+            stationary={stationary}
+          />
+        </Suspense>
 
         {/* Path trail (real-time odometry trace) */}
         <PathTrail
