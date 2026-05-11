@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useReducer } from 'react'
 import type { ReactNode } from 'react'
 import type { MpsScenarioResult } from '@/types/mps'
+import { Mps3DToast } from './Mps3DToast'
 
 export type Mps3DState =
   | { kind: 'idle' }
@@ -73,7 +74,7 @@ export function Mps3DProvider({ children }: { children: ReactNode }) {
   return (
     <Mps3DContext.Provider value={{ state, requestToast, open, close }}>
       {children}
-      {/* Тост и оверлей будут добавлены ниже после соответствующих тасков */}
+      <Mps3DToast />
     </Mps3DContext.Provider>
   )
 }
