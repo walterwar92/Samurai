@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowUp, Crosshair, Hand, Pause, Play, RotateCcw, Square, Wrench, Zap,
 } from 'lucide-react'
-import { Header } from '@/components/layout/Header'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -97,8 +97,8 @@ export function SamcanPage() {
                                             'bg-zinc-500/10 text-zinc-300 border-zinc-500/30'
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-zinc-950 to-black">
-      <Header />
+    <div className="min-h-screen bg-background">
+      <PageHeader title="Samcan" />
 
       {/* Heavy banner with live mode */}
       <div className="max-w-[1600px] mx-auto px-3 pt-3">

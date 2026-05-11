@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Header } from '@/components/layout/Header'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -161,7 +161,7 @@ export function HardwarePage() {
 
   return (
     <div className="min-h-screen">
-      <Header />
+      <PageHeader title="Hardware" />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-2.5 p-2.5 max-w-[1600px] mx-auto min-h-[calc(100vh-48px)]">
         {/* ── Left: Main content ── */}

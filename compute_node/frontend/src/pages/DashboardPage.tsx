@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useRobotState } from '@/hooks/useRobotState'
 import { useSensorHistory } from '@/hooks/useSensorHistory'
-import { Header } from '@/components/layout/Header'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { SamuraiStatusBanner } from '@/components/layout/SamuraiStatusBanner'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { MapCanvas } from '@/components/map/MapCanvas'
@@ -27,6 +27,14 @@ import { COLOUR_RU, COLOUR_CSS, ACTION_RU } from '@/lib/constants'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
+function formatSimTime(seconds: number): string {
+  const t = Math.max(0, Math.floor(seconds))
+  const hh = String(Math.floor(t / 3600)).padStart(2, '0')
+  const mm = String(Math.floor(t / 60) % 60).padStart(2, '0')
+  const ss = String(t % 60).padStart(2, '0')
+  return `${hh}:${mm}:${ss}`
+}
+
 export function DashboardPage() {
   const state = useRobotState()
   const sensorHistory = useSensorHistory(state)
@@ -34,9 +42,16 @@ export function DashboardPage() {
   const status = state?.status
   const pose = state?.pose
 
+  // Форматируем sim_time в HH:MM:SS для моноспейс-индикатора
+  const simTimeStr = state?.sim_time !== undefined ? formatSimTime(state.sim_time) : undefined
+
   return (
     <div className="min-h-screen">
-      <Header onDebugOpen={() => setDebugOpen(true)} simTime={state?.sim_time} />
+      <PageHeader
+        title="Dashboard"
+        simTime={simTimeStr}
+        onDebug={() => setDebugOpen(true)}
+      />
       <SamuraiStatusBanner state={state} />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_340px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">

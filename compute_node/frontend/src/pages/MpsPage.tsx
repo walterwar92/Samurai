@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Header } from '@/components/layout/Header'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { DraftStatus } from '@/components/mps/DraftStatus'
 import { EigenvaluePanel } from '@/components/mps/EigenvaluePanel'
 import { HistoryPanel } from '@/components/mps/HistoryPanel'
@@ -140,7 +140,7 @@ export function MpsPage() {
   return (
     <MpsHighlightProvider>
       <div className="min-h-screen">
-        <Header />
+        <PageHeader title="МПС" />
         <div className="p-3 max-w-[1920px] mx-auto">
           <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <h1 className="text-2xl font-semibold">МПС — Модель Пространства Состояний</h1>
