@@ -59,11 +59,8 @@ export function TrajectoryView({ result, liveTelemetry }: TrajectoryViewProps) {
 
   return (
     <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle>Траектория (top-down)</CardTitle>
-          <TrajectoryOpen3DButton result={result} />
-        </div>
+      <CardHeader right={<TrajectoryOpen3DButton result={result} />}>
+        <CardTitle>Траектория (top-down)</CardTitle>
       </CardHeader>
       <CardContent>
         <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} role="img"

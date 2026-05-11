@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { TrajectoryView } from './TrajectoryView'
 import { Mps3DProvider, useMps3D } from './Mps3DProvider'
@@ -55,7 +55,7 @@ describe('TrajectoryView — кнопка 3D', () => {
     ))
     const btn = screen.getByRole('button', { name: /3D-просмотр/i })
     expect(btn).not.toBeDisabled()
-    act(() => { btn.click() })
+    act(() => { fireEvent.click(btn) })
     expect(screen.getByTestId('kind').textContent).toBe('overlay')
   })
 })
