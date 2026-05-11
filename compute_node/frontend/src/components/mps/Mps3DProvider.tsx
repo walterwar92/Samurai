@@ -14,7 +14,7 @@ type Action =
   | { type: 'CLOSE' }
   | { type: 'TIMEOUT' }
 
-const TOAST_MS = 5000
+export const TOAST_MS = 5000
 
 function reducer(state: Mps3DState, action: Action): Mps3DState {
   switch (action.type) {

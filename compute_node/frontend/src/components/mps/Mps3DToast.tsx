@@ -2,9 +2,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Box, X } from 'lucide-react'
 import type { MpsScenarioResult, ScenarioStatus } from '@/types/mps'
-import { useMps3D } from './Mps3DProvider'
-
-const TOAST_MS = 5000
+import { useMps3D, TOAST_MS } from './Mps3DProvider'
 
 function statusText(s: ScenarioStatus): string {
   switch (s) {
@@ -41,6 +39,7 @@ function ToastCard({ result, onOpen, onClose }: ToastCardProps) {
     return () => cancelAnimationFrame(id)
   }, [])
 
+  // Tailwind v3 has no 'duration-250' step; 200ms is the closest standard token.
   return (
     <div
       className={[
@@ -49,7 +48,8 @@ function ToastCard({ result, onOpen, onClose }: ToastCardProps) {
         'transition-all duration-200 ease-out',
         entered ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0',
       ].join(' ')}
-      role="dialog"
+      role="status"
+      aria-live="polite"
       aria-label="Симуляция завершена"
     >
       <div className="p-3">
@@ -82,17 +82,16 @@ function ToastCard({ result, onOpen, onClose }: ToastCardProps) {
       {/* Прогресс-полоска: убывает за TOAST_MS секунд */}
       <div className="h-0.5 bg-zinc-800 overflow-hidden rounded-b">
         <div
-          className="h-full bg-blue-500/70"
+          className="h-full bg-blue-500/70 w-full origin-left"
           style={{
             animation: `mps3d-toast-progress ${TOAST_MS}ms linear forwards`,
-            width: '100%',
           }}
         />
       </div>
       <style>{`
         @keyframes mps3d-toast-progress {
-          from { width: 100%; }
-          to   { width: 0%; }
+          from { transform: scaleX(1); }
+          to   { transform: scaleX(0); }
         }
       `}</style>
     </div>
