@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RangeBar } from './RangeBar'
-import { COLOUR_RU, COLOUR_CSS } from '@/lib/constants'
+import { COLOUR_RU } from '@/lib/constants'
+import { BALL_HEX, type BallColour, BALL_NAMES } from '@/components/detection/ball-styles'
 import {
   useClosestDetection,
   useImuAccel,
@@ -15,9 +16,9 @@ interface SensorPanelProps {
 }
 
 /**
- * SensorPanel читает поля state напрямую через гранулярные селекторы,
- * больше не принимает state prop. Каждое поле триггерит re-render
- * только когда оно реально меняется (Z5, #6 Zustand).
+ * SensorPanel — компактный обзор телеметрии. Читает поля state напрямую
+ * через гранулярные селекторы — каждое поле триггерит re-render только
+ * когда меняется (Z5, #6 Zustand).
  */
 export function SensorPanel({ expanded }: SensorPanelProps) {
   const range = useUltrasonicRange()
@@ -27,29 +28,32 @@ export function SensorPanel({ expanded }: SensorPanelProps) {
   const velocity = useVelocity()
   const det = useClosestDetection()
 
+  // Цвет детекции из новой десатурированной палитры; fallback на foreground-faint.
+  const detColour = det?.colour as BallColour | undefined
+  const detHex =
+    detColour && BALL_NAMES.includes(detColour as BallColour)
+      ? BALL_HEX[detColour as BallColour]
+      : undefined
+
   return (
     <Card>
-      <CardHeader className="py-2 px-3">
-        <CardTitle className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
-          Сенсоры
-        </CardTitle>
+      <CardHeader>
+        <CardTitle>Сенсоры</CardTitle>
       </CardHeader>
-      <CardContent className="p-3 space-y-3">
-        <div>
-          <span className="text-[10px] uppercase text-muted-foreground tracking-wider">
-            Ультразвук
-          </span>
+      <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <SectionLabel>Ультразвук</SectionLabel>
           <RangeBar value={range} />
         </div>
 
-        <div className="grid grid-cols-3 gap-2 text-xs">
+        <div className="grid grid-cols-3 gap-2">
           <SensorValue label="Yaw" value={`${imu[0].toFixed(1)}°`} />
           <SensorValue label="Pitch" value={`${imu[1].toFixed(1)}°`} />
           <SensorValue label="Roll" value={`${imu[2].toFixed(1)}°`} />
         </div>
 
         {expanded && (
-          <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="grid grid-cols-2 gap-2">
             <SensorValue label="Gyro Z" value={gyro[2].toFixed(2)} />
             <SensorValue label="Accel X" value={accel[0].toFixed(2)} />
             <SensorValue
@@ -64,14 +68,17 @@ export function SensorPanel({ expanded }: SensorPanelProps) {
         )}
 
         {det && det.colour && (
-          <div className="flex items-center gap-2 text-xs pt-1 border-t border-border">
+          <div className="flex items-center gap-2 pt-2 border-t border-subtle">
             <div
-              className="w-3 h-3 rounded-full shrink-0"
-              style={{ backgroundColor: COLOUR_CSS[det.colour] }}
+              className="h-2.5 w-2.5 rounded-full border border-strong shrink-0"
+              style={{ backgroundColor: detHex ?? 'hsl(var(--foreground-faint))' }}
             />
-            <span>
-              {COLOUR_RU[det.colour] || det.colour} — {det.distance?.toFixed(2)} м
-              <span className="text-muted-foreground ml-1">
+            <span className="text-body text-foreground">
+              {COLOUR_RU[det.colour] || det.colour}{' '}
+              <span className="font-mono tabular-nums text-foreground-muted">
+                — {det.distance?.toFixed(2)} м
+              </span>{' '}
+              <span className="font-mono tabular-nums text-foreground-faint">
                 ({(det.conf * 100).toFixed(0)}%)
               </span>
             </span>
@@ -84,9 +91,19 @@ export function SensorPanel({ expanded }: SensorPanelProps) {
 
 function SensorValue({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-[10px] text-muted-foreground">{label}</span>
-      <span className="font-mono">{value}</span>
+    <div className="flex flex-col gap-0.5">
+      <span className="font-mono text-micro uppercase tracking-wider text-foreground-muted">
+        {label}
+      </span>
+      <span className="font-mono text-small tabular-nums text-foreground">{value}</span>
     </div>
+  )
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="font-mono text-micro uppercase tracking-wider text-foreground-muted">
+      {children}
+    </span>
   )
 }

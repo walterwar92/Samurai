@@ -88,16 +88,16 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false }:
 
   return (
     <group ref={groupRef}>
-      {/* Body */}
+      {/* Body — coral (#CC785C) per redesign §6.13 */}
       <mesh castShadow>
         <boxGeometry args={[bodyW, bodyH, bodyD]} />
-        <meshStandardMaterial color="#4a5568" metalness={0.5} roughness={0.35} />
+        <meshStandardMaterial color="#CC785C" metalness={0.1} roughness={0.6} />
       </mesh>
 
-      {/* Top plate */}
+      {/* Top plate — slightly lighter coral */}
       <mesh position={[0, bodyH / 2 + 0.005, 0]} castShadow>
         <boxGeometry args={[bodyW * 0.9, 0.01, bodyD * 0.8]} />
-        <meshStandardMaterial color="#5a6a7e" metalness={0.4} roughness={0.3} />
+        <meshStandardMaterial color="#D5876C" metalness={0.1} roughness={0.5} />
       </mesh>
 
       {/* Direction arrow (front indicator) */}
