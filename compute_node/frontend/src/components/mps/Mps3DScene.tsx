@@ -5,6 +5,16 @@ import * as THREE from 'three'
 import type { MpsTelemetryPoint, ScenarioStatus } from '@/types/mps'
 import { RobotModel } from '@/components/3d/RobotModel'
 
+function statusText(s: ScenarioStatus): string {
+  switch (s) {
+    case 'reached':  return 'достигнуто'
+    case 'aborted':  return 'прервано'
+    case 'timeout':  return 'таймаут'
+    case 'error':    return 'ошибка'
+    case 'running':  return 'выполняется'
+  }
+}
+
 interface Mps3DSceneProps {
   telemetry: MpsTelemetryPoint[]
   distance: number
@@ -29,8 +39,8 @@ function prepareSamples(telemetry: MpsTelemetryPoint[]): Sample[] {
   const out: Sample[] = []
   for (const p of telemetry) {
     const t = p.t
-    const s = p.x?.[0]
-    const theta = p.x?.[2]
+    const s = p.x[0]
+    const theta = p.x[2]
     if (
       !Number.isFinite(t) ||
       !Number.isFinite(s) ||
@@ -38,10 +48,10 @@ function prepareSamples(telemetry: MpsTelemetryPoint[]): Sample[] {
     ) continue
     out.push({
       t,
-      s: s as number,
-      theta: theta as number,
-      x: (s as number) * Math.cos(theta as number),
-      y: (s as number) * Math.sin(theta as number),
+      s,
+      theta,
+      x: s * Math.cos(theta),
+      y: s * Math.sin(theta),
     })
   }
   return out
@@ -54,6 +64,7 @@ interface AnimatedRobotProps {
 
 function AnimatedRobot({ samples, progressRef }: AnimatedRobotProps) {
   const startTimeRef = useRef<number | null>(null)
+  const doneRef = useRef(false)
   const [pose, setPose] = useState({
     posX: samples[0]?.x ?? 0,
     posY: samples[0]?.y ?? 0,
@@ -75,6 +86,7 @@ function AnimatedRobot({ samples, progressRef }: AnimatedRobotProps) {
   }, [progressRef])
 
   useFrame(() => {
+    if (doneRef.current) return
     if (samples.length === 0) return
     if (startTimeRef.current === null) {
       startTimeRef.current = performance.now()
@@ -83,6 +95,7 @@ function AnimatedRobot({ samples, progressRef }: AnimatedRobotProps) {
     const last = samples[samples.length - 1]
 
     if (elapsed >= last.t) {
+      doneRef.current = true
       setPose({
         posX: last.x,
         posY: last.y,
@@ -178,9 +191,10 @@ function AnimatedTrail({ samples, progressRef }: AnimatedTrailProps) {
 
 interface SceneInfoOverlayProps {
   progressRef: React.MutableRefObject<LiveProgress | null>
+  status: ScenarioStatus
 }
 
-function SceneInfoOverlay({ progressRef }: SceneInfoOverlayProps) {
+function SceneInfoOverlay({ progressRef, status }: SceneInfoOverlayProps) {
   // Обновляем HTML каждый кадр через requestAnimationFrame, без React state.
   const tRef = useRef<HTMLSpanElement | null>(null)
   const sRef = useRef<HTMLSpanElement | null>(null)
@@ -198,12 +212,12 @@ function SceneInfoOverlay({ progressRef }: SceneInfoOverlayProps) {
 
   return (
     <div className="absolute bottom-3 left-3 text-xs font-mono text-zinc-300 bg-zinc-900/70 backdrop-blur px-2 py-1 rounded border border-zinc-700">
-      t = <span ref={tRef}>0.00</span>с • s = <span ref={sRef}>0.00</span>м
+      t = <span ref={tRef}>0.00</span>с • s = <span ref={sRef}>0.00</span>м • {statusText(status)}
     </div>
   )
 }
 
-export function Mps3DScene({ telemetry, distance }: Mps3DSceneProps) {
+export function Mps3DScene({ telemetry, distance, status }: Mps3DSceneProps) {
   const samples = useMemo(() => prepareSamples(telemetry), [telemetry])
   const progressRef = useRef<LiveProgress | null>(null)
 
@@ -290,7 +304,7 @@ export function Mps3DScene({ telemetry, distance }: Mps3DSceneProps) {
         />
       </Canvas>
 
-      <SceneInfoOverlay progressRef={progressRef} />
+      <SceneInfoOverlay progressRef={progressRef} status={status} />
     </div>
   )
 }
