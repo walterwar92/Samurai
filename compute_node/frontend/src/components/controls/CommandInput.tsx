@@ -1,11 +1,24 @@
 import { useState, type KeyboardEvent } from 'react'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Send } from 'lucide-react'
 import { useSend } from '@/stores/selectors'
+import { Kbd } from '@/components/ui/kbd'
+import { cn } from '@/lib/utils'
 
-export function CommandInput() {
+export interface CommandInputProps {
+  placeholder?: string
+  disabled?: boolean
+}
+
+/**
+ * CommandInput — терминальный текстовый ввод команд (voice-like).
+ * Префикс `>` слева (мигает при focus), input — JetBrains Mono, kbd ↵ справа.
+ * Enter отправляет, очищает поле.
+ */
+export function CommandInput({
+  placeholder = 'найди красный мяч',
+  disabled,
+}: CommandInputProps) {
   const [text, setText] = useState('')
+  const [focused, setFocused] = useState(false)
   const send = useSend()
 
   const handleSend = () => {
@@ -15,22 +28,42 @@ export function CommandInput() {
     setText('')
   }
 
-  const handleKey = (e: KeyboardEvent) => {
+  const handleKey = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') handleSend()
   }
 
   return (
-    <div className="flex gap-2">
-      <Input
+    <div
+      className={cn(
+        'flex items-center gap-2 rounded-md border bg-surface-1 px-3 py-2',
+        'transition-colors duration-fast',
+        focused ? 'border-accent' : 'border-subtle',
+        disabled && 'opacity-50 pointer-events-none',
+      )}
+    >
+      <span
+        className={cn(
+          'font-mono text-body text-accent select-none',
+          focused && 'animate-blink',
+        )}
+      >
+        &gt;
+      </span>
+      <input
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKey}
-        placeholder="Введите команду (напр. найди красный мяч)..."
-        className="text-sm"
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={cn(
+          'flex-1 bg-transparent border-none outline-none',
+          'font-mono text-body text-foreground placeholder:text-foreground-faint',
+          'focus:ring-0',
+        )}
       />
-      <Button onClick={handleSend} size="sm" className="shrink-0">
-        <Send className="w-4 h-4" />
-      </Button>
+      <Kbd>↵</Kbd>
     </div>
   )
 }

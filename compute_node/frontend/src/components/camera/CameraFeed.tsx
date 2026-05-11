@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardSubtitle } from '@/components/ui/card'
+import { FsmBadge } from '@/components/fsm/FsmBadge'
+import { TargetIcon } from '@/components/icons'
+import { useFsmState, useTargetColour, useConnected } from '@/stores/selectors'
+import { cn } from '@/lib/utils'
 
 /**
  * CameraFeed — H.264 поток с робота через WebCodecs API.
@@ -326,39 +330,84 @@ export function CameraFeed() {
     }
   }, [webCodecsSupported, cleanup])
 
+  const fsm = useFsmState()
+  const target = useTargetColour()
+  const connected = useConnected()
+
   return (
     <Card>
-      <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">
-        <CardTitle className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
-          Камера + YOLO
-        </CardTitle>
-        <div className="flex items-center gap-2">
-          {!hasError && fps > 0 && (
-            <span className="text-[10px] text-zinc-500 font-mono">{fps} fps</span>
-          )}
-          {!hasError && resolution && (
-            <span className="text-[10px] text-zinc-600 font-mono">
-              {resolution.w}×{resolution.h}
-            </span>
-          )}
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-400">
-            H.264
-          </span>
-        </div>
+      <CardHeader
+        right={
+          <>
+            {!hasError && fps > 0 && (
+              <span className="font-mono text-micro tabular-nums text-foreground-faint">
+                {fps} fps
+              </span>
+            )}
+            {!hasError && resolution && (
+              <span className="font-mono text-micro tabular-nums text-foreground-faint">
+                {resolution.w}×{resolution.h}
+              </span>
+            )}
+            <CardSubtitle>H.264</CardSubtitle>
+          </>
+        }
+      >
+        <CardTitle>Камера + YOLO</CardTitle>
       </CardHeader>
-      <CardContent className="p-0">
+      <CardContent className="p-3">
         {hasError ? (
-          <div className="flex flex-col items-center justify-center h-48 bg-black/50 text-muted-foreground text-sm gap-2 p-4 text-center">
-            <span>Нет видеопотока</span>
+          <div className="flex flex-col items-center justify-center aspect-video bg-surface-2 rounded-md border border-subtle gap-2 p-4 text-center">
+            <span className="text-body text-foreground-muted">Нет видеопотока</span>
             {errorText && (
-              <span className="text-[10px] text-zinc-600 font-mono">{errorText}</span>
+              <span className="font-mono text-micro text-foreground-faint">{errorText}</span>
             )}
           </div>
         ) : (
-          <canvas
-            ref={canvasRef}
-            className="w-full h-auto block bg-black min-h-[200px]"
-          />
+          <div className="relative aspect-video overflow-hidden rounded-md border border-subtle bg-surface-2 scanline-bg">
+            <canvas
+              ref={canvasRef}
+              className="absolute inset-0 w-full h-full object-contain bg-black"
+            />
+
+            {/* Scanline */}
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <div className="absolute left-0 right-0 h-px bg-accent/40 animate-scanline" />
+            </div>
+
+            {/* HUD top-left: FSM bаdж */}
+            <div className="absolute top-2 left-2 pointer-events-none">
+              <FsmBadge state={fsm} target={target || undefined} compact />
+            </div>
+
+            {/* HUD top-right: разрешение */}
+            {resolution && (
+              <div className="absolute top-2 right-2 font-mono text-micro text-foreground-muted bg-background/70 backdrop-blur-sm rounded px-2 py-1 border border-subtle">
+                {resolution.w}×{resolution.h}
+              </div>
+            )}
+
+            {/* HUD bottom-left: cam meta */}
+            <div className="absolute bottom-2 left-2 flex items-center gap-1.5 bg-background/70 backdrop-blur-sm rounded-full border border-subtle px-2 py-1">
+              <TargetIcon className="h-3 w-3 text-foreground-muted" />
+              <span className="font-mono text-micro text-foreground-muted">
+                CAM 0{fps > 0 && ` · ${fps} fps`}
+              </span>
+            </div>
+
+            {/* HUD bottom-right: LIVE/OFFLINE */}
+            <div className="absolute bottom-2 right-2 flex items-center gap-1.5 bg-background/70 backdrop-blur-sm rounded-full border border-subtle px-2 py-1">
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 rounded-full',
+                  connected ? 'bg-success animate-pulse-soft' : 'bg-danger',
+                )}
+              />
+              <span className="font-mono text-micro text-foreground-muted">
+                {connected ? 'LIVE' : 'OFFLINE'}
+              </span>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
