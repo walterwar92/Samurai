@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useReducer } from 'r
 import type { ReactNode } from 'react'
 import type { MpsScenarioResult } from '@/types/mps'
 import { Mps3DToast } from './Mps3DToast'
+import { Mps3DOverlay } from './Mps3DOverlay'
 
 export type Mps3DState =
   | { kind: 'idle' }
@@ -75,6 +76,7 @@ export function Mps3DProvider({ children }: { children: ReactNode }) {
     <Mps3DContext.Provider value={{ state, requestToast, open, close }}>
       {children}
       <Mps3DToast />
+      <Mps3DOverlay />
     </Mps3DContext.Provider>
   )
 }
