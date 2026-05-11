@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { OrbitControls, Grid } from '@react-three/drei'
+import { OrbitControls, Grid, Html } from '@react-three/drei'
 import * as THREE from 'three'
 import type { MpsTelemetryPoint, ScenarioStatus } from '@/types/mps'
 import { RobotModel } from '@/components/3d/RobotModel'
@@ -288,7 +288,13 @@ export function Mps3DScene({ telemetry, distance, status }: Mps3DSceneProps) {
           <meshStandardMaterial color="#16a34a" emissive="#16a34a" emissiveIntensity={0.4} />
         </mesh>
 
-        <Suspense fallback={null}>
+        <Suspense fallback={
+          <Html center>
+            <div className="text-zinc-300 text-sm bg-zinc-900/80 px-3 py-2 rounded border border-zinc-700 backdrop-blur whitespace-nowrap">
+              Загрузка модели…
+            </div>
+          </Html>
+        }>
           <AnimatedRobot samples={samples} progressRef={progressRef} />
         </Suspense>
 
