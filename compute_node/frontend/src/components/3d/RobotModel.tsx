@@ -21,14 +21,23 @@ interface RobotModelProps {
   noSmooth?: boolean
 }
 
+/**
+ * Базовое смещение yaw, выравнивающее «нос» GLB-модели Samurai.glb с
+ * направлением робота yaw=0 → +X в world-координатах сцены. Подобрано
+ * вручную под текущий экспорт GLB; если модель пересобрана и нос смотрит
+ * в другую сторону — крути это число на ±π/2.
+ */
+const YAW_MOUNT_OFFSET = 0  // нос Samurai.glb смотрит по +X
+
 const DEG2RAD = Math.PI / 180
 
-// Lerp factor: 0.15 = smooth but responsive (higher = snappier)
-const POS_LERP = 0.15
-const ROT_LERP = 0.2
+// Lerp 0.3 — единый коэф. без специального «stationary slow mode».
+// Раньше при stationary=true коэф. падал до 0.08 — это давало заметное
+// «опаздывание» модели при старте движения после остановки. Дедзоны
+// 1 мм / ~0.06° сами по себе глушат сенсорный шум.
+const POS_LERP = 0.3
+const ROT_LERP = 0.3
 
-// Dead zone: ignore changes smaller than these when stationary
-// Prevents phantom movement from sensor noise
 const POS_DEADZONE = 0.001   // 1 mm
 const ROT_DEADZONE = 0.001   // ~0.06°
 
@@ -55,10 +64,9 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false, n
   propsRef.current = { yaw, pitch, roll, posX, posY, stationary, noSmooth }
 
   // Smoothed position/rotation to avoid jitter from sensor noise
-  // +PI/2 offset: model front is -Z, but robot yaw=0 faces +X in world coords
   const smoothPos = useRef(new THREE.Vector3(posX, 0.05, -posY))
   const smoothRot = useRef(new THREE.Euler(
-    pitch * DEG2RAD, -yaw * DEG2RAD + Math.PI / 2, roll * DEG2RAD, 'YXZ'
+    pitch * DEG2RAD, -yaw * DEG2RAD + YAW_MOUNT_OFFSET, roll * DEG2RAD, 'YXZ'
   ))
   useFrame(() => {
     if (!groupRef.current) return
@@ -71,7 +79,7 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false, n
       smoothPos.current.set(p.posX, 0.05, -p.posY)
       smoothRot.current.set(
         p.pitch * DEG2RAD,
-        -p.yaw * DEG2RAD + Math.PI / 2,
+        -p.yaw * DEG2RAD + YAW_MOUNT_OFFSET,
         p.roll * DEG2RAD,
         'YXZ',
       )
@@ -89,22 +97,15 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false, n
     const targetX = p.posX
     const targetZ = -p.posY
     const targetPitch = p.pitch * DEG2RAD
-    const targetYaw = -p.yaw * DEG2RAD + Math.PI / 2  // +90°: align model -Z front with robot +X forward
+    const targetYaw = -p.yaw * DEG2RAD + YAW_MOUNT_OFFSET  // align model nose with robot +X forward
     const targetRoll = p.roll * DEG2RAD
-    const isStationary = p.stationary
-
-    // Always lerp towards target — use slower lerp when stationary to filter noise
-    const lerpPos = isStationary ? 0.08 : POS_LERP
-    const lerpRot = isStationary ? 0.1 : ROT_LERP
-    const deadPos = isStationary ? POS_DEADZONE : POS_DEADZONE
-    const deadRot = isStationary ? ROT_DEADZONE : ROT_DEADZONE
 
     const dxPos = targetX - smoothPos.current.x
     const dzPos = targetZ - smoothPos.current.z
 
-    if (Math.abs(dxPos) > deadPos || Math.abs(dzPos) > deadPos) {
-      smoothPos.current.x += dxPos * lerpPos
-      smoothPos.current.z += dzPos * lerpPos
+    if (Math.abs(dxPos) > POS_DEADZONE || Math.abs(dzPos) > POS_DEADZONE) {
+      smoothPos.current.x += dxPos * POS_LERP
+      smoothPos.current.z += dzPos * POS_LERP
     }
     smoothPos.current.y = 0.05
 
@@ -112,10 +113,10 @@ export function RobotModel({ yaw, pitch, roll, posX, posY, stationary = false, n
     const dyRot = targetYaw - smoothRot.current.y
     const dzRot = targetRoll - smoothRot.current.z
 
-    if (Math.abs(dxRot) > deadRot || Math.abs(dyRot) > deadRot || Math.abs(dzRot) > deadRot) {
-      smoothRot.current.x += dxRot * lerpRot
-      smoothRot.current.y += dyRot * lerpRot
-      smoothRot.current.z += dzRot * lerpRot
+    if (Math.abs(dxRot) > ROT_DEADZONE || Math.abs(dyRot) > ROT_DEADZONE || Math.abs(dzRot) > ROT_DEADZONE) {
+      smoothRot.current.x += dxRot * ROT_LERP
+      smoothRot.current.y += dyRot * ROT_LERP
+      smoothRot.current.z += dzRot * ROT_LERP
     }
 
     groupRef.current.position.copy(smoothPos.current)
