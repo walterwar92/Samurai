@@ -332,10 +332,28 @@ async def scenario_abort(state: StateDep, mqtt: MQTTDep) -> MpsScenarioAbortResp
         active = state.mps.active_run
     if active is None or active.status != 'running':
         return MpsScenarioAbortResponse(aborted=False, run_id=None)
+
+    # Best-effort уведомление Pi. Дальше не зависим от его ответа — иначе
+    # любой обрыв MQTT (или mps_node не поднят) залочит UI на 409 Conflict
+    # при следующем /scenario/run.
     try:
         mqtt.publish('mps/scenario/abort', {'run_id': active.run_id}, qos=1)
     except Exception as exc:  # noqa: BLE001
         log.warning('mps/scenario/abort publish failed: %s', exc)
+
+    # Локально завершаем run: переложить в history со статусом 'aborted'
+    # и обнулить active_run. Если Pi всё-таки пришлёт mps/scenario/finished
+    # позже, _h_mps_scenario_finished идемпотентно заменит запись по run_id.
+    aborted_run = active.model_copy(update={
+        'status': 'aborted',
+        'finished_at': datetime.now(timezone.utc),
+    })
+    with state.lock:
+        state.mps.active_run = None
+        state.mps.history.appendleft(aborted_run)
+        state.mps.last_telemetry.clear()
+    state.mark_dirty()
+
     return MpsScenarioAbortResponse(aborted=True, run_id=active.run_id)
 
 

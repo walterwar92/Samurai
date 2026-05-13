@@ -228,6 +228,39 @@ def test_scenario_abort_when_no_active(client):
     assert r.json()['aborted'] is False
 
 
+def test_robot_run_abort_then_rerun_does_not_409(client, fake_mqtt):
+    """Регрессия: после /scenario/abort повторный /scenario/run на роботе
+    не должен ловить 409 Conflict, даже если Pi не прислал mps/scenario/finished
+    (mps_node лежит, MQTT временно offline, и т.п.).
+
+    До фикса /scenario/abort только публиковал MQTT, не трогая
+    state.mps.active_run → второй запуск зависал в 'running' навсегда."""
+    fake_mqtt.connected = True
+
+    r1 = client.post('/api/v1/mps/scenario/run', json={
+        'distance': 1.0, 'v_target': 0.10, 'source': 'robot',
+    })
+    assert r1.status_code == 200
+    run_id_1 = r1.json()['run_id']
+
+    # Abort — Pi не отвечает, mps/scenario/finished не приходит.
+    ra = client.post('/api/v1/mps/scenario/abort')
+    assert ra.status_code == 200
+    assert ra.json()['aborted'] is True
+    assert ra.json()['run_id'] == run_id_1
+
+    # Aborted run должен быть в history со статусом 'aborted'.
+    hist = client.get('/api/v1/mps/history').json()['history']
+    assert any(h['run_id'] == run_id_1 and h['status'] == 'aborted' for h in hist)
+
+    # Повторный запуск — НЕ 409.
+    r2 = client.post('/api/v1/mps/scenario/run', json={
+        'distance': 1.0, 'v_target': 0.10, 'source': 'robot',
+    })
+    assert r2.status_code == 200, f'expected 200 after abort, got {r2.status_code}: {r2.text}'
+    assert r2.json()['run_id'] != run_id_1
+
+
 # ── /history/{run_id}/replay ──────────────────────────────────────────
 def test_history_replay_creates_new_run(client):
     r = client.post('/api/v1/mps/scenario/run', json={

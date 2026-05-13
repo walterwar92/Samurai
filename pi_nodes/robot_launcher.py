@@ -67,6 +67,11 @@ NODE_REGISTRY = {
     'led':           'pi_nodes.nodes.led_node.LedNode',
     'precision_drive': 'pi_nodes.nodes.precision_drive_node.PrecisionDriveNode',
     'perf_monitor':    'pi_nodes.nodes.perf_monitor_node.PerfMonitorNode',
+    # МПС — Модель Пространства Состояний (feat/mps). Без неё дашбордовский
+    # /scenario/run для source='robot' уходит в MQTT в никуда: робот молчит,
+    # state.mps.active_run навсегда зависает в 'running' и второй запуск
+    # ловит 409 Conflict.
+    'mps':          'pi_nodes.nodes.mps_node.MpsNode',
 }
 
 # Core nodes — essential for robot operation (13 nodes, 13 MQTT connections)
@@ -78,6 +83,7 @@ DEFAULT_NODES = [
     'fsm', 'watchdog',                         # core logic
     'slam_map',                                # SLAM map relay for laptop
     'precision_drive',                         # test scenarios (dashboard UI)
+    'mps',                                     # state-space сценарий «D метров вперёд»
 ]
 # Disabled by default (add via --nodes if needed):
 # 'fallback_nav', 'path_recorder', 'calibration',
