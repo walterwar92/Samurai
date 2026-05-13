@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="theme-color" content="#1F1E1D" />
+<title>Samurai · Redesign</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: ['class', '.light'], // we use a `.light` class on <html>; absence = dark
+  theme: {
+    extend: {
+      colors: {
+        background: 'hsl(var(--background))',
+        foreground: 'hsl(var(--foreground))',
+        'foreground-muted': 'hsl(var(--foreground-muted))',
+        'foreground-faint': 'hsl(var(--foreground-faint))',
+        surface: {
+          1: 'hsl(var(--surface-1))',
+          2: 'hsl(var(--surface-2))',
+          3: 'hsl(var(--surface-3))',
+        },
+        border: {
+          DEFAULT: 'hsl(var(--border-subtle))',
+          subtle:  'hsl(var(--border-subtle))',
+          strong:  'hsl(var(--border-strong))',
+        },
+        accent: {
+          DEFAULT: 'hsl(var(--accent))',
+          hover:   'hsl(var(--accent-hover))',
+          active:  'hsl(var(--accent-active))',
+          foreground: 'hsl(var(--accent-foreground))',
+        },
+        success: 'hsl(var(--success))',
+        warning: 'hsl(var(--warning))',
+        danger:  'hsl(var(--danger))',
+        info:    'hsl(var(--info))',
+        fsm: {
+          idle:        '#8A8278',
+          searching:   '#7DA1C9',
+          approaching: '#C9A26B',
+          grabbing:    '#B894C9',
+          calling:     '#7DA88A',
+          returning:   '#9A9089',
+        },
+        ball: {
+          red:   '#B85C5C',
+          blue:  '#5C7DC9',
+          green: '#6BA86B',
+          yellow:'#C9B05C',
+          orange:'#C9885C',
+          white: '#D8D2C8',
+          black: '#2A2826',
+        },
+      },
+      fontFamily: {
+        sans: ['Inter', 'Segoe UI', 'Ubuntu', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'Consolas', 'monospace'],
+      },
+      fontSize: {
+        display:['1.5rem',  { lineHeight:'1.75rem',  letterSpacing:'-0.01em',  fontWeight:'600' }],
+        h1:     ['1.125rem',{ lineHeight:'1.5rem',   letterSpacing:'-0.005em', fontWeight:'600' }],
+        h2:     ['1rem',    { lineHeight:'1.375rem', letterSpacing:'-0.003em', fontWeight:'500' }],
+        body:   ['0.875rem',{ lineHeight:'1.25rem' }],
+        small:  ['0.75rem', { lineHeight:'1rem' }],
+        micro:  ['0.625rem',{ lineHeight:'0.875rem', letterSpacing:'0.06em',   fontWeight:'500' }],
+      },
+      borderRadius: {
+        sm: '6px', DEFAULT: '8px', md: '8px', lg: '12px', xl: '16px', pill: '9999px',
+      },
+      transitionTimingFunction: {
+        standard: 'cubic-bezier(0.4, 0, 0.2, 1)',
+        spring:   'cubic-bezier(0.34, 1.56, 0.64, 1)',
+        swift:    'cubic-bezier(0.4, 0, 1, 1)',
+      },
+      transitionDuration: { fast:'120ms', standard:'200ms', slow:'320ms' },
+      animation: {
+        'pulse-soft': 'pulse-soft 1.6s ease-in-out infinite',
+        'scanline':   'scanline 4s linear infinite',
+        'fade-in-up': 'fade-in-up 200ms cubic-bezier(0.34, 1.56, 0.64, 1)',
+        'blink':      'blink 1s steps(2) infinite',
+      },
+      keyframes: {
+        'pulse-soft': { '0%,100%':{opacity:'1'}, '50%':{opacity:'.55'} },
+        'scanline':   { '0%':{transform:'translateY(-100%)',opacity:'0'}, '10%':{opacity:'.16'}, '90%':{opacity:'.16'}, '100%':{transform:'translateY(2400%)',opacity:'0'} },
+        'fade-in-up': { from:{opacity:'0',transform:'translateY(4px)'}, to:{opacity:'1',transform:'translateY(0)'} },
+        'blink':      { '0%,100%':{opacity:'1'}, '50%':{opacity:'0'} },
+      },
+    },
+  },
+};
+</script>
+
+<style>
+:root {
+  --background: 30 4% 12%;
+  --surface-1: 40 4% 15%;
+  --surface-2: 30 6% 17%;
+  --surface-3: 30 5% 19%;
+  --border-subtle: 30 5% 17%;
+  --border-strong: 30 6% 21%;
+  --foreground: 40 19% 89%;
+  --foreground-muted: 35 9% 63%;
+  --foreground-faint: 35 7% 40%;
+
+  --accent: 16 53% 58%;
+  --accent-hover: 16 56% 63%;
+  --accent-active: 16 41% 52%;
+  --accent-foreground: 30 4% 12%;
+
+  --success: 138 16% 57%;
+  --warning: 36 45% 60%;
+  --danger:  0 41% 64%;
+  --info:    211 39% 64%;
+}
+.light {
+  --background: 42 32% 94%;
+  --surface-1: 42 38% 96%;
+  --surface-2: 42 24% 92%;
+  --surface-3: 40 22% 88%;
+  --border-subtle: 40 20% 87%;
+  --border-strong: 38 17% 81%;
+  --foreground: 30 6% 15%;
+  --foreground-muted: 35 7% 40%;
+  --foreground-faint: 35 9% 63%;
+  --accent: 12 46% 50%;
+  --accent-hover: 12 50% 44%;
+  --accent-active: 12 51% 40%;
+  --accent-foreground: 42 38% 96%;
+}
+html, body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: 'Inter', 'Segoe UI', 'Ubuntu', sans-serif;
+  font-variant-numeric: tabular-nums;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border-strong)); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--foreground-faint)); }
+.joystick-area { touch-action: none; }
+.scanline-bg::before {
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(255,255,255,.018) 3px 4px);
+}
+@media (prefers-reduced-motion: reduce) {
+  *,*::before,*::after { animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
+}
+</style>
+</head>
+<body class="bg-background text-foreground">
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="dashboard.jsx"></script>
+<script type="text/babel" src="other-pages.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+</body>
+</html>

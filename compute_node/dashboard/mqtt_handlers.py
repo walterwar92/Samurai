@@ -687,7 +687,16 @@ class MQTTHandlers:
             log.warning('mps/scenario/finished: bad payload: %s', exc)
             return
         with self._state.lock:
-            self._state.mps.history.appendleft(result)
+            # Idempotent: если /scenario/abort уже положил запись с этим
+            # run_id в history (status='aborted'), заменяем её — иначе при
+            # позднем mps/scenario/finished от Pi будет дубликат.
+            history = self._state.mps.history
+            for i, past in enumerate(history):
+                if past.run_id == result.run_id:
+                    history[i] = result
+                    break
+            else:
+                history.appendleft(result)
             if (self._state.mps.active_run is not None and
                     self._state.mps.active_run.run_id == result.run_id):
                 self._state.mps.active_run = None

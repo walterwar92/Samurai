@@ -266,12 +266,27 @@ class CameraNode(MqttNode):
             self._publish_discovery()
 
     def _publish_discovery(self):
-        """Retained discovery message — клиенты находят Pi по этому топику."""
+        """Retained discovery message — клиенты находят Pi по этому топику.
+
+        Defense-in-depth: если get_local_ip() вернул loopback (Pi в AP-режиме
+        без default-route + сломанный interface enumeration) — НЕ публикуем
+        вообще. Лучше пустой retained, чем bogus host=127.0.0.1, на который
+        ноут пытается коннектиться к собственному localhost:8554. Громкий
+        WARNING в лог сразу подскажет, какой env-override выставить.
+        """
         if not self._mqtt_connected or self._tcp is None:
+            return
+        host = get_local_ip(broker_hint=self._broker)
+        if host.startswith('127.'):
+            self.log_warn(
+                'camera/endpoint NOT published — get_local_ip returned '
+                'loopback %r. Pi likely in AP-mode без default-route и '
+                'interface enumeration не сработала. Set SAMURAI_PI_IP=<wlan-IP> '
+                'env var (e.g. 192.168.4.1) и рестартни camera_node.', host)
             return
         endpoint = {
             'protocol': 'tcp',
-            'host': get_local_ip(broker_hint=self._broker),
+            'host': host,
             'port': self._h264_port,
             'codec': 'h264',
             'format': 'annex-b',
@@ -282,6 +297,8 @@ class CameraNode(MqttNode):
             'iperiod': self._iperiod,
             'clients': self._tcp.client_count,
         }
+        self.log_info('camera/endpoint -> tcp://%s:%d (clients=%d)',
+                      host, self._h264_port, self._tcp.client_count)
         self.publish(self._discovery_topic, endpoint, qos=1, retain=True)
 
     def on_shutdown(self):

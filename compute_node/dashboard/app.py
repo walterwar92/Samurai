@@ -396,13 +396,21 @@ def create_app(
         # - data:/blob: для картинок (camera frame, map.png)
         # - ws:/wss:/http:/https: для connect-src (Socket.IO + WebSocket H264)
         # - frame-ancestors 'none' блокирует встраивание в <iframe>
+        # 'wasm-unsafe-eval' нужен для useGLTF: Three.js Draco/Meshopt-декодер
+        # компилируется как WebAssembly, и без этого CSP-токена браузер блокирует
+        # WebAssembly.instantiate → useGLTF падает → WebGLRenderer Context Lost.
+        # Google Fonts (Inter, JetBrains Mono) подключены в compute_node/static/
+        # index.html, поэтому fonts.googleapis.com (stylesheet) и
+        # fonts.gstatic.com (шрифты) добавлены в style-src и font-src.
         _DEFAULT_CSP = (
             "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'wasm-unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "img-src 'self' data: blob:; "
-            "font-src 'self' data:; "
-            "connect-src 'self' ws: wss: http: https:; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            # blob: нужен для GLTFLoader — Three.js извлекает текстуры из GLB
+            # как Blob и fetch'ит их через blob:-URL.
+            "connect-src 'self' ws: wss: http: https: blob:; "
             "object-src 'none'; "
             "base-uri 'self'; "
             "frame-ancestors 'none'"
@@ -514,6 +522,13 @@ def create_app(
         assets_dir = os.path.join(static_dir, 'assets')
         if os.path.isdir(assets_dir):
             app.mount('/assets', StaticFiles(directory=assets_dir), name='assets')
+        # GLB/GLTF и прочие 3D-public-ассеты лежат в compute_node/static/models/
+        # (Vite копирует frontend/public/models/* в outDir при build). Без явного
+        # mount запросы /models/* падали в SPA-fallback и отдавали index.html, что
+        # ломало useGLTF (он ждёт binary, получает HTML → Context Lost).
+        models_dir = os.path.join(static_dir, 'models')
+        if os.path.isdir(models_dir):
+            app.mount('/models', StaticFiles(directory=models_dir), name='models')
         app.mount('/static', StaticFiles(directory=static_dir), name='static')
 
     # ── Socket.IO + state push loop (legacy фронт) ────────────────────

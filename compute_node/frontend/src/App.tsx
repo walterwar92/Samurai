@@ -3,6 +3,7 @@ import { useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { RobotProvider } from '@/providers/RobotProvider'
 import { useRobotStore } from '@/stores/robotStore'
+import { Layout } from '@/components/layout/Layout'
 // DashboardPage is the landing page — eager so first paint isn't behind a chunk.
 import { DashboardPage } from '@/pages/DashboardPage'
 
@@ -22,7 +23,7 @@ const MpsPage = lazy(() => import('@/pages/MpsPage').then(m => ({ default: m.Mps
 
 function PageLoadingFallback() {
   return (
-    <div className="flex items-center justify-center min-h-[60vh] text-muted-foreground text-sm">
+    <div className="flex items-center justify-center min-h-[60vh] text-foreground-muted text-body">
       Загрузка…
     </div>
   )
@@ -41,17 +42,52 @@ export default function App() {
   return (
     <RobotProvider>
       <BrowserRouter>
-        <Suspense fallback={<PageLoadingFallback />}>
-          <Routes>
+        <Routes>
+          <Route element={<Layout />}>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/admin" element={<AdminPage />} />
-            <Route path="/3d" element={<Visualization3DPage />} />
-            <Route path="/hardware" element={<HardwarePage />} />
-            <Route path="/samcan" element={<SamcanPage />} />
-            <Route path="/mps" element={<MpsPage />} />
-          </Routes>
-        </Suspense>
+            <Route
+              path="/admin"
+              element={
+                <Suspense fallback={<PageLoadingFallback />}>
+                  <AdminPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/3d"
+              element={
+                <Suspense fallback={<PageLoadingFallback />}>
+                  <Visualization3DPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/hardware"
+              element={
+                <Suspense fallback={<PageLoadingFallback />}>
+                  <HardwarePage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/samcan"
+              element={
+                <Suspense fallback={<PageLoadingFallback />}>
+                  <SamcanPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/mps"
+              element={
+                <Suspense fallback={<PageLoadingFallback />}>
+                  <MpsPage />
+                </Suspense>
+              }
+            />
+          </Route>
+        </Routes>
       </BrowserRouter>
     </RobotProvider>
   )

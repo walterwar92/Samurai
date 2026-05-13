@@ -1,5 +1,6 @@
 import { useRobotState } from '@/hooks/useRobotState'
-import { Header } from '@/components/layout/Header'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Badge } from '@/components/ui/badge'
 import { SamuraiStatusBanner } from '@/components/layout/SamuraiStatusBanner'
 import { CameraFeed } from '@/components/camera/CameraFeed'
 import { MapCanvas } from '@/components/map/MapCanvas'
@@ -26,9 +27,16 @@ export function AdminPage() {
   const status = state?.status
   const pose = state?.pose
 
+  const simTimeStr =
+    state?.sim_time !== undefined ? `${state.sim_time.toFixed(1)}s` : undefined
+
   return (
     <div className="min-h-screen">
-      <Header isAdmin simTime={state?.sim_time} />
+      <PageHeader
+        title="Admin"
+        simTime={simTimeStr}
+        right={<Badge tone="danger" dot>ADMIN</Badge>}
+      />
       <SamuraiStatusBanner state={state} />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_340px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">
