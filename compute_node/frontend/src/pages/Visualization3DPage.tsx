@@ -3,6 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Grid, Html } from '@react-three/drei'
 import { useRobotState } from '@/hooks/useRobotState'
 import { useConnected } from '@/stores/selectors'
+import { usePathTrail } from '@/hooks/usePathTrail'
 import { api } from '@/lib/api'
 import { RobotModel } from '@/components/3d/RobotModel'
 import { PathTrail } from '@/components/3d/PathTrail'
@@ -11,6 +12,8 @@ import { ImuVectors } from '@/components/3d/ImuVectors'
 import { InfoPanel } from '@/components/3d/InfoPanel'
 import { SlamMap3D } from '@/components/3d/SlamMap3D'
 import { CoverageHeatmap } from '@/components/3d/CoverageHeatmap'
+import { CompassHUD } from '@/components/3d/CompassHUD'
+import { DistanceRings } from '@/components/3d/DistanceRings'
 import * as THREE from 'three'
 
 /** Helper: smoothly updates OrbitControls target to follow robot position */
@@ -64,13 +67,22 @@ export function Visualization3DPage() {
   const gyro: [number, number, number] = state?.imu_gyro ?? [0, 0, 0]
   const posX = state?.pose?.x ?? 0
   const posY = state?.pose?.y ?? 0
-  const stationary = state?.stationary ?? true
+  // Fallback: если backend не эмитит stationary (старый sim) — считаем «едет»
+  // только когда есть линейная или угловая скорость. Без этого PathTrail бы
+  // молчал в сим-режиме без поля stationary.
+  const stationary = state?.stationary ?? (
+    Math.abs(state?.velocity?.linear ?? 0) < 0.005 &&
+    Math.abs(state?.velocity?.angular ?? 0) < 0.01
+  )
   const linearVel = state?.velocity?.linear ?? 0
   const angularVel = state?.velocity?.angular ?? 0
   const ekfBias: [number, number, number] | null = state?.imu_ekf_bias ?? null
   const recordedPath = state?.recorded_path ?? null
   const isReplaying = state?.path_recorder?.state === 'replaying'
   const slamMap = state?.slam_map ?? null
+
+  // Накопитель траектории — общий для PathTrail (рендер) и InfoPanel (метраж).
+  const trail = usePathTrail(posX, posY, stationary, clearSignal)
 
   const handleClearPath = useCallback(() => {
     setClearSignal(prev => prev + 1)
@@ -194,13 +206,11 @@ export function Visualization3DPage() {
           />
         </Suspense>
 
-        {/* Path trail (real-time odometry trace) */}
-        <PathTrail
-          posX={posX}
-          posY={posY}
-          stationary={stationary}
-          clearSignal={clearSignal}
-        />
+        {/* Distance rings from origin (0.5m step) */}
+        <DistanceRings stepM={0.5} maxM={5.0} />
+
+        {/* Path trail (real-time odometry trace) — bounded only by softCap (~200m) */}
+        <PathTrail points={trail.points} />
 
         {/* Planned return path (from path recorder) */}
         <PlannedPathTrail
@@ -239,6 +249,7 @@ export function Visualization3DPage() {
         stationary={stationary}
         linearVel={linearVel}
         angularVel={angularVel}
+        pathDistance={trail.totalDistance}
         onClearPath={handleClearPath}
         onResetHome={handleResetHome}
         useEkf={useEkf}
@@ -247,6 +258,9 @@ export function Visualization3DPage() {
         ekfBias={ekfBias}
         yprRaw={state?.imu_ypr_raw ?? null}
       />
+
+      {/* HUD-compass in bottom-right corner */}
+      <CompassHUD yaw={yaw} />
     </div>
   )
 }

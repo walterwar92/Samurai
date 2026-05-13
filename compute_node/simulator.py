@@ -1445,8 +1445,30 @@ def main():
                         round(sensors.imu_pitch, 1),
                         round(sensors.imu_roll, 1),
                     ],
+                    # /3d parity: реальный робот эмитит imu_ypr_raw + imu_has_ekf
+                    # для toggle EKF/RAW. Сим без EKF — оставляем has_ekf=False,
+                    # toggle в UI прячется, raw = тот же ypr.
+                    'imu_ypr_raw': [
+                        round(sensors.imu_yaw, 1),
+                        round(sensors.imu_pitch, 1),
+                        round(sensors.imu_roll, 1),
+                    ],
+                    'imu_has_ekf': False,
                     'imu_gyro_z': round(sensors.imu_gyro_z, 3),
                     'imu_accel_x': round(sensors.accel_x, 3),
+                    # /3d parity: полные triples для ImuVectors и InfoPanel.
+                    # Сим 2D — поэтому Y-ускорение/гироскопы пренебрежимы,
+                    # Z-accel = -g (модель ось Z вверх).
+                    'imu_accel': [
+                        round(sensors.accel_x, 3),
+                        0.0,
+                        9.81,
+                    ],
+                    'imu_gyro': [
+                        0.0,
+                        0.0,
+                        round(sensors.imu_gyro_z, 3),
+                    ],
                     'pose': {
                         'x': round(robot.x, 3),
                         'y': round(robot.y, 3),
@@ -1457,6 +1479,13 @@ def main():
                         'linear': round(robot.v_linear, 4),
                         'angular': round(robot.v_angular, 4),
                     },
+                    # /3d parity: PathTrail записывает точки только когда
+                    # stationary=False. Реальный робот эмитит это поле из IMU+ZUPT,
+                    # сим определяем по скоростям.
+                    'stationary': (
+                        abs(robot.v_linear) < 0.005
+                        and abs(robot.v_angular) < 0.01
+                    ),
                     'actuators': {
                         'claw_open': robot.claw_open,
                     },

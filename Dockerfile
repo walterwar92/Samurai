@@ -17,12 +17,19 @@ ARG APT_MIRROR=mirror.yandex.ru
 #
 # BuildKit cache mounts ускоряют пересборки в разы: индексы и .deb файлы
 # переиспользуются, в слой образа не попадают (rm не нужен).
+#
+# Base image содержит libpng16-16=1.6.37-3ubuntu0.5 (этой версии больше нет
+# в jammy-updates/security), а libpng-dev доступен только как -3ubuntu0.4
+# и строго пинит libpng16-16 на ту же -3ubuntu0.4. Downgrade libpng16-16
+# до -3ubuntu0.4 синхронизирует версии и снимает конфликт при установке
+# ROS-пакетов, которые транзитивно тянут libpng-dev.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if [ -n "${APT_MIRROR}" ]; then \
         sed -i "s|http://archive.ubuntu.com|http://${APT_MIRROR}|g; s|http://security.ubuntu.com|http://${APT_MIRROR}|g" /etc/apt/sources.list; \
     fi && \
-    apt-get update && apt-get install -y --no-install-recommends \
+    apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
+    libpng16-16=1.6.37-3ubuntu0.4 \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
     ros-humble-slam-toolbox \

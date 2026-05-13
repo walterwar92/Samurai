@@ -9,6 +9,8 @@ interface InfoPanelProps {
   stationary: boolean
   linearVel: number
   angularVel: number
+  /** Накопленное пройденное расстояние по треку (м). */
+  pathDistance: number
   onClearPath: () => void
   onResetHome: () => void
   // EKF toggle
@@ -36,6 +38,7 @@ export function InfoPanel({
   accel, gyro,
   posX, posY, stationary,
   linearVel, angularVel,
+  pathDistance,
   onClearPath,
   onResetHome,
   useEkf, hasEkf, onToggleEkf,
@@ -133,6 +136,7 @@ export function InfoPanel({
         <V label="Y" value={posY.toFixed(3)} unit="м" />
         <V label="V lin" value={linearVel.toFixed(3)} unit="м/с" />
         <V label="V ang" value={angularVel.toFixed(3)} unit="рад/с" />
+        <V label="Пройдено" value={pathDistance.toFixed(2)} unit="м" />
       </div>
 
       <div className="flex gap-1 mt-1">
