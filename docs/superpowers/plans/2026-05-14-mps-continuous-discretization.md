@@ -14,22 +14,22 @@
 
 ---
 
-## ⚠ PLAN AMENDMENT 2026-05-14 — Option A (`e_int` → ∫position) + `MPCController` fix
+## ⚠ PLAN AMENDMENT 2026-05-14 — Option D (`e_int` → ∫heading) + `MPCController` fix
 
 **Status:** Tasks 1-3 committed (`24210ef`, `ddd7741`, `65e799f`, `b855747`). During Task 3 two pre-existing bugs surfaced (spec §2.6):
 
 1. **`MPCController.__init__` overwrites the computed gain** with the legacy `control.matrices.K_mpc` from config (proof: `K_first[0,:3]` after `__init__` = `[2.80934, 0, 0]` = config's `K_mpc`). Same footgun for `Pf` / `control.weights`.
-2. **The canonical `ė_int = v_target − v` makes the model uncontrollable** (`s + e_int = const`, ctrb rank 4/5, DARE fails). User chose **Option A**: redefine `ė_int = s_ref − s` (integral of *position* error) — `A_c[4][0] = −1` instead of `A_c[4][1] = −1`. Verified: rank 5/5, DARE OK, closed loop strictly stable (max|λ| ≈ 0.993).
+2. **The canonical `ė_int = v_target − v` makes the model uncontrollable** (`s + e_int = const`, ctrb rank 4/5, DARE fails). User chose **Option D**: redefine `ė_int = −θ` (integral of *heading* error; `θ_ref ≡ 0` so no exogenous term) — `A_c[4][2] = −1` instead of `A_c[4][1] = −1`. Verified by simulation: rank 5/5, DARE OK, closed loop strictly stable (max|λ| ≈ 0.991), scenario `reached`. Option «∫position-error» (`A_c[4][0]=−1`) was also controllable but would have required an `x_ref[4]=−∫s_ref` feedforward in the runner — Option D works with the runner unchanged.
 
 **Effect on the plan:**
 - **NEW Task C1** below — runs BEFORE Task 4, fixes both bugs atomically.
-- **Tasks 4, 5, 8, 11** — `A` fixture row 4 changes `[0,-1,0,0,0]` → `[-1,0,0,0,0]` (see "Task deltas" below).
+- **Tasks 4, 5, 8, 11** — `A` fixture row 4 changes `[0,-1,0,0,0]` → `[0,0,-1,0,0]` (see "Task deltas" below).
 - **Task 12** expands — also updates `canonical.ts` / `tokenMap.ts` / `OdeCard` equation.
 - Task 3's committed `test_closed_loop_eigenvalues_returns_5_5` has a `< 1.5` band-aid — Task C1 replaces it with the honest `< 1.0`.
 
 ---
 
-### Task C1: `e_int` → ∫position-error + fix `MPCController` gain-override
+### Task C1: `e_int` → ∫heading-error + fix `MPCController` gain-override
 
 **Files:**
 - Modify: `pi_nodes/control/mpc_controller.py` (`__init__`, `_compute_terminal_penalty`)
@@ -37,9 +37,9 @@
 - Modify: `compute_node/mps_runner.py` (`__main__` `A_DEFAULT` row 4)
 - Test: `tests/test_mps_runner.py`, `tests/test_mpc_controller.py`
 
-- [ ] **Step 1: Update tests to Option-A / fixed-`MPCController` expectations (RED)**
+- [ ] **Step 1: Update tests to Option-D / fixed-`MPCController` expectations (RED)**
 
-In `tests/test_mps_runner.py`, change `_A_CANONICAL` row 4 (e_int) from `[0.0, -1.0, 0.0, 0.0, 0.0]` to `[-1.0, 0.0, 0.0, 0.0, 0.0]`:
+In `tests/test_mps_runner.py`, change `_A_CANONICAL` row 4 (e_int) from `[0.0, -1.0, 0.0, 0.0, 0.0]` to `[0.0, 0.0, -1.0, 0.0, 0.0]` (ė_int = −θ):
 
 ```python
 _A_CANONICAL = [
@@ -47,7 +47,7 @@ _A_CANONICAL = [
     [0.0, -1.0/_TAU_V,  0.0,  0.0,         0.0],
     [0.0,  0.0,         0.0,  1.0,         0.0],
     [0.0,  0.0,         0.0, -1.0/_TAU_W,  0.0],
-    [-1.0, 0.0,         0.0,  0.0,         0.0],
+    [0.0,  0.0,        -1.0,  0.0,         0.0],
 ]
 ```
 
@@ -60,7 +60,7 @@ def test_closed_loop_eigenvalues_returns_5_5():
     assert len(eig_open) == 5
     assert len(eig_closed) == 5
     assert all(np.isfinite(z) for z in eig_closed)
-    # Option A canonical model (ė_int = s_ref − s) is fully controllable —
+    # Option D canonical model (ė_int = −θ) is fully controllable —
     # the MPC places ALL closed-loop poles strictly inside the unit circle.
     assert max(abs(z) for z in eig_closed) < 1.0
     # Open loop keeps 3 integrator poles on |λ|=1 (s, θ, e_int chain).
@@ -161,9 +161,9 @@ Replace `_compute_terminal_penalty` to use the instance weights instead of re-re
         return solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
 ```
 
-In `config.yaml`, `mps.matrices.A` — change row 4 from `      - [0, -1, 0, 0, 0]` to `      - [-1, 0, 0, 0, 0]` (ė_int = s_ref − s). Update the adjacent comment line `# A_c: ... [4][1]=-1` → `[4][0]=-1`.
+In `config.yaml`, `mps.matrices.A` — change row 4 from `      - [0, -1, 0, 0, 0]` to `      - [0, 0, -1, 0, 0]` (ė_int = −θ). Update the adjacent comment line `# A_c: ... [4][1]=-1` → `[4][2]=-1`.
 
-In `compute_node/mps_runner.py`, the `__main__` block's `A_DEFAULT` — change row 4 from `[0.0, -1.0, 0.0, 0.0, 0.0]` to `[-1.0, 0.0, 0.0, 0.0, 0.0]`.
+In `compute_node/mps_runner.py`, the `__main__` block's `A_DEFAULT` — change row 4 from `[0.0, -1.0, 0.0, 0.0, 0.0]` to `[0.0, 0.0, -1.0, 0.0, 0.0]`.
 
 - [ ] **Step 4: Run — confirm GREEN**
 
@@ -174,22 +174,24 @@ Expected: PASS — all green. (`test_lqr_controller.py` / `test_state_space_exte
 
 ```bash
 git add pi_nodes/control/mpc_controller.py config.yaml compute_node/mps_runner.py tests/test_mps_runner.py tests/test_mpc_controller.py
-git commit -m "fix(mps): e_int → ∫ошибки позиции + MPCController не берёт legacy-гейн из config"
+git commit -m "fix(mps): e_int → ∫ошибки курса + MPCController не берёт legacy-гейн из config"
 ```
 
 ---
 
 ### Task deltas — apply when you reach each task
 
-- **Task 4** (`tests/test_mps_router.py`): in `matrices_payload`, `A` row 4 → `[-1.0, 0.0, 0.0, 0.0, 0.0]`. Rest of Task 4 stands — the open-loop marginal-stability nuance is still needed (open loop keeps 3 integrators); `test_validate_canonical_plant_marginal_not_unstable`'s `is_closed_loop_stable is True` is now genuinely correct.
-- **Task 5** (`tests/test_mps_node.py`): in `_good_matrices`, `A` row 4 → `[-1.0, 0.0, 0.0, 0.0, 0.0]`. Rest stands.
-- **Task 6** (docs): the canonical equation is `ė_int = s_ref − s` (`A_c[4][0]=−1`), not `ė_int = v_target − v`. Use that wherever the model is described.
-- **Task 8** (`build_canonical_mps.m`): the `A` matrix's e_int row is `[-1, 0, 0, 0, 0]` (`A(5,1) = -1`), not `A(5,2) = -1`. Equation comment: `e_int_dot = s_ref - s`. In `test_build_canonical_mps.m`: assert `A(5,1) == -1` (not `A(5,2)`), and the non-pattern mask sets `mask(5,1) = false`.
-- **Task 11** (`test_export_to_yaml.m`): the `mps_export` fixture `A_c` row 4 → `-1 0 0 0 0`.
+Option D: `ė_int = −θ`, i.e. `A_c[4][2] = −1` (e_int row = `[0, 0, -1, 0, 0]`).
+
+- **Task 4** (`tests/test_mps_router.py`): in `matrices_payload`, `A` row 4 → `[0.0, 0.0, -1.0, 0.0, 0.0]`. Rest of Task 4 stands — the open-loop marginal-stability nuance is still needed (open loop keeps 3 integrators); `test_validate_canonical_plant_marginal_not_unstable`'s `is_closed_loop_stable is True` is now genuinely correct.
+- **Task 5** (`tests/test_mps_node.py`): in `_good_matrices`, `A` row 4 → `[0.0, 0.0, -1.0, 0.0, 0.0]`. Rest stands.
+- **Task 6** (docs): the canonical equation is `ė_int = −θ` (`A_c[4][2]=−1`), not `ė_int = v_target − v`. Use that wherever the model is described.
+- **Task 8** (`build_canonical_mps.m`): the `A` matrix's e_int row is `[0, 0, -1, 0, 0]` (`A(5,3) = -1`), not `A(5,2) = -1`. Equation comment: `e_int_dot = -theta`. In `test_build_canonical_mps.m`: assert `A(5,3) == -1` (not `A(5,2)`), and the non-pattern mask sets `mask(5,3) = false`.
+- **Task 11** (`test_export_to_yaml.m`): the `mps_export` fixture `A_c` row 4 → `0 0 -1 0 0`.
 - **Task 12** — EXPANDED. In addition to the `OdeCard.tsx` Ts label (`50` → `20` мс):
-  - `compute_node/frontend/src/lib/mps/canonical.ts` — `CANONICAL_PATTERN_A`: change the e_int entry `{ row: 4, col: 1, role: { kind: 'fixed', value: -1 } }` → `{ row: 4, col: 0, role: { kind: 'fixed', value: -1 } }`.
-  - `compute_node/frontend/src/lib/mps/tokenMap.ts` — change `{ id: 'coef_eint_v', matrix: 'A', row: 4, col: 1, equationRow: 4, description: '∂ė_int/∂v = −1' }` → `{ id: 'coef_eint_s', matrix: 'A', row: 4, col: 0, equationRow: 4, description: '∂ė_int/∂s = −1' }`. `grep -rn coef_eint_v compute_node/frontend/src` and update any other references.
-  - `compute_node/frontend/src/components/mps/OdeCard.tsx` — `EQUATIONS[4]`: both `symbolic` and `numericFormula` `'\\dot{e}_{int} = v_{target} - v'` → `'\\dot{e}_{int} = s_{ref} - s'`.
+  - `compute_node/frontend/src/lib/mps/canonical.ts` — `CANONICAL_PATTERN_A`: change the e_int entry `{ row: 4, col: 1, role: { kind: 'fixed', value: -1 } }` → `{ row: 4, col: 2, role: { kind: 'fixed', value: -1 } }`.
+  - `compute_node/frontend/src/lib/mps/tokenMap.ts` — change `{ id: 'coef_eint_v', matrix: 'A', row: 4, col: 1, equationRow: 4, description: '∂ė_int/∂v = −1' }` → `{ id: 'coef_eint_theta', matrix: 'A', row: 4, col: 2, equationRow: 4, description: '∂ė_int/∂θ = −1' }`. `grep -rn coef_eint_v compute_node/frontend/src` and update any other references.
+  - `compute_node/frontend/src/components/mps/OdeCard.tsx` — `EQUATIONS[4]`: both `symbolic` and `numericFormula` `'\\dot{e}_{int} = v_{target} - v'` → `'\\dot{e}_{int} = -\\theta'`.
   - Run `cd compute_node/frontend && npm run test -- mps`.
 
 ---
