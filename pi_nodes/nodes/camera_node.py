@@ -192,6 +192,7 @@ class CameraNode(MqttNode):
         self._cam: Picamera2 | None = None
         self._encoder = None
         self._discovery_topic = 'camera/endpoint'
+        self._offline_announced = False
 
         if not _HW:
             self.log_error('picamera2 not available — camera disabled')
@@ -276,6 +277,26 @@ class CameraNode(MqttNode):
         """
         if not self._mqtt_connected or self._tcp is None:
             return
+
+        # Камера/энкодер не запустились (_start_camera упал — libcamera,
+        # занятая камера, отошедший шлейф). TCP-сервер слушает порт, но
+        # H.264-кадров не будет никогда: write_frame() не вызывается → клиенты
+        # коннектятся и висят без данных, а мёртвые сокеты не пожинаются
+        # (reaping живёт только внутри write_frame). НЕ рекламируем такой
+        # endpoint — пусть dashboard честно покажет камеру offline, а не
+        # «TCP connect failed» на пустом потоке.
+        if self._cam is None:
+            if not self._offline_announced:
+                self._offline_announced = True
+                # Чистим возможный stale retained от прошлого рабочего запуска.
+                self.publish(self._discovery_topic, b'', qos=1, retain=True)
+                self.log_error(
+                    'camera/endpoint НЕ опубликован — камера не запущена. '
+                    'Смотри лог выше: "Camera/H.264 init failed". Частые '
+                    'причины: отошёл шлейф камеры, упал libcamera, камеру '
+                    'занял другой процесс. Почини и перезапусти camera_node.')
+            return
+
         host = get_local_ip(broker_hint=self._broker)
         if host.startswith('127.'):
             self.log_warn(

@@ -108,7 +108,15 @@ async def ws_h264(ws: WebSocket, state: StateDep):
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), timeout=5.0)
-    except (OSError, asyncio.TimeoutError) as e:
+    except asyncio.TimeoutError:
+        # str(asyncio.TimeoutError) пустой — без явного текста браузер
+        # показывал бесполезное «TCP connect failed:» без причины.
+        await ws.close(
+            code=1011,
+            reason=f'TCP connect: таймаут 5с до {host}:{port} '
+                   '(Pi недоступен по сети с этого хоста)')
+        return
+    except OSError as e:
         await ws.close(code=1011, reason=f'TCP connect failed: {e}')
         return
 

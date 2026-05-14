@@ -33,6 +33,8 @@ def _make_fake_self(host_returned: str) -> MagicMock:
     fake._mqtt_connected = True
     fake._tcp = MagicMock()
     fake._tcp.client_count = 3
+    fake._cam = MagicMock()          # камера запустилась (не None)
+    fake._offline_announced = False
     fake._broker = '127.0.0.1'
     fake._h264_port = 8554
     fake._w = 640
@@ -106,3 +108,37 @@ def test_skipped_when_tcp_server_missing():
         CameraNode._publish_discovery(fake)
         mock_ip.assert_not_called()
     fake.publish.assert_not_called()
+
+
+def test_dead_camera_not_advertised():
+    """Регрессия: _start_camera упал (_cam = None), но _tcp слушает.
+
+    Раньше нода всё равно публиковала discovery → dashboard видел «живой»
+    endpoint, клиенты коннектились на :8554 и висели без единого H.264-байта,
+    а на Pi бесконечно копились зомби-сокеты. Теперь discovery НЕ публикуется,
+    а stale retained чистится пустым payload — dashboard честно покажет offline.
+    """
+    fake = _make_fake_self('192.168.4.1')
+    fake._cam = None
+    with patch.object(cam_mod, 'get_local_ip') as mock_ip:
+        CameraNode._publish_discovery(fake)
+        mock_ip.assert_not_called()  # до get_local_ip даже не доходим
+
+    fake.publish.assert_called_once()
+    args, kwargs = fake.publish.call_args
+    assert args[0] == 'camera/endpoint'
+    assert args[1] == b''                  # пустой retained = clear
+    assert kwargs.get('retain') is True
+    assert kwargs.get('qos') == 1
+    fake.log_error.assert_called_once()
+    assert 'не запущена' in fake.log_error.call_args[0][0]
+
+
+def test_dead_camera_announced_only_once():
+    """Гард срабатывает один раз — без спама publish/log_error каждые 5с."""
+    fake = _make_fake_self('192.168.4.1')
+    fake._cam = None
+    for _ in range(5):
+        CameraNode._publish_discovery(fake)
+    fake.publish.assert_called_once()
+    fake.log_error.assert_called_once()
