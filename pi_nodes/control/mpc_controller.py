@@ -11,8 +11,11 @@ and we apply only the first r rows (u_0). Constraints are enforced by
 clipping (`solver: "clip"`) — fast and robust, optimal in the unconstrained
 region. For full QP solve set `control.mpc.solver: qp` (requires scipy).
 
-K_first is loaded from config (`control.matrices.K_mpc`) if available;
-otherwise it is computed online from plant + weights.
+On the config-default path (no explicit Ad/Bd — the legacy
+`[px,py,θ,v,ω]` model), K_first is loaded from config
+(`control.matrices.K_mpc`) if available. When explicit Ad/Bd are passed
+(a different model, e.g. the МПС canonical one) K_first is always
+computed online from plant + weights — the config gain is not reused.
 """
 
 from __future__ import annotations
