@@ -41,7 +41,7 @@ function makeResult(runId: string = 'r-test'): MpsScenarioResult {
 
 let mockRunResult: MpsScenarioResult | null = null
 let mockRunId: string | null = null
-let mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
+let mockRun = vi.fn(() => Promise.resolve(null)) as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
 
 vi.mock('@/hooks/useMpsMatrices', () => ({
   useMpsMatrices: () => ({
@@ -109,7 +109,7 @@ describe('MpsPage integration', () => {
   beforeEach(() => {
     mockRunResult = null
     mockRunId = null
-    mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
+    mockRun = vi.fn(() => Promise.resolve(null)) as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
     if (typeof globalThis.ResizeObserver === 'undefined') {
       globalThis.ResizeObserver = class {
         observe() {}
@@ -156,7 +156,7 @@ describe('MpsPage — 3D toast', () => {
   beforeEach(() => {
     mockRunResult = null
     mockRunId = null
-    mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
+    mockRun = vi.fn(() => Promise.resolve(null)) as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
     if (typeof globalThis.ResizeObserver === 'undefined') {
       globalThis.ResizeObserver = class {
         observe() {}
@@ -205,7 +205,7 @@ describe('MpsPage — robot target picker', () => {
   beforeEach(() => {
     mockRunResult = null
     mockRunId = null
-    mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
+    mockRun = vi.fn(() => Promise.resolve(null)) as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
     if (typeof globalThis.ResizeObserver === 'undefined') {
       globalThis.ResizeObserver = class {
         observe() {}
