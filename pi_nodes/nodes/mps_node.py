@@ -32,6 +32,7 @@ FSM:
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import threading
@@ -57,6 +58,11 @@ _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
 _WATCHDOG_TICKS = 3
 
 
+def _normalize_angle(a: float) -> float:
+    """Угол → [-π, π]."""
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
 class _RunState:
     """Локальное состояние active run (только внутри mps_node).
 
@@ -66,11 +72,11 @@ class _RunState:
     __slots__ = (
         'run_id', 'distance', 'v_target', 'started_at',
         'telemetry', 't',
-        'no_odom_ticks', 's_start',
+        'no_odom_ticks', 's_start', 'theta_start',
     )
 
     def __init__(self, run_id: str, distance: float, v_target: float,
-                 s_start: float = 0.0):
+                 s_start: float = 0.0, theta_start: float = 0.0):
         self.run_id = run_id
         self.distance = distance
         self.v_target = v_target
@@ -81,6 +87,12 @@ class _RunState:
         # Абсолютная позиция одометрии на момент старта сценария.
         # `s_ref` стартует с 0, поэтому позицию считаем относительно неё.
         self.s_start = s_start
+        # Абсолютный курс одометрии на момент старта. Сценарий «вперёд D
+        # метров» — это вперёд ОТНОСИТЕЛЬНО старта, поэтому θ считаем
+        # относительно θ_start (как и s). Иначе MPC трактует x_ref[θ]=0 как
+        # абсолютный 0 одометрии и доворачивает робота в одну и ту же
+        # сторону вместо «ехать прямо куда смотрит».
+        self.theta_start = theta_start
 
 
 class MpsNode(MqttNode):
@@ -285,10 +297,12 @@ class MpsNode(MqttNode):
                                     f'run already active ({self._run.run_id if self._run else "?"})',
                                     run_id=run_id)
                 return
-            # Снапшот позиции одометрии — сценарий считает s относительно
-            # точки старта (s_ref начинается с 0).
+            # Снапшот позиции и курса одометрии — сценарий считает s и θ
+            # относительно точки старта (s_ref и θ_ref начинаются с 0).
             s_start = float(self._x_meas[_S])
-            self._run = _RunState(run_id, distance, v_target, s_start)
+            theta_start = float(self._x_meas[_THETA])
+            self._run = _RunState(run_id, distance, v_target,
+                                  s_start, theta_start)
             self._fsm_state = 'DRIVE_FORWARD_MPS'
 
         self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f',
@@ -333,8 +347,9 @@ class MpsNode(MqttNode):
             if run is None or self._fsm_state != 'DRIVE_FORWARD_MPS':
                 return
             x = self._x_meas.copy()
-        # Позиция относительно старта сценария (s_ref начинается с 0).
+        # Позиция и курс — относительно старта сценария (s_ref, θ_ref с 0).
         x[_S] = x[_S] - run.s_start
+        x[_THETA] = _normalize_angle(x[_THETA] - run.theta_start)
 
         # Reference: ramp s_ref to D, hold v_target.
         s_ref = min(run.distance, run.t * run.v_target)

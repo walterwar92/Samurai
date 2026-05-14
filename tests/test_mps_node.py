@@ -292,3 +292,32 @@ def test_tick_position_is_scenario_relative(mps_node):
     assert tel, 'expected mps/telemetry to be published'
     s_rel = tel[0]['point']['x'][0]
     assert abs(s_rel) < 0.01, f'position should be scenario-relative (~0), got {s_rel}'
+
+
+def test_tick_heading_is_scenario_relative(mps_node):
+    """mps_node снапшотит курс одометрии на старте сценария: x_meas[2] (θ)
+    в тике считается ОТНОСИТЕЛЬНО курса старта (θ_ref начинается с 0).
+    Иначе MPC трактует x_ref[θ]=0 как абсолютный 0 одометрии и доворачивает
+    робота в одну и ту же сторону вместо «ехать прямо куда смотрит»."""
+    # Робот стоит под курсом 1.0 рад по одометрии ДО старта сценария.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 1.0, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-theta',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    # Ещё odom под тем же курсом (робот не повернулся).
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 1.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    tel = [p[1] for p in mps_node._published if p[0] == 'mps/telemetry']
+    assert tel, 'expected mps/telemetry to be published'
+    theta_rel = tel[0]['point']['x'][2]
+    assert abs(theta_rel) < 0.01, (
+        f'heading should be scenario-relative (~0), got {theta_rel}'
+    )
+    # Робот смотрит «прямо» относительно старта → MPC не должен доворачивать.
+    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
+    assert abs(cmd_vel['angular_z']) < 1e-6, (
+        f"angular_z={cmd_vel['angular_z']:.4f} ≠ 0 — робот доворачивает к "
+        f'абсолютному курсу 0 вместо «вперёд куда смотрит»'
+    )
