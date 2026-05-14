@@ -1,8 +1,8 @@
 """lqr_controller — discrete LQR state-feedback controller.
 
-Reads K from config (`control.matrices.K`). If `scipy` is available and
-no K is provided, falls back to solving DARE online so the module is
-useful even without running the MATLAB pipeline first.
+Reads K from config (`control.matrices.K`). If no K is provided, falls
+back to solving DARE online (via scipy when available, numpy otherwise)
+so the module is useful even without running the MATLAB pipeline first.
 
 Usage
 -----
@@ -61,13 +61,13 @@ class LQRController:
         if K_cfg is not None:
             return np.asarray(K_cfg, dtype=float)
 
-        # Fallback: compute from plant params using scipy.linalg.solve_discrete_are
+        # Fallback: compute from plant params by solving the DARE online
         return LQRController._solve_dare_from_config()
 
     @staticmethod
     def _solve_dare_from_config() -> np.ndarray:
         """Compute LQR K by solving DARE on the fly (used if config has no K)."""
-        from scipy.linalg import solve_discrete_are
+        from pi_nodes.control._linalg import solve_discrete_are
 
         from pi_nodes.control.state_space_model import StateSpaceModel
 

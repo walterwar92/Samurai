@@ -18,6 +18,8 @@ from typing import Optional
 
 import numpy as np
 
+from pi_nodes.control._linalg import expm
+
 try:
     from config_loader import cfg
 except ImportError:
@@ -45,8 +47,6 @@ def _continuous_AB(v0: float, tau_v: float, tau_w: float) -> tuple[np.ndarray, n
 
 def zoh_discretize(A: np.ndarray, B: np.ndarray, Ts: float) -> tuple[np.ndarray, np.ndarray]:
     """Exact ZOH discretization via block matrix exponential."""
-    from scipy.linalg import expm  # local import — scipy is heavy
-
     n, r = A.shape[0], B.shape[1]
     M = np.zeros((n + r, n + r))
     M[:n, :n] = A

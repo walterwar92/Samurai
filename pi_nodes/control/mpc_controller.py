@@ -24,6 +24,8 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+from pi_nodes.control._linalg import solve_discrete_are
+
 try:
     from config_loader import cfg
 except ImportError:
@@ -127,8 +129,6 @@ class MPCController:
         Uses the instance weights `self.Q/self.R` (NOT config) — the
         controller may be built for a non-legacy model.
         """
-        from scipy.linalg import solve_discrete_are
-
         return solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
 
     def _build_qp_matrices(self) -> None:
@@ -265,7 +265,6 @@ class MPCController:
                     raise ValueError(f"Pf must be ({self.n}, {self.n})")
                 self.Pf = Pf_arr
             elif (Ad is not None) or (Bd is not None) or weights_changed:
-                from scipy.linalg import solve_discrete_are
                 self.Pf = solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
 
             # Re-build lifted dynamics + QP matrices + K_first.
