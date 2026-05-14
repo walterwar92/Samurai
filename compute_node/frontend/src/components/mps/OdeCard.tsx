@@ -48,8 +48,8 @@ const EQUATIONS: EquationDef[] = [
   },
   {
     index: 4,
-    symbolic: '\\dot{e}_{int} = v_{target} - v',
-    numericFormula: () => '\\dot{e}_{int} = v_{target} - v',
+    symbolic: '\\dot{e}_{int} = -\\theta',
+    numericFormula: () => '\\dot{e}_{int} = -\\theta',
     description: 'уравнение для ė_int',
   },
 ]
@@ -125,7 +125,7 @@ export function OdeCard({ matrices, showNumeric = false }: OdeCardProps) {
         </div>
 
         <div className="rounded border p-2 text-xs space-y-1 bg-muted/20">
-          <div className="text-muted-foreground">Дискретизация ZOH (Ts = 50 мс):</div>
+          <div className="text-muted-foreground">Дискретизация ZOH (Ts = 20 мс):</div>
           <div className="font-mono">x[k+1] = A·x[k] + B·u[k]</div>
           <div className="font-mono">y[k]   = C·x[k] + D·u[k]</div>
         </div>

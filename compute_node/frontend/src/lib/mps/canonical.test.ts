@@ -55,9 +55,9 @@ describe('buildCanonical', () => {
     expect(A[3][3]).toBeCloseTo(-1 / 0.10, 5)
   })
 
-  it('A[4][1] = -1 (ė_int ← -v)', () => {
+  it('A[4][2] = -1 (ė_int ← -θ)', () => {
     const { A } = buildCanonical(0.15, 0.10)
-    expect(A[4][1]).toBe(-1)
+    expect(A[4][2]).toBe(-1)
   })
 
   it('B[1][0] = 1/tau_v', () => {
@@ -79,7 +79,7 @@ describe('buildCanonical', () => {
           (i === 1 && j === 1) ||
           (i === 2 && j === 3) ||
           (i === 3 && j === 3) ||
-          (i === 4 && j === 1)
+          (i === 4 && j === 2)
         if (!isCanonical) expect(A[i][j]).toBe(0)
       }
     }

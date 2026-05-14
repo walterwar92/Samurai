@@ -14,7 +14,7 @@ export const TOKENS: TokenMeta[] = [
   { id: 'coef_v_v',         matrix: 'A', row: 1, col: 1, equationRow: 1, description: '∂v̇/∂v = −1/τ_v' },
   { id: 'coef_theta_omega', matrix: 'A', row: 2, col: 3, equationRow: 2, description: '∂θ̇/∂ω = 1' },
   { id: 'coef_omega_omega', matrix: 'A', row: 3, col: 3, equationRow: 3, description: '∂ω̇/∂ω = −1/τ_ω' },
-  { id: 'coef_eint_v',      matrix: 'A', row: 4, col: 1, equationRow: 4, description: '∂ė_int/∂v = −1' },
+  { id: 'coef_eint_theta',  matrix: 'A', row: 4, col: 2, equationRow: 4, description: '∂ė_int/∂θ = −1' },
   { id: 'coef_v_uv',        matrix: 'B', row: 1, col: 0, equationRow: 1, description: '∂v̇/∂u_v = 1/τ_v' },
   { id: 'coef_omega_uomega',matrix: 'B', row: 3, col: 1, equationRow: 3, description: '∂ω̇/∂u_ω = 1/τ_ω' },
 ]

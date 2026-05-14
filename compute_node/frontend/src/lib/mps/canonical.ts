@@ -16,7 +16,7 @@ export const CANONICAL_PATTERN_A: Array<{ row: number; col: number; role: CellRo
   { row: 1, col: 1, role: { kind: 'tunable', param: 'tau_v', expr: 'neg_inv' } },
   { row: 2, col: 3, role: { kind: 'fixed', value: 1 } },
   { row: 3, col: 3, role: { kind: 'tunable', param: 'tau_omega', expr: 'neg_inv' } },
-  { row: 4, col: 1, role: { kind: 'fixed', value: -1 } },
+  { row: 4, col: 2, role: { kind: 'fixed', value: -1 } },
 ]
 
 export const CANONICAL_PATTERN_B: Array<{ row: number; col: number; role: CellRole }> = [
