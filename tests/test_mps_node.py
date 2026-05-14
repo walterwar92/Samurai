@@ -364,3 +364,78 @@ def test_mps_node_loads_turn_config(mps_node):
     assert isinstance(mps_node._turn_tol, float) and mps_node._turn_tol > 0
     assert isinstance(mps_node._turn_timeout, float) and mps_node._turn_timeout > 0
     assert isinstance(mps_node._omega_max_turn, float) and mps_node._omega_max_turn > 0
+
+
+def test_tick_turn_rotates_toward_target_heading(mps_node):
+    """В фазе TURN робот крутится к target_heading: φ>0 ⇒ angular_z>0
+    (CCW), ход linear_x = 0 (чистое вращение)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-turn',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run is not None and mps_node._run.phase == 'turn'
+    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
+    assert cmd_vel['linear_x'] == 0.0, 'в TURN ход должен быть 0 (чистое вращение)'
+    assert cmd_vel['angular_z'] > 0.0, 'φ>0 ⇒ робот крутится CCW'
+
+
+def test_tick_turn_transitions_to_drive_when_aligned(mps_node):
+    """Когда |θ − φ| < turn_tol, фаза переключается на 'drive'."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-trans',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Одометрия: курс робота уже совпал с целью φ.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run is not None
+    assert mps_node._run.phase == 'drive', 'курс совпал с φ ⇒ переход в DRIVE'
+
+
+def test_tick_drive_holds_target_heading(mps_node):
+    """В фазе DRIVE θ_ref = φ: если курс робота ниже φ, контроллер
+    доворачивает ВВЕРХ к φ (angular_z>0), а не вниз к 0."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-hold',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Перевести в DRIVE: одометрия с курсом = φ.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
+    mps_node._tick()
+    assert mps_node._run.phase == 'drive'
+    # Курс робота «сполз» ниже φ (0.6 < 0.8).
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.6, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
+    assert cmd_vel['angular_z'] > 0.0, (
+        'курс 0.6 < φ=0.8 ⇒ доворот вверх к φ; '
+        'если бы θ_ref был 0 — angular_z был бы < 0'
+    )
+
+
+def test_tick_turn_timeout(mps_node):
+    """Если TURN не сходится за turn_timeout — прогон завершается timeout."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-tto',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 3.0},
+    })
+    max_ticks = int(mps_node._turn_timeout / mps_node._tick_dt) + 10
+    for _ in range(max_ticks):
+        # Робот «застрял»: курс 0, далеко от φ=3.0 — TURN не сойдётся.
+        mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+        mps_node._tick()
+        if not mps_node.is_running:
+            break
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished']
+    assert finished and finished[-1]['status'] == 'timeout'
+    assert not mps_node.is_running

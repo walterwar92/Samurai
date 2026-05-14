@@ -373,14 +373,81 @@ class MpsNode(MqttNode):
         x[_S] = x[_S] - run.s_start
         x[_THETA] = _normalize_angle(x[_THETA] - run.theta_start)
 
-        # Reference: ramp s_ref to D, hold v_target.
-        s_ref = min(run.distance, run.t * run.v_target)
-        x_ref = np.array([s_ref, run.v_target, 0.0, 0.0, 0.0])
+        # Двухфазный сценарий: TURN (разворот к φ) → DRIVE (едем N метров).
+        if run.phase == 'turn':
+            if not self._tick_turn(run, x):
+                return            # ещё крутимся, либо прогон завершён
+            # фаза TURN завершилась этим тиком → продолжаем в DRIVE
+        self._tick_drive(run, x)
+
+    # ── Фаза TURN: разворот на месте к target_heading ─────────────────
+    def _tick_turn(self, run: _RunState, x: np.ndarray) -> bool:
+        """Один тик фазы разворота. `x` — уже относительный (s, θ).
+
+        Возвращает True ровно когда поворот только что завершён — тогда
+        вызывающий (`_tick`) продолжает в DRIVE тем же тиком. False —
+        если ещё крутимся или прогон уже завершён (timeout / ошибка).
+        """
+        phi = run.target_heading
+
+        # Курс совпал с целью → переход в DRIVE. Без публикации —
+        # cmd_vel/телеметрию за этот тик опубликует _tick_drive.
+        if abs(_normalize_angle(x[_THETA] - phi)) < self._turn_tol:
+            run.phase = 'drive'
+            run.drive_t = 0.0
+            return True
+
+        x_ref = np.array([0.0, 0.0, phi, 0.0, 0.0])
+        try:
+            u = self._mpc.step(x, x_ref=x_ref)
+        except Exception as exc:
+            self.log_error('mps turn mpc.step failed: %s', exc)
+            self._finish_run('error', f'mpc.step: {exc}')
+            return False
+
+        if not (np.all(np.isfinite(u)) and np.all(np.isfinite(x))):
+            self._finish_run('error', 'NaN/Inf in u or x')
+            return False
+
+        # Чистое вращение: ход — в ноль; ω — свой (более высокий) кап.
+        u[0] = 0.0
+        u[1] = max(-self._omega_max_turn, min(self._omega_max_turn, u[1]))
+
+        self._publish_cmd_and_telemetry(run, x, u)
+
+        with self._lock:
+            run.no_odom_ticks += 1
+            stale = run.no_odom_ticks > _WATCHDOG_TICKS
+
+        # Turn timeout — по run.t (во время TURN он = времени разворота).
+        if run.t > self._turn_timeout:
+            self._finish_run('timeout', None)
+            return False
+
+        if stale and time.time() - self._x_meas_ts > 5.0 * self._tick_dt:
+            self._finish_run('error', 'watchdog: no odom for >3 ticks')
+            return False
+
+        run.t += self._tick_dt
+        return False
+
+    # ── Фаза DRIVE: едем N метров, удерживая курс target_heading ───────
+    def _tick_drive(self, run: _RunState, x: np.ndarray) -> None:
+        """Один тик фазы движения. `x` — уже относительный (s, θ).
+
+        Логика «вперёд D», но θ_ref = target_heading (удержание выбранного
+        курса, НЕ доворот к 0) и тайминг ramp/timeout по run.drive_t.
+        """
+        phi = run.target_heading
+
+        # Reference: ramp s_ref to D, hold v_target, hold heading φ.
+        s_ref = min(run.distance, run.drive_t * run.v_target)
+        x_ref = np.array([s_ref, run.v_target, phi, 0.0, 0.0])
 
         try:
             u = self._mpc.step(x, x_ref=x_ref)
         except Exception as exc:
-            self.log_error('mps tick mpc.step failed: %s', exc)
+            self.log_error('mps drive mpc.step failed: %s', exc)
             self._finish_run('error', f'mpc.step: {exc}')
             return
 
@@ -405,7 +472,7 @@ class MpsNode(MqttNode):
 
         # Timeout?
         timeout_t = max(1.0, 3.0 * run.distance / max(run.v_target, 1e-6))
-        if run.t > timeout_t:
+        if run.drive_t > timeout_t:
             self._finish_run('timeout', None)
             return
 
@@ -414,6 +481,7 @@ class MpsNode(MqttNode):
             return
 
         run.t += self._tick_dt
+        run.drive_t += self._tick_dt
 
     # ── Публикация cmd_vel + телеметрии (общее для обеих фаз) ──────────
     def _publish_cmd_and_telemetry(self, run: _RunState, x: np.ndarray,
