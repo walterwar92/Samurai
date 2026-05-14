@@ -24,6 +24,7 @@ MQTT discovery (retained, опубликовано при connect):
 читают этот retained topic чтобы найти Pi без хардкодинга IP.
 """
 
+import io
 import json
 import os
 import socket
@@ -162,19 +163,33 @@ class TCPStreamServer:
             return len(self._clients)
 
 
-class _StreamFileWrapper:
-    """File-like объект для FileOutput → шлёт байты в TCPStreamServer."""
+class _StreamFileWrapper(io.BufferedIOBase):
+    """File-like объект для FileOutput → шлёт байты в TCPStreamServer.
+
+    Наследует io.BufferedIOBase: новый picamera2 (Debian Trixie, libcamera
+    0.7) в FileOutput делает строгий isinstance-чек и иначе падает с
+    RuntimeError('Must pass io.BufferedIOBase'). Простого duck-typing
+    (write/flush/close) больше недостаточно.
+    """
 
     def __init__(self, server: TCPStreamServer):
+        super().__init__()
         self._server = server
 
-    def write(self, data):
-        self._server.write_frame(bytes(data))
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:
+        chunk = bytes(data)
+        self._server.write_frame(chunk)
+        return len(chunk)
 
     def flush(self):
         pass
 
     def close(self):
+        # TCP-сервер живёт своей жизнью (on_shutdown) — не рвём его,
+        # когда picamera2 закрывает FileOutput на stop_recording.
         pass
 
 
