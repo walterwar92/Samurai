@@ -73,10 +73,12 @@ class _RunState:
         'run_id', 'distance', 'v_target', 'started_at',
         'telemetry', 't',
         'no_odom_ticks', 's_start', 'theta_start',
+        'target_heading', 'phase', 'drive_t',
     )
 
     def __init__(self, run_id: str, distance: float, v_target: float,
-                 s_start: float = 0.0, theta_start: float = 0.0):
+                 s_start: float = 0.0, theta_start: float = 0.0,
+                 target_heading: float = 0.0):
         self.run_id = run_id
         self.distance = distance
         self.v_target = v_target
@@ -93,6 +95,17 @@ class _RunState:
         # абсолютный 0 одометрии и доворачивает робота в одну и ту же
         # сторону вместо «ехать прямо куда смотрит».
         self.theta_start = theta_start
+        # Относительный целевой курс φ (рад) — куда развернуться перед
+        # движением. 0.0 = ехать прямо вперёд (сегодняшнее поведение).
+        self.target_heading = target_heading
+        # Фаза двухфазного сценария: 'turn' (разворот к φ на месте) →
+        # 'drive' (движение N метров с удержанием курса φ).
+        self.phase = 'turn'
+        # Часы фазы DRIVE — начинаются с 0 при переходе TURN→DRIVE.
+        # Используются для ramp s_ref и drive-timeout (тайминг движения
+        # считается от начала езды, а не от старта сценария). `t` при этом
+        # остаётся монотонным суммарным временем (turn + drive).
+        self.drive_t = 0.0
 
 
 class MpsNode(MqttNode):
@@ -127,6 +140,9 @@ class MpsNode(MqttNode):
         self._distance_max = float(self._cfg('mps.scenario.distance_max', 5.0))
         self._v_target_max = float(self._cfg('mps.scenario.v_target_max', 0.30))
         self._omega_max_fwd = float(self._cfg('mps.scenario.omega_max_in_forward', 0.5))
+        self._turn_tol = float(self._cfg('mps.scenario.turn_tolerance_rad', 0.05))
+        self._turn_timeout = float(self._cfg('mps.scenario.turn_timeout_s', 10.0))
+        self._omega_max_turn = float(self._cfg('mps.scenario.omega_max_in_turn', 1.0))
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
@@ -274,12 +290,18 @@ class MpsNode(MqttNode):
         try:
             distance = float(request['distance'])
             v_target = float(request['v_target'])
+            target_heading = float(request.get('target_heading', 0.0))
         except (KeyError, TypeError, ValueError) as exc:
             self._publish_error('precondition', f'scenario/run: bad request: {exc}',
                                 run_id=run_id)
             return
 
         # Pre-validate against safety caps
+        if not (-math.pi - 1e-6 <= target_heading <= math.pi + 1e-6):
+            self._publish_error('precondition',
+                                f'target_heading {target_heading} not in [-pi, pi]',
+                                run_id=run_id)
+            return
         if not (0 < distance <= self._distance_max):
             self._publish_error('precondition',
                                 f'distance {distance} not in (0, {self._distance_max}]',
@@ -302,7 +324,7 @@ class MpsNode(MqttNode):
             s_start = float(self._x_meas[_S])
             theta_start = float(self._x_meas[_THETA])
             self._run = _RunState(run_id, distance, v_target,
-                                  s_start, theta_start)
+                                  s_start, theta_start, target_heading)
             self._fsm_state = 'DRIVE_FORWARD_MPS'
 
         self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f',

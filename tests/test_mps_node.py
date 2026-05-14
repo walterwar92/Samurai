@@ -321,3 +321,46 @@ def test_tick_heading_is_scenario_relative(mps_node):
         f"angular_z={cmd_vel['angular_z']:.4f} ≠ 0 — робот доворачивает к "
         f'абсолютному курсу 0 вместо «вперёд куда смотрит»'
     )
+
+
+def test_on_scenario_run_reads_target_heading(mps_node):
+    """_on_scenario_run читает target_heading из request и стартует
+    в фазе 'turn'."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-th',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot',
+                    'target_heading': 0.6},
+    })
+    assert mps_node.is_running
+    assert mps_node._run.target_heading == pytest.approx(0.6)
+    assert mps_node._run.phase == 'turn'
+    assert mps_node._run.drive_t == 0.0
+
+
+def test_on_scenario_run_target_heading_defaults_zero(mps_node):
+    """Без target_heading в request — дефолт 0.0 (поведение «вперёд»)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-th0',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert mps_node.is_running
+    assert mps_node._run.target_heading == 0.0
+
+
+def test_on_scenario_run_target_heading_out_of_range_rejected(mps_node):
+    """target_heading вне [−π, π] → mps/error precondition, run не стартует."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-bad',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot',
+                    'target_heading': 4.0},
+    })
+    err = [p[1] for p in mps_node._published if p[0] == 'mps/error']
+    assert err and err[0]['error_type'] == 'precondition'
+    assert not mps_node.is_running
+
+
+def test_mps_node_loads_turn_config(mps_node):
+    """__init__ читает пороги turn-фазы из config (с дефолтами)."""
+    assert isinstance(mps_node._turn_tol, float) and mps_node._turn_tol > 0
+    assert isinstance(mps_node._turn_timeout, float) and mps_node._turn_timeout > 0
+    assert isinstance(mps_node._omega_max_turn, float) and mps_node._omega_max_turn > 0
