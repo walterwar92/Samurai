@@ -391,32 +391,7 @@ class MpsNode(MqttNode):
         # Hard omega cap in forward scenario — guard against accidental rotation.
         u[1] = max(-self._omega_max_fwd, min(self._omega_max_fwd, u[1]))
 
-        # Send cmd_vel
-        self.publish('cmd_vel', {
-            'linear_x': float(u[0]),
-            'angular_z': float(u[1]),
-        }, qos=0)
-
-        # Output for UI
-        try:
-            y = self._plant.output(x, u)
-        except Exception:
-            y = x.copy()
-
-        s_remaining = max(0.0, run.distance - x[_S])
-        point = {
-            't': round(run.t, 6),
-            'x': [float(v) for v in x],
-            'u': [float(v) for v in u],
-            'y': [float(v) for v in y],
-            's_remaining': float(s_remaining),
-        }
-        run.telemetry.append(point)
-        self.publish('mps/telemetry', {
-            'run_id': run.run_id,
-            'point': point,
-            'schema_version': '1.0',
-        }, qos=0)
+        self._publish_cmd_and_telemetry(run, x, u)
 
         # Watchdog: нет одометрии 3 тика подряд → abort
         with self._lock:
@@ -439,6 +414,37 @@ class MpsNode(MqttNode):
             return
 
         run.t += self._tick_dt
+
+    # ── Публикация cmd_vel + телеметрии (общее для обеих фаз) ──────────
+    def _publish_cmd_and_telemetry(self, run: _RunState, x: np.ndarray,
+                                   u: np.ndarray) -> None:
+        """Опубликовать cmd_vel и точку телеметрии. Вызывается из обеих
+        фаз сценария (_tick_turn, _tick_drive). `run.t` — монотонное
+        суммарное время прогона, поэтому `point['t']` строго растёт."""
+        self.publish('cmd_vel', {
+            'linear_x': float(u[0]),
+            'angular_z': float(u[1]),
+        }, qos=0)
+
+        try:
+            y = self._plant.output(x, u)
+        except Exception:
+            y = x.copy()
+
+        s_remaining = max(0.0, run.distance - x[_S])
+        point = {
+            't': round(run.t, 6),
+            'x': [float(v) for v in x],
+            'u': [float(v) for v in u],
+            'y': [float(v) for v in y],
+            's_remaining': float(s_remaining),
+        }
+        run.telemetry.append(point)
+        self.publish('mps/telemetry', {
+            'run_id': run.run_id,
+            'point': point,
+            'schema_version': '1.0',
+        }, qos=0)
 
     # ── Finalisation ─────────────────────────────────────────────────
     def _finish_run(self, status: str, error_message: Optional[str]):
