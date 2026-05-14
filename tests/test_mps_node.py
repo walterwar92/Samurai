@@ -439,3 +439,26 @@ def test_tick_turn_timeout(mps_node):
                 if p[0] == 'mps/scenario/finished']
     assert finished and finished[-1]['status'] == 'timeout'
     assert not mps_node.is_running
+
+
+def test_tick_transition_publishes_in_same_tick(mps_node):
+    """На тике, где TURN завершается, _tick проваливается в _tick_drive
+    тем же вызовом и публикует cmd_vel + телеметрию — без «пропущенного»
+    тика. Если бы оркестратор делал return после завершения TURN,
+    transition-тик не опубликовал бы ничего."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-fallthrough',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Робот уже под курсом φ → первый же тик: TURN завершается и
+    # проваливается в DRIVE тем же вызовом _tick().
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run is not None and mps_node._run.phase == 'drive', (
+        'TURN должен завершиться этим тиком'
+    )
+    topics = [p[0] for p in mps_node._published]
+    assert 'cmd_vel' in topics, 'transition-тик обязан опубликовать cmd_vel'
+    assert 'mps/telemetry' in topics, 'transition-тик обязан опубликовать телеметрию'

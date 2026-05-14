@@ -419,7 +419,8 @@ class MpsNode(MqttNode):
             run.no_odom_ticks += 1
             stale = run.no_odom_ticks > _WATCHDOG_TICKS
 
-        # Turn timeout — по run.t (во время TURN он = времени разворота).
+        # Turn timeout — по run.t. Валидно: TURN всегда первая фаза,
+        # run.t стартует с 0, поэтому run.t == времени разворота.
         if run.t > self._turn_timeout:
             self._finish_run('timeout', None)
             return False
