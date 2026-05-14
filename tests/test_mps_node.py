@@ -126,6 +126,34 @@ def test_matrices_set_discretizes_before_rebuild(mps_node):
     )
 
 
+def test_bootstrap_builds_canonical_controller_not_legacy(mps_node):
+    """На старте (БЕЗ mps/matrices/set) mps_node обязан строить контроллер
+    из канонической секции `mps:` config.yaml ([s, v, θ, ω, e_int]),
+    а НЕ из legacy-секции `control:` ([px, py, θ, v, ω] +
+    control.matrices.K_mpc).
+
+    Регрессия: безаргументные StateSpaceModel()/MPCController() читают
+    namespace control.* — bootstrap-MPC трактовал каноническое x[1]=v как
+    поперечную координату py, видел py_ref=v_target=0.15 и упирал
+    cmd_vel.angular_z ≈ 0.41 рад/с → робот ехал по кругу, хотя симулятор
+    (всегда канонические матрицы) ехал прямо.
+    """
+    # x_meas стоящего ровно робота на старте сценария; x_ref — «ехать
+    # вперёд D=2 м, держать v=0.15». У прямого канонического контроллера
+    # нет повода поворачивать → angular_z строго 0.
+    x = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+    x_ref = np.array([2.0, 0.15, 0.0, 0.0, 0.0])
+    u = mps_node._mpc.step(x, x_ref=x_ref)
+    assert abs(u[1]) < 1e-6, (
+        f'angular_z={u[1]:.4f} ≠ 0 — bootstrap взял legacy-контроллер '
+        f'(control.matrices.K_mpc); робот поедет по кругу'
+    )
+    assert u[0] > 0.0, f'linear_x={u[0]:.4f} должен толкать вперёд'
+    # Канон дискретизируется при mps.plant.Ts=0.02: A_c[1][1]=-1/0.15 →
+    # Ad[1][1]=exp(-6.667·0.02)≈0.875 ∈ (0,1). Legacy-discrete дал бы 1.0.
+    assert 0.0 < mps_node._mpc.Ad[1][1] < 1.0
+
+
 # ── scenario/run pre-validate ─────────────────────────────────────────
 def test_scenario_run_distance_above_cap_errors(mps_node):
     mps_node._on_scenario_run('mps/scenario/run', {

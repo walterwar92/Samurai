@@ -93,18 +93,25 @@ class MpsNode(MqttNode):
         # Защищает state от race между MQTT-callback и timer-tick.
         self._lock = threading.RLock()
 
-        # Source-of-truth модели: лениво грузим из config.yaml через
-        # обычный StateSpaceModel(). Если matrices.A/B заданы — используем,
-        # иначе пересчитываем из plant params.
+        # Период дискретизации МПС — нужен до сборки контроллера.
+        self._mps_ts = float(self._cfg('mps.plant.Ts', 0.02))
+
+        # Source-of-truth модели — каноническая МПС-форма из секции `mps:`
+        # config.yaml. НЕЛЬЗЯ строить безаргументными StateSpaceModel()/
+        # MPCController(): они читают LEGACY-namespace control.*
+        # ([px,py,θ,v,ω] + готовый gain control.matrices.K_mpc). Тогда MPC
+        # в DRIVE_FORWARD_MPS получает каноническое x=[s,v,θ,ω,e_int],
+        # трактует x[1]=v как поперечную координату py, видит py_ref=v_target
+        # и упирает cmd_vel.angular_z → робот едет по кругу вместо «вперёд»
+        # (симулятор всегда строит из канонических матриц и едет прямо).
+        # Live-правки матриц по-прежнему через _on_matrices_set.
         try:
-            self._plant = StateSpaceModel()
-            self._mpc = MPCController()
+            self._plant, self._mpc = self._build_from_config()
         except Exception as exc:
             self.log_error('MPS: failed to bootstrap model/controller: %s', exc)
             raise
 
         self._tick_dt = float(self._cfg('mps.tick_dt', 0.02))
-        self._mps_ts = float(self._cfg('mps.plant.Ts', 0.02))
         self._distance_max = float(self._cfg('mps.scenario.distance_max', 5.0))
         self._v_target_max = float(self._cfg('mps.scenario.v_target_max', 0.30))
         self._omega_max_fwd = float(self._cfg('mps.scenario.omega_max_in_forward', 0.5))
@@ -140,6 +147,47 @@ class MpsNode(MqttNode):
             return _cfg(key, default)
         except ImportError:
             return default
+
+    # ── Bootstrap from config `mps:` block ─────────────────────────────
+    def _build_from_config(self) -> tuple[StateSpaceModel, MPCController]:
+        """Построить plant + MPC из канонической секции `mps:` config.yaml.
+
+        `mps.matrices.A/B` — НЕПРЕРЫВНЫЕ (контракт docs/mps/api.md);
+        ZOH-дискретизируем при `mps.plant.Ts`. Зеркалит compute-side
+        `mps_runner._build_controller` и Pi-side `_on_matrices_set` — все
+        три обязаны строить ОДИН контроллер, иначе sim и робот разъезжаются.
+        """
+        A = self._cfg('mps.matrices.A', None)
+        B = self._cfg('mps.matrices.B', None)
+        C = self._cfg('mps.matrices.C', None)
+        D = self._cfg('mps.matrices.D', None)
+        Q_diag = self._cfg('mps.weights.Q_diag', None)
+        R_diag = self._cfg('mps.weights.R_diag', None)
+        N = self._cfg('mps.horizon_N', None)
+        u_min = self._cfg('mps.limits.u_min', None)
+        u_max = self._cfg('mps.limits.u_max', None)
+        if any(v is None for v in (A, B, Q_diag, R_diag, N, u_min, u_max)):
+            raise RuntimeError(
+                'config.yaml: секция mps: неполна — нужны matrices.A/B, '
+                'weights.Q_diag/R_diag, horizon_N, limits.u_min/u_max'
+            )
+
+        A = np.asarray(A, dtype=float)
+        B = np.asarray(B, dtype=float)
+        C = np.asarray(C, dtype=float) if C is not None else None
+        D = np.asarray(D, dtype=float) if D is not None else None
+        Ad, Bd = zoh_discretize(A, B, self._mps_ts)
+        plant = StateSpaceModel(Ad=Ad, Bd=Bd, Cd=C, Dd=D, Ts=self._mps_ts)
+        mpc = MPCController(
+            Ad=Ad, Bd=Bd,
+            Q=np.diag(np.asarray(Q_diag, dtype=float)),
+            R=np.diag(np.asarray(R_diag, dtype=float)),
+            N=int(N),
+            u_min=np.asarray(u_min, dtype=float),
+            u_max=np.asarray(u_max, dtype=float),
+            solver='clip',
+        )
+        return plant, mpc
 
     # ── Public introspection ───────────────────────────────────────────
     @property
