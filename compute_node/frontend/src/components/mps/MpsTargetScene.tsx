@@ -1,7 +1,7 @@
-import { Suspense, useEffect, useRef } from 'react'
+import { Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import type { ThreeEvent } from '@react-three/fiber'
-import { OrbitControls, Grid, Html } from '@react-three/drei'
+import { OrbitControls, Grid, Html, Line } from '@react-three/drei'
 import * as THREE from 'three'
 import { RobotModel } from '@/components/3d/RobotModel'
 import {
@@ -21,24 +21,6 @@ interface MpsTargetSceneProps {
   onPick: (angle: number) => void
 }
 
-/** Линия от робота (0,0) к маркеру цели. Императивная сборка геометрии —
- *  как в Mps3DScene.AnimatedTrail (проверенный паттерн codebase). */
-function TargetLine({ distance, pickedAngle }: { distance: number; pickedAngle: number }) {
-  const geometryRef = useRef<THREE.BufferGeometry>(null)
-  const [mx, my, mz] = angleToMarkerPosition(pickedAngle, distance)
-  useEffect(() => {
-    const geom = geometryRef.current
-    if (!geom) return
-    const positions = new Float32Array([0, MARKER_HEIGHT, 0, mx, my, mz])
-    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  }, [mx, my, mz])
-  return (
-    <line>
-      <bufferGeometry ref={geometryRef} />
-      <lineBasicMaterial color="#22d3ee" linewidth={2} />
-    </line>
-  )
-}
 
 export function MpsTargetScene({ distance, pickedAngle, onPick }: MpsTargetSceneProps) {
   const markerPos = angleToMarkerPosition(pickedAngle, distance)
@@ -107,13 +89,17 @@ export function MpsTargetScene({ distance, pickedAngle, onPick }: MpsTargetScene
         </mesh>
 
         {/* Маркер старта — серая сфера в центре (под роботом). */}
-        <mesh position={[0, 0.02, 0]}>
+        <mesh position={[0, MARKER_HEIGHT, 0]}>
           <sphereGeometry args={[0.025, 12, 12]} />
           <meshStandardMaterial color="#94a3b8" />
         </mesh>
 
         {/* Линия робот → цель. */}
-        <TargetLine distance={distance} pickedAngle={pickedAngle} />
+        <Line
+          points={[[0, MARKER_HEIGHT, 0], markerPos]}
+          color="#22d3ee"
+          lineWidth={2}
+        />
 
         {/* Маркер выбранной цели — оранжевый конус остриём вниз. */}
         <mesh position={markerPos} rotation={[Math.PI, 0, 0]}>
