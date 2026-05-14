@@ -93,6 +93,29 @@ B: ... description='5×2 — дискретная матрица управле�
 - Рассогласование Ts: `OdeCard` показывает «Ts = 50 мс», реальный MPS-цикл —
   20 мс (`mps.tick_dt: 0.02`, `mps_runner dt=0.02`).
 
+### 2.6 Выявлено при реализации (2026-05-14)
+
+Два бага вскрылись при синтезе регулятора на канонической модели — план их
+не предусмотрел:
+
+1. **`MPCController.__init__` подменяет вычисленный гейн.** Конструктор строит
+   QP из переданных `Ad/Bd`, считает корректный `K_first`, а в конце —
+   **перетирает его** значением `control.matrices.K_mpc` из `config.yaml`
+   (гейн legacy-модели `[px,py,θ,v,ω]`). Аналогично `Pf` подхватывается из
+   `control.matrices.Pf`, а `_compute_terminal_penalty` читает
+   `control.weights`. Любой `MPCController(Ad=другая_модель, ...)` молча
+   получает чужой регулятор. Доказано: `K_first[0,:3]` после `__init__` =
+   `[2.80934, 0, 0]` — ровно `control.matrices.K_mpc`. Бьёт по `mps_runner`.
+2. **Каноническая `ė_int = v_target − v` делает модель неуправляемой.**
+   `ė_int = −v` и `ṡ = +v` ⇒ `s + e_int = const` — сохраняющаяся
+   неуправляемая мода на λ=1 (ctrb rank 4/5). `e_int` (интеграл ошибки
+   скорости) математически тождественен `s_ref − s`. DARE для такой модели
+   не решается. **Решение (выбор пользователя): переопределить
+   `ė_int = s_ref − s`** — интеграл ошибки **позиции**, `A_c[4][0]=−1`
+   вместо `A_c[4][1]=−1`. Модель становится полностью управляемой
+   (rank 5/5), DARE решается, замкнутый контур строго устойчив
+   (проверено: max|λ| ≈ 0.993).
+
 ---
 
 ## 3. Решения (приняты на brainstorm 2026-05-14)
@@ -103,6 +126,8 @@ B: ... description='5×2 — дискретная матрица управле�
 | 2 | Охват | **Полный**, включая MATLAB-пайплайн. |
 | 3 | MATLAB и две модели | **Генерировать обе:** legacy `[px,py,θ,v,ω]` → `control:`, каноническая `[s,v,θ,ω,e_int]` → `mps:`. |
 | 4 | Критерий приёмки | **Sim + проверка на роботе.** |
+| 5 | Состояние `e_int` (выявлено при реализации) | **`ė_int = s_ref − s`** (∫ ошибки позиции, `A_c[4][0]=−1`). Старое `ė_int = −v` делало модель неуправляемой. |
+| 6 | `MPCController.__init__` (выявлено при реализации) | `control.matrices.K_mpc`/`Pf` из конфига — **только на legacy-пути** (когда `Ad/Bd` не переданы явно); `_compute_terminal_penalty` использует `self.Q/self.R`. |
 
 ---
 
@@ -127,11 +152,16 @@ x = [s, v, θ, ω, e_int]ᵀ,  u = [v_cmd, ω_cmd]ᵀ
 v̇     = −(1/τ_v)·v + (1/τ_v)·u_v
 θ̇     = ω
 ω̇     = −(1/τ_ω)·ω + (1/τ_ω)·u_ω
-ė_int = v_target − v        (v_target — reference, в A_c/B_c не входит)
+ė_int = s_ref − s          (s_ref — reference, в A_c/B_c не входит)
 ```
 
-`A_c`: `[0][1]=1, [1][1]=−1/τ_v, [2][3]=1, [3][3]=−1/τ_ω, [4][1]=−1`, остальное 0.
+`A_c`: `[0][1]=1, [1][1]=−1/τ_v, [2][3]=1, [3][3]=−1/τ_ω, [4][0]=−1`, остальное 0.
 `B_c`: `[1][0]=1/τ_v, [3][1]=1/τ_ω`, остальное 0.
+
+> **Решение #5 (см. §2.6):** `ė_int = s_ref − s` (интеграл ошибки **позиции**),
+> т.е. `A_c[4][0]=−1`. Прежний вариант `ė_int = v_target − v` (`A_c[4][1]=−1`)
+> делал модель неуправляемой (`s + e_int = const`). С `A_c[4][0]=−1` модель
+> полностью управляема, DARE решается, замкнутый контур строго устойчив.
 
 ### 4.3 Единый Ts
 
@@ -293,6 +323,7 @@ Python-бэкенда), MATLAB затем перегенерирует иден�
 ### Изменяемые
 
 - `pi_nodes/control/state_space_model.py` — публичный `zoh_discretize`
+- `pi_nodes/control/mpc_controller.py` — `__init__`: `control.matrices.K_mpc`/`Pf` только на legacy-пути; `_compute_terminal_penalty` использует `self.Q/self.R` (см. §2.6 баг 1)
 - `compute_node/mps_runner.py` — `_build_controller`, `closed_loop_eigenvalues`
 - `pi_nodes/nodes/mps_node.py` — `_on_matrices_set`, лог
 - `compute_node/dashboard/routers/mps.py` — `/validate` критерий
@@ -300,11 +331,13 @@ Python-бэкенда), MATLAB затем перегенерирует иден�
 - `matlab/samurai_params.m` — `p.mps`
 - `matlab/main.m` — ветка MPS
 - `matlab/export_to_yaml.m` — запись `mps:`-блока
-- `config.yaml` — секция `mps:` (непрерывная каноническая + `mps.plant`)
-- `compute_node/frontend/src/components/mps/OdeCard.tsx` — подпись Ts
+- `config.yaml` — секция `mps:` (непрерывная каноническая `A_c[4][0]=−1` + `mps.plant`)
+- `compute_node/frontend/src/components/mps/OdeCard.tsx` — подпись Ts + уравнение `ė_int`
+- `compute_node/frontend/src/lib/mps/canonical.ts` — `CANONICAL_PATTERN_A` ячейка `e_int`: col 1→0
+- `compute_node/frontend/src/lib/mps/tokenMap.ts` — токен `coef_eint_v` → `coef_eint_s` (A[4][0])
 - `docs/mps/api.md` — контракт
 - `tests/test_mps_runner.py`, `tests/test_mps_node.py`, `tests/test_mps_router.py`,
-  `matlab/test_export_to_yaml.m`
+  `tests/test_mpc_controller.py`, `matlab/test_export_to_yaml.m`
 
 ---
 
@@ -333,6 +366,12 @@ Python-бэкенда), MATLAB затем перегенерирует иден�
 ---
 
 ## 13. Объём и порядок
+
+> **Обновление 2026-05-14:** этапы 1-3 ниже выполнены (коммиты `24210ef`,
+> `ddd7741`, `65e799f`, `b855747`). При реализации выявлены 2 бага (см. §2.6)
+> → добавлен корректирующий этап «`e_int` → ∫ ошибки позиции + фикс
+> `MPCController`». Актуальный таск-лист — в
+> `docs/superpowers/plans/2026-05-14-mps-continuous-discretization.md`.
 
 | Этап | Содержание | Зависит от |
 |---|---|---|

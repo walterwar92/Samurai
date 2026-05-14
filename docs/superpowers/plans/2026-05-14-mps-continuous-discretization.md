@@ -14,6 +14,186 @@
 
 ---
 
+## ⚠ PLAN AMENDMENT 2026-05-14 — Option A (`e_int` → ∫position) + `MPCController` fix
+
+**Status:** Tasks 1-3 committed (`24210ef`, `ddd7741`, `65e799f`, `b855747`). During Task 3 two pre-existing bugs surfaced (spec §2.6):
+
+1. **`MPCController.__init__` overwrites the computed gain** with the legacy `control.matrices.K_mpc` from config (proof: `K_first[0,:3]` after `__init__` = `[2.80934, 0, 0]` = config's `K_mpc`). Same footgun for `Pf` / `control.weights`.
+2. **The canonical `ė_int = v_target − v` makes the model uncontrollable** (`s + e_int = const`, ctrb rank 4/5, DARE fails). User chose **Option A**: redefine `ė_int = s_ref − s` (integral of *position* error) — `A_c[4][0] = −1` instead of `A_c[4][1] = −1`. Verified: rank 5/5, DARE OK, closed loop strictly stable (max|λ| ≈ 0.993).
+
+**Effect on the plan:**
+- **NEW Task C1** below — runs BEFORE Task 4, fixes both bugs atomically.
+- **Tasks 4, 5, 8, 11** — `A` fixture row 4 changes `[0,-1,0,0,0]` → `[-1,0,0,0,0]` (see "Task deltas" below).
+- **Task 12** expands — also updates `canonical.ts` / `tokenMap.ts` / `OdeCard` equation.
+- Task 3's committed `test_closed_loop_eigenvalues_returns_5_5` has a `< 1.5` band-aid — Task C1 replaces it with the honest `< 1.0`.
+
+---
+
+### Task C1: `e_int` → ∫position-error + fix `MPCController` gain-override
+
+**Files:**
+- Modify: `pi_nodes/control/mpc_controller.py` (`__init__`, `_compute_terminal_penalty`)
+- Modify: `config.yaml` (`mps.matrices.A` row 4)
+- Modify: `compute_node/mps_runner.py` (`__main__` `A_DEFAULT` row 4)
+- Test: `tests/test_mps_runner.py`, `tests/test_mpc_controller.py`
+
+- [ ] **Step 1: Update tests to Option-A / fixed-`MPCController` expectations (RED)**
+
+In `tests/test_mps_runner.py`, change `_A_CANONICAL` row 4 (e_int) from `[0.0, -1.0, 0.0, 0.0, 0.0]` to `[-1.0, 0.0, 0.0, 0.0, 0.0]`:
+
+```python
+_A_CANONICAL = [
+    [0.0,  1.0,         0.0,  0.0,         0.0],
+    [0.0, -1.0/_TAU_V,  0.0,  0.0,         0.0],
+    [0.0,  0.0,         0.0,  1.0,         0.0],
+    [0.0,  0.0,         0.0, -1.0/_TAU_W,  0.0],
+    [-1.0, 0.0,         0.0,  0.0,         0.0],
+]
+```
+
+Replace `test_closed_loop_eigenvalues_returns_5_5` (the `< 1.5` band-aid) with the honest version:
+
+```python
+def test_closed_loop_eigenvalues_returns_5_5():
+    m = _default_matrices()
+    eig_open, eig_closed = closed_loop_eigenvalues(m)
+    assert len(eig_open) == 5
+    assert len(eig_closed) == 5
+    assert all(np.isfinite(z) for z in eig_closed)
+    # Option A canonical model (ė_int = s_ref − s) is fully controllable —
+    # the MPC places ALL closed-loop poles strictly inside the unit circle.
+    assert max(abs(z) for z in eig_closed) < 1.0
+    # Open loop keeps 3 integrator poles on |λ|=1 (s, θ, e_int chain).
+    assert sum(abs(abs(z) - 1.0) < 1e-6 for z in eig_open) == 3
+```
+
+In `tests/test_mpc_controller.py`, add two tests (match the file's existing import/style):
+
+```python
+def test_explicit_matrices_ignore_config_gain():
+    """MPCController(Ad=, Bd=) with EXPLICIT matrices must compute its own
+    K_first — NOT inherit control.matrices.K_mpc from config (that gain is
+    for the legacy [px,py,θ,v,ω] model). Spec 2026-05-14 §2.6."""
+    import numpy as np
+    from pi_nodes.control.mpc_controller import MPCController
+    Ad = np.diag([0.9, 0.8, 0.95, 0.85, 0.88])
+    Bd = np.zeros((5, 2)); Bd[1, 0] = 0.1; Bd[3, 1] = 0.1
+    Q = np.diag([10., 10., 5., 1., 1.]); R = np.diag([1., 1.])
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10, Pf=Q,
+                        u_min=[-0.3, -2.], u_max=[0.3, 2.], solver='clip')
+    K_init = mpc.K_first.copy()
+    mpc._build_qp_matrices()  # clean recompute — must match __init__
+    np.testing.assert_allclose(
+        K_init, mpc.K_first, atol=1e-12,
+        err_msg="__init__ K_first differs from clean recompute — config "
+                "K_mpc override leaked into the explicit-matrices path")
+
+
+def test_explicit_matrices_compute_own_terminal_penalty():
+    """With explicit Ad/Bd and no Pf, MPCController computes Pf via DARE on
+    the supplied model — not control.matrices.Pf (legacy). Spec §2.6."""
+    import numpy as np
+    from scipy.linalg import solve_discrete_are
+    from pi_nodes.control.mpc_controller import MPCController
+    Ad = np.diag([0.9, 0.8, 0.95, 0.85, 0.88])
+    Bd = np.zeros((5, 2)); Bd[1, 0] = 0.1; Bd[3, 1] = 0.1
+    Q = np.diag([10., 10., 5., 1., 1.]); R = np.diag([1., 1.])
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2.], u_max=[0.3, 2.], solver='clip')
+    expected_pf = solve_discrete_are(Ad, Bd, Q, R)
+    np.testing.assert_allclose(
+        mpc.Pf, expected_pf, atol=1e-6,
+        err_msg="Pf not computed from the supplied model — config Pf leaked in")
+```
+
+- [ ] **Step 2: Run — confirm RED**
+
+Run: `python -m pytest tests/test_mps_runner.py::test_closed_loop_eigenvalues_returns_5_5 tests/test_mpc_controller.py::test_explicit_matrices_ignore_config_gain tests/test_mpc_controller.py::test_explicit_matrices_compute_own_terminal_penalty -v`
+Expected: FAIL — `test_closed_loop_eigenvalues_returns_5_5` (config still has `A[4][1]=−1` → uncontrollable → closed loop not `< 1.0`); both `test_mpc_controller` tests (the K_mpc/Pf config override is still unconditional).
+
+- [ ] **Step 3: Fix `MPCController.__init__` + config + mps_runner `__main__`**
+
+In `pi_nodes/control/mpc_controller.py`, in `__init__`, capture the legacy-path flag at the very top of the method body (BEFORE `Ad`/`Bd` get resolved from config):
+
+```python
+        # True when built from config defaults (legacy [px,py,θ,v,ω] model).
+        # Explicit Ad/Bd ⇒ a DIFFERENT model ⇒ config K_mpc/Pf must NOT leak in.
+        _from_config = Ad is None or Bd is None
+```
+
+Gate the `Pf` config-load (the `if Pf is None:` block) on `_from_config`:
+
+```python
+        if Pf is None:
+            Pf_cfg = cfg("control.matrices.Pf", None) if _from_config else None
+            if Pf_cfg is not None:
+                Pf = np.asarray(Pf_cfg, dtype=float)
+            else:
+                Pf = self._compute_terminal_penalty()
+        self.Pf = np.asarray(Pf, dtype=float)
+```
+
+Gate the `K_mpc` override (the block at the end of `__init__`) on `_from_config`:
+
+```python
+        # ── Precomputed K_first from config — LEGACY PATH ONLY ──────
+        # Explicit Ad/Bd ⇒ controller is for a different model than the
+        # config's legacy [px,py,θ,v,ω]; the config gain must not be used.
+        if _from_config:
+            K_mpc_cfg = cfg("control.matrices.K_mpc", None)
+            if K_mpc_cfg is not None:
+                K_pre = np.asarray(K_mpc_cfg, dtype=float)
+                if K_pre.shape == (self.r, self.n):
+                    self.K_first = K_pre
+```
+
+Replace `_compute_terminal_penalty` to use the instance weights instead of re-reading config:
+
+```python
+    def _compute_terminal_penalty(self) -> np.ndarray:
+        """If Pf not given, solve DARE for a guaranteed-stable terminal cost.
+
+        Uses the instance weights `self.Q/self.R` (NOT config) — the
+        controller may be built for a non-legacy model.
+        """
+        from scipy.linalg import solve_discrete_are
+
+        return solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
+```
+
+In `config.yaml`, `mps.matrices.A` — change row 4 from `      - [0, -1, 0, 0, 0]` to `      - [-1, 0, 0, 0, 0]` (ė_int = s_ref − s). Update the adjacent comment line `# A_c: ... [4][1]=-1` → `[4][0]=-1`.
+
+In `compute_node/mps_runner.py`, the `__main__` block's `A_DEFAULT` — change row 4 from `[0.0, -1.0, 0.0, 0.0, 0.0]` to `[-1.0, 0.0, 0.0, 0.0, 0.0]`.
+
+- [ ] **Step 4: Run — confirm GREEN**
+
+Run: `python -m pytest tests/test_mps_runner.py tests/test_mpc_controller.py tests/test_state_space_extended.py tests/test_zoh_discretization.py tests/test_lqr_controller.py -q`
+Expected: PASS — all green. (`test_lqr_controller.py` / `test_state_space_extended.py` confirm the legacy path is untouched.) If an existing `test_mpc_controller.py` test breaks, STOP and report — do not paper over.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add pi_nodes/control/mpc_controller.py config.yaml compute_node/mps_runner.py tests/test_mps_runner.py tests/test_mpc_controller.py
+git commit -m "fix(mps): e_int → ∫ошибки позиции + MPCController не берёт legacy-гейн из config"
+```
+
+---
+
+### Task deltas — apply when you reach each task
+
+- **Task 4** (`tests/test_mps_router.py`): in `matrices_payload`, `A` row 4 → `[-1.0, 0.0, 0.0, 0.0, 0.0]`. Rest of Task 4 stands — the open-loop marginal-stability nuance is still needed (open loop keeps 3 integrators); `test_validate_canonical_plant_marginal_not_unstable`'s `is_closed_loop_stable is True` is now genuinely correct.
+- **Task 5** (`tests/test_mps_node.py`): in `_good_matrices`, `A` row 4 → `[-1.0, 0.0, 0.0, 0.0, 0.0]`. Rest stands.
+- **Task 6** (docs): the canonical equation is `ė_int = s_ref − s` (`A_c[4][0]=−1`), not `ė_int = v_target − v`. Use that wherever the model is described.
+- **Task 8** (`build_canonical_mps.m`): the `A` matrix's e_int row is `[-1, 0, 0, 0, 0]` (`A(5,1) = -1`), not `A(5,2) = -1`. Equation comment: `e_int_dot = s_ref - s`. In `test_build_canonical_mps.m`: assert `A(5,1) == -1` (not `A(5,2)`), and the non-pattern mask sets `mask(5,1) = false`.
+- **Task 11** (`test_export_to_yaml.m`): the `mps_export` fixture `A_c` row 4 → `-1 0 0 0 0`.
+- **Task 12** — EXPANDED. In addition to the `OdeCard.tsx` Ts label (`50` → `20` мс):
+  - `compute_node/frontend/src/lib/mps/canonical.ts` — `CANONICAL_PATTERN_A`: change the e_int entry `{ row: 4, col: 1, role: { kind: 'fixed', value: -1 } }` → `{ row: 4, col: 0, role: { kind: 'fixed', value: -1 } }`.
+  - `compute_node/frontend/src/lib/mps/tokenMap.ts` — change `{ id: 'coef_eint_v', matrix: 'A', row: 4, col: 1, equationRow: 4, description: '∂ė_int/∂v = −1' }` → `{ id: 'coef_eint_s', matrix: 'A', row: 4, col: 0, equationRow: 4, description: '∂ė_int/∂s = −1' }`. `grep -rn coef_eint_v compute_node/frontend/src` and update any other references.
+  - `compute_node/frontend/src/components/mps/OdeCard.tsx` — `EQUATIONS[4]`: both `symbolic` and `numericFormula` `'\\dot{e}_{int} = v_{target} - v'` → `'\\dot{e}_{int} = s_{ref} - s'`.
+  - Run `cd compute_node/frontend && npm run test -- mps`.
+
+---
+
 ## File Structure
 
 | Файл | Ответственность | Действие |
