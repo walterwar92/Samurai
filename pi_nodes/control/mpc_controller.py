@@ -49,6 +49,10 @@ class MPCController:
         u_max: Optional[Sequence[float]] = None,
         solver: Optional[str] = None,
     ) -> None:
+        # True when built from config defaults (legacy [px,py,θ,v,ω] model).
+        # Explicit Ad/Bd ⇒ a DIFFERENT model ⇒ config K_mpc/Pf must NOT leak in.
+        _from_config = Ad is None or Bd is None
+
         # ── Resolve plant ────────────────────────────────────────
         if Ad is None or Bd is None:
             from pi_nodes.control.state_space_model import StateSpaceModel
@@ -78,7 +82,7 @@ class MPCController:
 
         # ── Terminal penalty ─────────────────────────────────────
         if Pf is None:
-            Pf_cfg = cfg("control.matrices.Pf", None)
+            Pf_cfg = cfg("control.matrices.Pf", None) if _from_config else None
             if Pf_cfg is not None:
                 Pf = np.asarray(Pf_cfg, dtype=float)
             else:
@@ -103,23 +107,26 @@ class MPCController:
         # ── Build lifted dynamics + QP matrices ──────────────────
         self._build_qp_matrices()
 
-        # ── Try to load precomputed K_first from config ──────────
-        K_mpc_cfg = cfg("control.matrices.K_mpc", None)
-        if K_mpc_cfg is not None:
-            K_pre = np.asarray(K_mpc_cfg, dtype=float)
-            if K_pre.shape == (self.r, self.n):
-                self.K_first = K_pre
+        # ── Precomputed K_first from config — LEGACY PATH ONLY ──────
+        # Explicit Ad/Bd ⇒ controller is for a different model than the
+        # config's legacy [px,py,θ,v,ω]; the config gain must not be used.
+        if _from_config:
+            K_mpc_cfg = cfg("control.matrices.K_mpc", None)
+            if K_mpc_cfg is not None:
+                K_pre = np.asarray(K_mpc_cfg, dtype=float)
+                if K_pre.shape == (self.r, self.n):
+                    self.K_first = K_pre
 
     # ── Setup ─────────────────────────────────────────────────────
     def _compute_terminal_penalty(self) -> np.ndarray:
-        """If Pf not given, solve DARE for guaranteed-stable terminal cost."""
+        """If Pf not given, solve DARE for a guaranteed-stable terminal cost.
+
+        Uses the instance weights `self.Q/self.R` (NOT config) — the
+        controller may be built for a non-legacy model.
+        """
         from scipy.linalg import solve_discrete_are
 
-        Q_diag = cfg("control.weights.Q_diag", [10.0, 10.0, 5.0, 1.0, 1.0])
-        R_diag = cfg("control.weights.R_diag", [1.0, 1.0])
-        Q = np.diag(np.asarray(Q_diag, dtype=float))
-        R = np.diag(np.asarray(R_diag, dtype=float))
-        return solve_discrete_are(self.Ad, self.Bd, Q, R)
+        return solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
 
     def _build_qp_matrices(self) -> None:
         n, r, N = self.n, self.r, self.N

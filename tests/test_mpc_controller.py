@@ -229,3 +229,39 @@ def test_rebuild_explicit_pf_is_used(plant_mats, Q_R):
     Pf_user = np.eye(5) * 7.0
     mpc.rebuild(Pf=Pf_user)
     np.testing.assert_allclose(mpc.Pf, Pf_user)
+
+
+def test_explicit_matrices_ignore_config_gain():
+    """MPCController(Ad=, Bd=) with EXPLICIT matrices must compute its own
+    K_first — NOT inherit control.matrices.K_mpc from config (that gain is
+    for the legacy [px,py,θ,v,ω] model). Spec 2026-05-14 §2.6."""
+    import numpy as np
+    from pi_nodes.control.mpc_controller import MPCController
+    Ad = np.diag([0.9, 0.8, 0.95, 0.85, 0.88])
+    Bd = np.zeros((5, 2)); Bd[1, 0] = 0.1; Bd[3, 1] = 0.1
+    Q = np.diag([10., 10., 5., 1., 1.]); R = np.diag([1., 1.])
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10, Pf=Q,
+                        u_min=[-0.3, -2.], u_max=[0.3, 2.], solver='clip')
+    K_init = mpc.K_first.copy()
+    mpc._build_qp_matrices()  # clean recompute — must match __init__
+    np.testing.assert_allclose(
+        K_init, mpc.K_first, atol=1e-12,
+        err_msg="__init__ K_first differs from clean recompute — config "
+                "K_mpc override leaked into the explicit-matrices path")
+
+
+def test_explicit_matrices_compute_own_terminal_penalty():
+    """With explicit Ad/Bd and no Pf, MPCController computes Pf via DARE on
+    the supplied model — not control.matrices.Pf (legacy). Spec §2.6."""
+    import numpy as np
+    from scipy.linalg import solve_discrete_are
+    from pi_nodes.control.mpc_controller import MPCController
+    Ad = np.diag([0.9, 0.8, 0.95, 0.85, 0.88])
+    Bd = np.zeros((5, 2)); Bd[1, 0] = 0.1; Bd[3, 1] = 0.1
+    Q = np.diag([10., 10., 5., 1., 1.]); R = np.diag([1., 1.])
+    mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=10,
+                        u_min=[-0.3, -2.], u_max=[0.3, 2.], solver='clip')
+    expected_pf = solve_discrete_are(Ad, Bd, Q, R)
+    np.testing.assert_allclose(
+        mpc.Pf, expected_pf, atol=1e-6,
+        err_msg="Pf not computed from the supplied model — config Pf leaked in")

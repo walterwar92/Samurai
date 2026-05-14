@@ -37,7 +37,7 @@ _A_CANONICAL = [
     [0.0, -1.0/_TAU_V,  0.0,  0.0,         0.0],
     [0.0,  0.0,         0.0,  1.0,         0.0],
     [0.0,  0.0,         0.0, -1.0/_TAU_W,  0.0],
-    [0.0, -1.0,         0.0,  0.0,         0.0],
+    [0.0,  0.0,        -1.0,  0.0,         0.0],
 ]
 _B_CANONICAL = [
     [0.0,         0.0],
@@ -160,12 +160,9 @@ def test_closed_loop_eigenvalues_returns_5_5():
     eig_open, eig_closed = closed_loop_eigenvalues(m)
     assert len(eig_open) == 5
     assert len(eig_closed) == 5
-    # The canonical continuous model has an uncontrollable integrator mode
-    # (e_int, state 4) — the PBH test confirms controllability rank=4 at λ=1.
-    # DARE-based terminal penalty on a rank-4-controllable system produces a
-    # K_first that shifts controllable modes; the uncontrollable mode may end
-    # up at |λ| slightly above 1.0 in linear analysis.
-    # We verify: (a) all finite, (b) no eigenvalue blows up past 1.5 — the
-    # controller is practically stable as verified by test_default_matrices_reach_d2.
     assert all(np.isfinite(z) for z in eig_closed)
-    assert max(abs(z) for z in eig_closed) < 1.5
+    # Option D canonical model (ė_int = −θ) is fully controllable —
+    # the MPC places ALL closed-loop poles strictly inside the unit circle.
+    assert max(abs(z) for z in eig_closed) < 1.0
+    # Open loop keeps 3 integrator poles on |λ|=1 (s, θ, e_int chain).
+    assert sum(abs(abs(z) - 1.0) < 1e-6 for z in eig_open) == 3
