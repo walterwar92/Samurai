@@ -97,6 +97,15 @@ function export_to_yaml(Ad, Bd, K_lqr, K_mpc, L, Pf, p, yaml_path, mps)
     text = fread(fid, '*char')';
     fclose(fid);
     lines = strsplit(text, '\n', 'CollapseDelimiters', false);
+    % На Windows файл может иметь CRLF-окончания строк; fread возвращает
+    % сырые байты, поэтому после strsplit по '\n' каждая строка оканчивается
+    % на '\r'. Убираем '\r' в конце каждой строки — иначе «пустые» строки
+    % становятся {'\r'} и ломают детектор конца блока (l(1) == char(13)).
+    for k = 1:length(lines)
+      if ~isempty(lines{k}) && lines{k}(end) == char(13)
+        lines{k} = lines{k}(1:end-1);
+      end
+    end
     % strsplit по тексту, оканчивающемуся на \n, даёт лишний пустой элемент
     % в конце. Если его не убрать, цикл записи (fprintf '%s\n') добавляет по
     % пустой строке в конец файла при каждом экспорте — экспорт перестаёт
@@ -227,6 +236,12 @@ function write_mps_block(yaml_path, mps)
   text = fread(fid, '*char')';
   fclose(fid);
   lines = strsplit(text, '\n', 'CollapseDelimiters', false);
+  % Убираем '\r' в конце строк (CRLF-файлы на Windows)
+  for k = 1:length(lines)
+    if ~isempty(lines{k}) && lines{k}(end) == char(13)
+      lines{k} = lines{k}(1:end-1);
+    end
+  end
   if ~isempty(lines) && isempty(lines{end})
     lines(end) = [];
   end

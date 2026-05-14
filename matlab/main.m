@@ -115,11 +115,33 @@ simulate_closed_loop(Ad, Bd, mpc.K_first,  x0, T, p.u_min, p.u_max, ...
                      'MPC (явное решение + clip) — переходный процесс');
 fprintf('   Построено 3 окна с графиками.\n\n');
 
-%% 10. Экспорт в config.yaml
-% Записываем ВСЕ матрицы в config.yaml, чтобы Python-код их подхватил.
-fprintf('10. Экспорт в config.yaml...\n');
+%% 10. Путь к config.yaml (экспорт — в шаге 12, после синтеза МПС)
 yaml_path = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'config.yaml');
-export_to_yaml(Ad, Bd, K_lqr, mpc.K_first, L_obs, P_inf, p, yaml_path);
+
+%% 11. МПС — каноническая модель пространства состояний [s,v,θ,ω,e_int]
+% Отдельная подсистема (модуль курсовой). Аналитическая непрерывная
+% модель из постоянных времени моторов → ZOH → MPC. A/B в config.yaml
+% mps: пишутся НЕПРЕРЫВНЫМИ (контракт docs/mps/api.md).
+fprintf('11. МПС — синтез канонической модели:\n');
+[A_mps, B_mps, C_mps, D_mps] = build_canonical_mps(p.mps.tau_v, p.mps.tau_w);
+fprintf('   Непрерывная A_mps (5×5):\n'); disp(A_mps);
+[Ad_mps, Bd_mps] = discretize_samurai(A_mps, B_mps, p.mps.Ts);
+[~, Pf_mps] = design_lqr(Ad_mps, Bd_mps, p.mps.Q, p.mps.R);
+mpc_mps = design_mpc(Ad_mps, Bd_mps, p.mps.Q, p.mps.R, Pf_mps, p.mps.N);
+% Переходный процесс «проехать 2 м вперёд»: x0 = ошибка позиции −2 м по s.
+simulate_closed_loop(Ad_mps, Bd_mps, mpc_mps.K_first, ...
+                     [-2; 0; 0; 0; 0], round(3 / p.mps.Ts), ...
+                     p.mps.u_min, p.mps.u_max, ...
+                     'МПС — переходный процесс (s: −2 м → 0)');
+fprintf('\n');
+
+%% 12. Экспорт обоих блоков (control: + mps:) в config.yaml
+fprintf('12. Экспорт config.yaml (блоки control + mps)...\n');
+mps_export = struct('A_c', A_mps, 'B_c', B_mps, 'C', C_mps, 'D', D_mps, ...
+                    'tau_v', p.mps.tau_v, 'tau_w', p.mps.tau_w, ...
+                    'Ts', p.mps.Ts, 'Q', p.mps.Q, 'R', p.mps.R, ...
+                    'N', p.mps.N, 'u_min', p.mps.u_min, 'u_max', p.mps.u_max);
+export_to_yaml(Ad, Bd, K_lqr, mpc.K_first, L_obs, P_inf, p, yaml_path, mps_export);
 
 fprintf('\n═════════════════════════════════════════════\n');
 fprintf('  ГОТОВО\n');
