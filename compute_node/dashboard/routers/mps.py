@@ -229,9 +229,13 @@ async def validate(
         warnings.append(f'eigenvalue compute failed: {exc}')
         eig_open, eig_closed = [], []
 
-    is_plant_stable = bool(eig_open) and all(abs(z) < 1.0 - 1e-9 for z in eig_open)
+    _STAB_TOL = 1e-6
+    is_plant_stable = bool(eig_open) and all(abs(z) < 1.0 - _STAB_TOL for z in eig_open)
     is_closed_stable = bool(eig_closed) and all(
-        abs(z) < 1.0 - 1e-9 for z in eig_closed
+        abs(z) < 1.0 - _STAB_TOL for z in eig_closed
+    )
+    plant_has_unstable = bool(eig_open) and any(
+        abs(z) > 1.0 + _STAB_TOL for z in eig_open
     )
 
     try:
@@ -240,10 +244,15 @@ async def validate(
         warnings.append(f'step response failed: {exc}')
         step_resp = []
 
-    if not is_plant_stable:
-        warnings.append('Открытая система НЕ устойчива (|λ(A)| ≥ 1)')
+    if plant_has_unstable:
+        warnings.append('Открытая система неустойчива — есть |λ(Ad)| > 1')
+    elif not is_plant_stable:
+        warnings.append(
+            'Открытая система маргинально устойчива: полюса-интеграторы '
+            'на |λ|=1 (s, θ, e_int) — норма для канонической модели'
+        )
     if not is_closed_stable:
-        warnings.append('Замкнутая система НЕ устойчива (|λ(A−B·K)| ≥ 1)')
+        warnings.append('Замкнутая система НЕ устойчива (|λ(Ad−Bd·K)| ≥ 1)')
 
     return MpsValidateResult(
         eigenvalues_ad=[ComplexNumber.from_complex(z) for z in eig_open],

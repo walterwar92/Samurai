@@ -42,21 +42,22 @@ def client(fake_mqtt):
 
 @pytest.fixture
 def matrices_payload():
-    """Default-shaped matrices payload that passes Pydantic validation."""
+    """Каноническая НЕПРЕРЫВНАЯ модель — проходит Pydantic-валидацию."""
+    tau_v, tau_w = 0.15, 0.10
     return {
         'A': [
-            [1, 0, 0, 0.0425203, 0],
-            [0, 1, 0.01, 0, 0.000213061],
-            [0, 0, 1, 0, 0.0393469],
-            [0, 0, 0, 0.716531, 0],
-            [0, 0, 0, 0, 0.606531],
+            [0.0,  1.0,        0.0,  0.0,        0.0],
+            [0.0, -1.0/tau_v,  0.0,  0.0,        0.0],
+            [0.0,  0.0,        0.0,  1.0,        0.0],
+            [0.0,  0.0,        0.0, -1.0/tau_w,  0.0],
+            [0.0,  0.0,       -1.0,  0.0,        0.0],
         ],
         'B': [
-            [0.0074797, 0],
-            [0, 3.69387e-05],
-            [0, 0.0106531],
-            [0.283469, 0],
-            [0, 0.393469],
+            [0.0,        0.0],
+            [1.0/tau_v,  0.0],
+            [0.0,        0.0],
+            [0.0,        1.0/tau_w],
+            [0.0,        0.0],
         ],
         'C': [[1.0 if i == j else 0.0 for j in range(5)] for i in range(5)],
         'D': [[0.0, 0.0] for _ in range(5)],
@@ -152,6 +153,21 @@ def test_validate_with_explicit_matrices(client, matrices_payload):
     assert body['is_closed_loop_stable'] is True
     # step_response should have telemetry points
     assert isinstance(body['step_response'], list)
+
+
+def test_validate_canonical_plant_marginal_not_unstable(client, matrices_payload):
+    """Каноническая модель: 3 полюса Ad на |λ|=1 (интеграторы s,θ,e_int).
+    is_plant_stable=False (строгая асимптотика), но предупреждение —
+    про маргинальную устойчивость, НЕ про неустойчивость; замкнутый
+    контур устойчив (модель управляема)."""
+    r = client.post('/api/v1/mps/validate', json=matrices_payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert body['is_plant_stable'] is False
+    assert body['is_closed_loop_stable'] is True
+    joined = ' '.join(body['warnings'])
+    assert 'маргинально устойчива' in joined
+    assert 'неустойчива' not in joined
 
 
 # ── /scenario/run (sim) ────────────────────────────────────────────────
