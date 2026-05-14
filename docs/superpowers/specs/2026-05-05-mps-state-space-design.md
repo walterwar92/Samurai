@@ -243,6 +243,12 @@ u = [v_cmd, ω_cmd]ᵀ ∈ ℝ²
 y = C·x + D·u (для UI; default y = x)
 ```
 
+> **Обновление 2026-05-14:** `MpsMatrices.A/B` несут НЕПРЕРЫВНЫЕ матрицы
+> `A_c/B_c` (бэкенд ZOH-дискретизирует); `ė_int` переопределён как `−θ`
+> (интеграл ошибки курса) — прежнее `v_target − v` делало модель
+> неуправляемой. Актуальная модель — в
+> `docs/superpowers/specs/2026-05-14-mps-continuous-discretization-design.md`.
+
 x_meas — из `pi_nodes/filters/position_fusion.py` (режим `complementary` или `ekf` по конфигу).
 
 ### 5.2 Reference

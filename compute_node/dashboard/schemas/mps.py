@@ -47,16 +47,20 @@ class MpsMatrices(BaseModel):
     Порядок состояний:  x = [s, v, θ, ω, e_int]
     Порядок управлений: u = [v_cmd, ω_cmd]
 
+    A, B — НЕПРЕРЫВНЫЕ матрицы A_c, B_c канонической ОДУ-модели. Бэкенд
+    (mps_runner / mps_node) ZOH-дискретизирует их при mps.plant.Ts перед
+    передачей в дискретный MPCController. См. docs/mps/api.md §2.
+
     C, D хранятся для документации курсовой; в `step()` контроллера не
     используются. В UI — только для y(t) визуализации (`StateSpaceModel.output`).
     """
     A: list[list[float]] = Field(
         ...,
-        description='5×5 — дискретная матрица состояния Ad'
+        description='5×5 — непрерывная матрица состояния A_c (бэкенд ZOH-дискретизирует)'
     )
     B: list[list[float]] = Field(
         ...,
-        description='5×2 — дискретная матрица управления Bd'
+        description='5×2 — непрерывная матрица управления B_c (бэкенд ZOH-дискретизирует)'
     )
     C: list[list[float]] = Field(
         ...,

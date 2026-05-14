@@ -27,6 +27,12 @@
 
 Размерности фиксированы: `x ∈ ℝ^5 = [s, v, θ, ω, e_int]`, `u ∈ ℝ^2 = [v_cmd, ω_cmd]`.
 
+**Контракт A/B (с 2026-05-14):** `MpsMatrices.A` и `B` — **непрерывные**
+матрицы `A_c/B_c` канонической ОДУ-модели. Бэкенд ZOH-дискретизирует их
+при `mps.plant.Ts` (= 0.02 с) перед передачей в дискретный MPC. Открытый
+контур `λ(Ad)` имеет 3 полюса на `|λ|=1` (интеграторы `s, θ, e_int`) —
+это норма (маргинальная устойчивость, не баг).
+
 ---
 
 ## 2. Pydantic-схемы (источник правды)
@@ -36,7 +42,7 @@ TS-зеркало: [`compute_node/frontend/src/types/mps.ts`](../../compute_node
 
 Ключевые модели:
 
-- `MpsMatrices` — A/B/C/D + Q_diag/R_diag + horizon_N + u_min/u_max + schema_version.
+- `MpsMatrices` — A/B (непрерывные A_c/B_c) + C/D + Q_diag/R_diag + horizon_N + u_min/u_max + schema_version.
   Валидация: shapes 5×5 / 5×2; `Q_diag ≥ 0`, `R_diag > 0`; `u_min < u_max` поэлементно.
 - `MpsScenarioRequest` — distance (0..5), v_target (0..0.30), source (`"sim"`|`"robot"`).
 - `MpsTelemetryPoint` — t, x[5], u[2], y[k], s_remaining.
@@ -73,7 +79,9 @@ TS-зеркало: [`compute_node/frontend/src/types/mps.ts`](../../compute_node
 |---|---|---|---|
 | POST | `/validate` | `MpsMatrices?` (если null — валидируется draft, иначе applied) | `MpsValidateResult` |
 
-Считает λ(Ad), λ(Ad − Bd·K_first), short step-response (2 сек, dt=0.02) в идеальном симуляторе. Никаких побочных эффектов.
+ZOH-дискретизирует непрерывные A/B при `mps.plant.Ts`, затем считает
+λ(Ad), λ(Ad − Bd·K_first), short step-response (2 сек) в идеальном
+симуляторе. Никаких побочных эффектов.
 
 ### 3.3 Сценарий
 
