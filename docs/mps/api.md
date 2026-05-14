@@ -44,7 +44,7 @@ TS-зеркало: [`compute_node/frontend/src/types/mps.ts`](../../compute_node
 
 - `MpsMatrices` — A/B (непрерывные A_c/B_c) + C/D + Q_diag/R_diag + horizon_N + u_min/u_max + schema_version.
   Валидация: shapes 5×5 / 5×2; `Q_diag ≥ 0`, `R_diag > 0`; `u_min < u_max` поэлементно.
-- `MpsScenarioRequest` — distance (0..5), v_target (0..0.30), source (`"sim"`|`"robot"`).
+- `MpsScenarioRequest` — distance (0..5), v_target (0..0.30), source (`"sim"`|`"robot"`), target_heading (−π…π, дефолт 0.0).
 - `MpsTelemetryPoint` — t, x[5], u[2], y[k], s_remaining.
 - `MpsMetrics` — overshoot, settling_time, control_energy, ss_error, peak_v, peak_omega.
 - `MpsScenarioResult` — run_id + status + telemetry[] + metrics + matrices_snapshot.
@@ -96,6 +96,33 @@ ZOH-дискретизирует непрерывные A/B при `mps.plant.Ts
 - 409 Conflict — если уже идёт `running` прогон на этом source.
 - 503 — если `source="robot"` но MQTT отключён.
 - Заголовок `Idempotency-Key` поддерживается middleware-ом приложения (60с TTL).
+
+#### Поля `MpsScenarioRequest`
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `distance` | float | Дистанция (0..5 м). |
+| `v_target` | float | Целевая скорость (0..0.30 м/с). |
+| `source` | str | `"sim"` или `"robot"`. |
+| `target_heading` | float | Относительный целевой курс (рад, −π…π) от курса робота на старте сценария. `0.0` (дефолт) = ехать прямо вперёд. Используется только при `source="robot"`. |
+
+#### Двухфазный robot-сценарий (TURN → DRIVE)
+
+При `source="robot"` `mps_node` выполняет сценарий в две фазы:
+
+1. **TURN** — разворот на месте к относительному курсу `target_heading`
+   (`x_ref = [0, 0, φ, 0, 0]`, ход `linear_x` зажат в 0). Завершается
+   когда `|θ − φ| < mps.scenario.turn_tolerance_rad`. Если не сошёлся за
+   `mps.scenario.turn_timeout_s` — прогон завершается со `status="timeout"`.
+2. **DRIVE** — движение `distance` метров с удержанием курса φ
+   (`x_ref = [s_ref, v_target, φ, 0, 0]`). Логика и завершение
+   (`reached` / `timeout`) — как в однофазном «вперёд D».
+
+При `target_heading = 0.0` фаза TURN завершается мгновенно — поведение
+идентично прежнему сценарию «проехать D метров вперёд».
+
+Симулятор (`source="sim"`) игнорирует `target_heading` — у него остаётся
+однофазный сценарий «вперёд D».
 
 ### 3.4 История и replay
 
