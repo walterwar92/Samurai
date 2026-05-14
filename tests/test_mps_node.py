@@ -321,3 +321,144 @@ def test_tick_heading_is_scenario_relative(mps_node):
         f"angular_z={cmd_vel['angular_z']:.4f} ≠ 0 — робот доворачивает к "
         f'абсолютному курсу 0 вместо «вперёд куда смотрит»'
     )
+
+
+def test_on_scenario_run_reads_target_heading(mps_node):
+    """_on_scenario_run читает target_heading из request и стартует
+    в фазе 'turn'."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-th',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot',
+                    'target_heading': 0.6},
+    })
+    assert mps_node.is_running
+    assert mps_node._run.target_heading == pytest.approx(0.6)
+    assert mps_node._run.phase == 'turn'
+    assert mps_node._run.drive_t == 0.0
+
+
+def test_on_scenario_run_target_heading_defaults_zero(mps_node):
+    """Без target_heading в request — дефолт 0.0 (поведение «вперёд»)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-th0',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert mps_node.is_running
+    assert mps_node._run.target_heading == 0.0
+
+
+def test_on_scenario_run_target_heading_out_of_range_rejected(mps_node):
+    """target_heading вне [−π, π] → mps/error precondition, run не стартует."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-bad',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot',
+                    'target_heading': 4.0},
+    })
+    err = [p[1] for p in mps_node._published if p[0] == 'mps/error']
+    assert err and err[0]['error_type'] == 'precondition'
+    assert not mps_node.is_running
+
+
+def test_mps_node_loads_turn_config(mps_node):
+    """__init__ читает пороги turn-фазы из config (с дефолтами)."""
+    assert isinstance(mps_node._turn_tol, float) and mps_node._turn_tol > 0
+    assert isinstance(mps_node._turn_timeout, float) and mps_node._turn_timeout > 0
+    assert isinstance(mps_node._omega_max_turn, float) and mps_node._omega_max_turn > 0
+
+
+def test_tick_turn_rotates_toward_target_heading(mps_node):
+    """В фазе TURN робот крутится к target_heading: φ>0 ⇒ angular_z>0
+    (CCW), ход linear_x = 0 (чистое вращение)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-turn',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run is not None and mps_node._run.phase == 'turn'
+    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
+    assert cmd_vel['linear_x'] == 0.0, 'в TURN ход должен быть 0 (чистое вращение)'
+    assert cmd_vel['angular_z'] > 0.0, 'φ>0 ⇒ робот крутится CCW'
+
+
+def test_tick_turn_transitions_to_drive_when_aligned(mps_node):
+    """Когда |θ − φ| < turn_tol, фаза переключается на 'drive'."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-trans',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Одометрия: курс робота уже совпал с целью φ.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run is not None
+    assert mps_node._run.phase == 'drive', 'курс совпал с φ ⇒ переход в DRIVE'
+
+
+def test_tick_drive_holds_target_heading(mps_node):
+    """В фазе DRIVE θ_ref = φ: если курс робота ниже φ, контроллер
+    доворачивает ВВЕРХ к φ (angular_z>0), а не вниз к 0."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-hold',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Перевести в DRIVE: одометрия с курсом = φ.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
+    mps_node._tick()
+    assert mps_node._run.phase == 'drive'
+    # Курс робота «сполз» ниже φ (0.6 < 0.8).
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.6, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
+    assert cmd_vel['angular_z'] > 0.0, (
+        'курс 0.6 < φ=0.8 ⇒ доворот вверх к φ; '
+        'если бы θ_ref был 0 — angular_z был бы < 0'
+    )
+
+
+def test_tick_turn_timeout(mps_node):
+    """Если TURN не сходится за turn_timeout — прогон завершается timeout."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-tto',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 3.0},
+    })
+    max_ticks = int(mps_node._turn_timeout / mps_node._tick_dt) + 10
+    for _ in range(max_ticks):
+        # Робот «застрял»: курс 0, далеко от φ=3.0 — TURN не сойдётся.
+        mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+        mps_node._tick()
+        if not mps_node.is_running:
+            break
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished']
+    assert finished and finished[-1]['status'] == 'timeout'
+    assert not mps_node.is_running
+
+
+def test_tick_transition_publishes_in_same_tick(mps_node):
+    """На тике, где TURN завершается, _tick проваливается в _tick_drive
+    тем же вызовом и публикует cmd_vel + телеметрию — без «пропущенного»
+    тика. Если бы оркестратор делал return после завершения TURN,
+    transition-тик не опубликовал бы ничего."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-fallthrough',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Робот уже под курсом φ → первый же тик: TURN завершается и
+    # проваливается в DRIVE тем же вызовом _tick().
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run is not None and mps_node._run.phase == 'drive', (
+        'TURN должен завершиться этим тиком'
+    )
+    topics = [p[0] for p in mps_node._published]
+    assert 'cmd_vel' in topics, 'transition-тик обязан опубликовать cmd_vel'
+    assert 'mps/telemetry' in topics, 'transition-тик обязан опубликовать телеметрию'

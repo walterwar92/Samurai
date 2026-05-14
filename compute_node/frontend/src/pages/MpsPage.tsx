@@ -10,6 +10,7 @@ import { ResultPlots } from '@/components/mps/ResultPlots'
 import { ScenarioControls } from '@/components/mps/ScenarioControls'
 import { TrajectoryView } from '@/components/mps/TrajectoryView'
 import { MpsHighlightProvider } from '@/components/mps/HighlightContext'
+import { MpsTargetPicker } from '@/components/mps/MpsTargetPicker'
 import { Mps3DProvider, useMps3D } from '@/components/mps/Mps3DProvider'
 import { useMpsHistory } from '@/hooks/useMpsHistory'
 import { useMpsLiveTelemetry } from '@/hooks/useMpsLiveTelemetry'
@@ -44,6 +45,7 @@ function MpsPageInner() {
   const [compareSelection, setCompareSelection] = useState<MpsScenarioResult[]>([])
   const [primaryResult, setPrimaryResult] = useState<MpsScenarioResult | null>(null)
   const [errors, setErrors] = useState<Array<{ id: string; kind: string; msg: string }>>([])
+  const [picker, setPicker] = useState<{ distance: number; vTarget: number } | null>(null)
 
   const mps3D = useMps3D()
   const lastSeenRunIdRef = useRef<string | null>(null)
@@ -136,6 +138,28 @@ function MpsPageInner() {
   }, [runHook.running, live.points, primaryResult, runHook.result])
 
   function handleRun(req: MpsScenarioRequest) {
+    if (req.source === 'robot') {
+      // На роботе — сперва выбор цели в 3D-пикере; прогон по «Старт».
+      setPicker({ distance: req.distance, vTarget: req.v_target })
+      return
+    }
+    void runHook.run(req).then((r) => {
+      if (r) {
+        setPrimaryResult(r)
+        void historyHook.refresh()
+      }
+    })
+  }
+
+  function startRobotRun(targetHeading: number) {
+    if (!picker) return
+    const req: MpsScenarioRequest = {
+      distance: picker.distance,
+      v_target: picker.vTarget,
+      source: 'robot',
+      target_heading: targetHeading,
+    }
+    setPicker(null)
     void runHook.run(req).then((r) => {
       if (r) {
         setPrimaryResult(r)
@@ -266,6 +290,14 @@ function MpsPageInner() {
           </main>
         </div>
       </div>
+      {picker && (
+        <MpsTargetPicker
+          distance={picker.distance}
+          vTarget={picker.vTarget}
+          onConfirm={startRobotRun}
+          onCancel={() => setPicker(null)}
+        />
+      )}
     </div>
   )
 }

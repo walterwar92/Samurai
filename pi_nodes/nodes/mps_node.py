@@ -73,10 +73,12 @@ class _RunState:
         'run_id', 'distance', 'v_target', 'started_at',
         'telemetry', 't',
         'no_odom_ticks', 's_start', 'theta_start',
+        'target_heading', 'phase', 'drive_t',
     )
 
     def __init__(self, run_id: str, distance: float, v_target: float,
-                 s_start: float = 0.0, theta_start: float = 0.0):
+                 s_start: float = 0.0, theta_start: float = 0.0,
+                 target_heading: float = 0.0):
         self.run_id = run_id
         self.distance = distance
         self.v_target = v_target
@@ -93,6 +95,17 @@ class _RunState:
         # абсолютный 0 одометрии и доворачивает робота в одну и ту же
         # сторону вместо «ехать прямо куда смотрит».
         self.theta_start = theta_start
+        # Относительный целевой курс φ (рад) — куда развернуться перед
+        # движением. 0.0 = ехать прямо вперёд (сегодняшнее поведение).
+        self.target_heading = target_heading
+        # Фаза двухфазного сценария: 'turn' (разворот к φ на месте) →
+        # 'drive' (движение N метров с удержанием курса φ).
+        self.phase = 'turn'
+        # Часы фазы DRIVE — начинаются с 0 при переходе TURN→DRIVE.
+        # Используются для ramp s_ref и drive-timeout (тайминг движения
+        # считается от начала езды, а не от старта сценария). `t` при этом
+        # остаётся монотонным суммарным временем (turn + drive).
+        self.drive_t = 0.0
 
 
 class MpsNode(MqttNode):
@@ -127,6 +140,9 @@ class MpsNode(MqttNode):
         self._distance_max = float(self._cfg('mps.scenario.distance_max', 5.0))
         self._v_target_max = float(self._cfg('mps.scenario.v_target_max', 0.30))
         self._omega_max_fwd = float(self._cfg('mps.scenario.omega_max_in_forward', 0.5))
+        self._turn_tol = float(self._cfg('mps.scenario.turn_tolerance_rad', 0.05))
+        self._turn_timeout = float(self._cfg('mps.scenario.turn_timeout_s', 10.0))
+        self._omega_max_turn = float(self._cfg('mps.scenario.omega_max_in_turn', 1.0))
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
@@ -274,12 +290,18 @@ class MpsNode(MqttNode):
         try:
             distance = float(request['distance'])
             v_target = float(request['v_target'])
+            target_heading = float(request.get('target_heading', 0.0))
         except (KeyError, TypeError, ValueError) as exc:
             self._publish_error('precondition', f'scenario/run: bad request: {exc}',
                                 run_id=run_id)
             return
 
         # Pre-validate against safety caps
+        if not (-math.pi - 1e-6 <= target_heading <= math.pi + 1e-6):
+            self._publish_error('precondition',
+                                f'target_heading {target_heading} not in [-pi, pi]',
+                                run_id=run_id)
+            return
         if not (0 < distance <= self._distance_max):
             self._publish_error('precondition',
                                 f'distance {distance} not in (0, {self._distance_max}]',
@@ -302,7 +324,7 @@ class MpsNode(MqttNode):
             s_start = float(self._x_meas[_S])
             theta_start = float(self._x_meas[_THETA])
             self._run = _RunState(run_id, distance, v_target,
-                                  s_start, theta_start)
+                                  s_start, theta_start, target_heading)
             self._fsm_state = 'DRIVE_FORWARD_MPS'
 
         self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f',
@@ -351,14 +373,82 @@ class MpsNode(MqttNode):
         x[_S] = x[_S] - run.s_start
         x[_THETA] = _normalize_angle(x[_THETA] - run.theta_start)
 
-        # Reference: ramp s_ref to D, hold v_target.
-        s_ref = min(run.distance, run.t * run.v_target)
-        x_ref = np.array([s_ref, run.v_target, 0.0, 0.0, 0.0])
+        # Двухфазный сценарий: TURN (разворот к φ) → DRIVE (едем N метров).
+        if run.phase == 'turn':
+            if not self._tick_turn(run, x):
+                return            # ещё крутимся, либо прогон завершён
+            # фаза TURN завершилась этим тиком → продолжаем в DRIVE
+        self._tick_drive(run, x)
+
+    # ── Фаза TURN: разворот на месте к target_heading ─────────────────
+    def _tick_turn(self, run: _RunState, x: np.ndarray) -> bool:
+        """Один тик фазы разворота. `x` — уже относительный (s, θ).
+
+        Возвращает True ровно когда поворот только что завершён — тогда
+        вызывающий (`_tick`) продолжает в DRIVE тем же тиком. False —
+        если ещё крутимся или прогон уже завершён (timeout / ошибка).
+        """
+        phi = run.target_heading
+
+        # Курс совпал с целью → переход в DRIVE. Без публикации —
+        # cmd_vel/телеметрию за этот тик опубликует _tick_drive.
+        if abs(_normalize_angle(x[_THETA] - phi)) < self._turn_tol:
+            run.phase = 'drive'
+            run.drive_t = 0.0
+            return True
+
+        x_ref = np.array([0.0, 0.0, phi, 0.0, 0.0])
+        try:
+            u = self._mpc.step(x, x_ref=x_ref)
+        except Exception as exc:
+            self.log_error('mps turn mpc.step failed: %s', exc)
+            self._finish_run('error', f'mpc.step: {exc}')
+            return False
+
+        if not (np.all(np.isfinite(u)) and np.all(np.isfinite(x))):
+            self._finish_run('error', 'NaN/Inf in u or x')
+            return False
+
+        # Чистое вращение: ход — в ноль; ω — свой (более высокий) кап.
+        u[0] = 0.0
+        u[1] = max(-self._omega_max_turn, min(self._omega_max_turn, u[1]))
+
+        self._publish_cmd_and_telemetry(run, x, u)
+
+        with self._lock:
+            run.no_odom_ticks += 1
+            stale = run.no_odom_ticks > _WATCHDOG_TICKS
+
+        # Turn timeout — по run.t. Валидно: TURN всегда первая фаза,
+        # run.t стартует с 0, поэтому run.t == времени разворота.
+        if run.t > self._turn_timeout:
+            self._finish_run('timeout', None)
+            return False
+
+        if stale and time.time() - self._x_meas_ts > 5.0 * self._tick_dt:
+            self._finish_run('error', 'watchdog: no odom for >3 ticks')
+            return False
+
+        run.t += self._tick_dt
+        return False
+
+    # ── Фаза DRIVE: едем N метров, удерживая курс target_heading ───────
+    def _tick_drive(self, run: _RunState, x: np.ndarray) -> None:
+        """Один тик фазы движения. `x` — уже относительный (s, θ).
+
+        Логика «вперёд D», но θ_ref = target_heading (удержание выбранного
+        курса, НЕ доворот к 0) и тайминг ramp/timeout по run.drive_t.
+        """
+        phi = run.target_heading
+
+        # Reference: ramp s_ref to D, hold v_target, hold heading φ.
+        s_ref = min(run.distance, run.drive_t * run.v_target)
+        x_ref = np.array([s_ref, run.v_target, phi, 0.0, 0.0])
 
         try:
             u = self._mpc.step(x, x_ref=x_ref)
         except Exception as exc:
-            self.log_error('mps tick mpc.step failed: %s', exc)
+            self.log_error('mps drive mpc.step failed: %s', exc)
             self._finish_run('error', f'mpc.step: {exc}')
             return
 
@@ -369,13 +459,42 @@ class MpsNode(MqttNode):
         # Hard omega cap in forward scenario — guard against accidental rotation.
         u[1] = max(-self._omega_max_fwd, min(self._omega_max_fwd, u[1]))
 
-        # Send cmd_vel
+        self._publish_cmd_and_telemetry(run, x, u)
+
+        # Watchdog: нет одометрии 3 тика подряд → abort
+        with self._lock:
+            run.no_odom_ticks += 1
+            stale = run.no_odom_ticks > _WATCHDOG_TICKS
+
+        # Reached?
+        if x[_S] >= run.distance - _REACH_EPS:
+            self._finish_run('reached', None)
+            return
+
+        # Timeout?
+        timeout_t = max(1.0, 3.0 * run.distance / max(run.v_target, 1e-6))
+        if run.drive_t > timeout_t:
+            self._finish_run('timeout', None)
+            return
+
+        if stale and time.time() - self._x_meas_ts > 5.0 * self._tick_dt:
+            self._finish_run('error', 'watchdog: no odom for >3 ticks')
+            return
+
+        run.t += self._tick_dt
+        run.drive_t += self._tick_dt
+
+    # ── Публикация cmd_vel + телеметрии (общее для обеих фаз) ──────────
+    def _publish_cmd_and_telemetry(self, run: _RunState, x: np.ndarray,
+                                   u: np.ndarray) -> None:
+        """Опубликовать cmd_vel и точку телеметрии. Вызывается из обеих
+        фаз сценария (_tick_turn, _tick_drive). `run.t` — монотонное
+        суммарное время прогона, поэтому `point['t']` строго растёт."""
         self.publish('cmd_vel', {
             'linear_x': float(u[0]),
             'angular_z': float(u[1]),
         }, qos=0)
 
-        # Output for UI
         try:
             y = self._plant.output(x, u)
         except Exception:
@@ -395,28 +514,6 @@ class MpsNode(MqttNode):
             'point': point,
             'schema_version': '1.0',
         }, qos=0)
-
-        # Watchdog: нет одометрии 3 тика подряд → abort
-        with self._lock:
-            run.no_odom_ticks += 1
-            stale = run.no_odom_ticks > _WATCHDOG_TICKS
-
-        # Reached?
-        if x[_S] >= run.distance - _REACH_EPS:
-            self._finish_run('reached', None)
-            return
-
-        # Timeout?
-        timeout_t = max(1.0, 3.0 * run.distance / max(run.v_target, 1e-6))
-        if run.t > timeout_t:
-            self._finish_run('timeout', None)
-            return
-
-        if stale and time.time() - self._x_meas_ts > 5.0 * self._tick_dt:
-            self._finish_run('error', 'watchdog: no odom for >3 ticks')
-            return
-
-        run.t += self._tick_dt
 
     # ── Finalisation ─────────────────────────────────────────────────
     def _finish_run(self, status: str, error_message: Optional[str]):
