@@ -19,7 +19,7 @@ from scipy.linalg import expm  # noqa: E402
 from pi_nodes.control.state_space_model import (  # noqa: E402
     StateSpaceModel,
     _continuous_AB,
-    _zoh_discretize,
+    zoh_discretize,
 )
 
 
@@ -62,11 +62,11 @@ def test_continuous_eigenvalues():
 
 
 # ──────────────────────── Discretization ────────────────────────
-def test_zoh_discretize_eigenvalue_mapping():
+def testzoh_discretize_eigenvalue_mapping():
     """Discrete eigenvalues = exp(continuous × Ts)."""
     A, B = _continuous_AB(0.2, 0.15, 0.10)
     Ts = 0.05
-    Ad, _ = _zoh_discretize(A, B, Ts)
+    Ad, _ = zoh_discretize(A, B, Ts)
 
     cont_eigs = np.linalg.eigvals(A)
     disc_eigs = np.linalg.eigvals(Ad)
@@ -87,7 +87,7 @@ def test_zoh_matches_block_exp():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
     Ts = 0.05
 
-    Ad, Bd = _zoh_discretize(A, B, Ts)
+    Ad, Bd = zoh_discretize(A, B, Ts)
 
     # Manual reference via expm
     n, r = A.shape[0], B.shape[1]
@@ -102,7 +102,7 @@ def test_zoh_matches_block_exp():
 # ──────────────────────── StateSpaceModel ────────────────────────
 def test_model_step_basic():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     model = StateSpaceModel(Ad, Bd, Ts=0.05)
 
     x0 = np.zeros(5)
@@ -124,7 +124,7 @@ def test_model_step_basic():
 
 def test_model_rollout_shape():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     model = StateSpaceModel(Ad, Bd, Ts=0.05)
 
     U = np.tile([0.1, 0.0], (20, 1))
@@ -136,7 +136,7 @@ def test_model_rollout_shape():
 
 def test_controllability():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     model = StateSpaceModel(Ad, Bd, Ts=0.05)
     assert model.is_controllable()
     assert model.controllability_rank() == 5
@@ -145,7 +145,7 @@ def test_controllability():
 def test_open_loop_marginally_stable():
     """Continuous open-loop has integrators → discrete has |λ|=1 at three points."""
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     model = StateSpaceModel(Ad, Bd, Ts=0.05)
     # Integrators stay at |λ|=1 → not strictly stable
     assert not model.is_stable()
@@ -157,7 +157,7 @@ def test_open_loop_marginally_stable():
 def test_zero_velocity_breaks_controllability():
     """At v0=0 the (px, py, theta) coupling vanishes → not fully controllable."""
     A, B = _continuous_AB(v0=0.0, tau_v=0.15, tau_w=0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     model = StateSpaceModel(Ad, Bd, Ts=0.05)
     # py becomes uncontrollable when v0=0 (no lateral motion possible)
     assert model.controllability_rank() < 5

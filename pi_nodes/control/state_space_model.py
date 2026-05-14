@@ -43,7 +43,7 @@ def _continuous_AB(v0: float, tau_v: float, tau_w: float) -> tuple[np.ndarray, n
     return A, B
 
 
-def _zoh_discretize(A: np.ndarray, B: np.ndarray, Ts: float) -> tuple[np.ndarray, np.ndarray]:
+def zoh_discretize(A: np.ndarray, B: np.ndarray, Ts: float) -> tuple[np.ndarray, np.ndarray]:
     """Exact ZOH discretization via block matrix exponential."""
     from scipy.linalg import expm  # local import — scipy is heavy
 
@@ -118,7 +118,7 @@ class StateSpaceModel:
         tau_v = float(cfg("control.plant.tau_v", 0.15))
         tau_w = float(cfg("control.plant.tau_w", 0.10))
         A, B = _continuous_AB(v0, tau_v, tau_w)
-        Ad, Bd = _zoh_discretize(A, B, Ts)
+        Ad, Bd = zoh_discretize(A, B, Ts)
         return Ad, Bd, Ts
 
     # ── Discrete propagation ───────────────────────────────────────

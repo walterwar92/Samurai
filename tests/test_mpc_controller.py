@@ -18,14 +18,14 @@ from pi_nodes.control.mpc_controller import MPCController         # noqa: E402
 from pi_nodes.control.state_space_model import (                   # noqa: E402
     StateSpaceModel,
     _continuous_AB,
-    _zoh_discretize,
+    zoh_discretize,
 )
 
 
 @pytest.fixture
 def plant_mats():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     return Ad, Bd
 
 
@@ -112,7 +112,7 @@ def test_mpc_simulation_converges(plant_mats, Q_R):
 def test_mpc_horizon_one():
     """N=1 is a degenerate but legal case (sit on terminal cost only)."""
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     Q = np.diag([10.0, 10.0, 5.0, 1.0, 1.0])
     R = np.diag([1.0, 1.0])
     mpc = MPCController(Ad=Ad, Bd=Bd, Q=Q, R=R, N=1,
@@ -123,7 +123,7 @@ def test_mpc_horizon_one():
 
 def test_mpc_invalid_horizon_raises():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     Q = np.diag([10.0]*5)
     R = np.eye(2)
     with pytest.raises(ValueError):

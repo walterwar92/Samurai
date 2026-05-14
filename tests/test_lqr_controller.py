@@ -17,14 +17,14 @@ from pi_nodes.control.lqr_controller import LQRController          # noqa: E402
 from pi_nodes.control.state_space_model import (                    # noqa: E402
     StateSpaceModel,
     _continuous_AB,
-    _zoh_discretize,
+    zoh_discretize,
 )
 
 
 @pytest.fixture
 def plant():
     A, B = _continuous_AB(0.2, 0.15, 0.10)
-    Ad, Bd = _zoh_discretize(A, B, 0.05)
+    Ad, Bd = zoh_discretize(A, B, 0.05)
     return StateSpaceModel(Ad, Bd, Ts=0.05)
 
 
