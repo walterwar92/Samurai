@@ -14,6 +14,7 @@ docs/superpowers/specs/2026-05-05-mps-state-space-design.md.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -179,6 +180,14 @@ class MpsScenarioRequest(BaseModel):
     source: ScenarioSource = Field(
         ...,
         description='sim — на ноуте, robot — реальный Pi через MQTT'
+    )
+    target_heading: float = Field(
+        default=0.0,
+        ge=-math.pi,
+        le=math.pi,
+        description='Относительный целевой курс (рад) от курса на старте '
+                    'сценария. 0.0 = ехать прямо вперёд (поведение по '
+                    'умолчанию). Используется только при source="robot".'
     )
     schema_version: str = MPS_SCHEMA_VERSION
 

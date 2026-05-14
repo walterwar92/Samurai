@@ -222,6 +222,40 @@ def test_scenario_run_robot_when_online_async(client, fake_mqtt):
     assert 'mps/scenario/run' in topics
 
 
+def test_scenario_run_robot_includes_target_heading_in_mqtt(client, fake_mqtt):
+    """Robot-прогон с target_heading прокидывает его в MQTT-payload
+    mps/scenario/run — Pi должен знать относительный курс цели."""
+    fake_mqtt.connected = True
+    r = client.post('/api/v1/mps/scenario/run', json={
+        'distance': 1.0, 'v_target': 0.10, 'source': 'robot',
+        'target_heading': 0.6,
+    })
+    assert r.status_code == 200
+    run_call = next(c for c in fake_mqtt.publish.call_args_list
+                    if c.args[0] == 'mps/scenario/run')
+    payload = run_call.args[1]
+    assert payload['request']['target_heading'] == pytest.approx(0.6)
+
+
+def test_scenario_run_target_heading_defaults_to_zero(client):
+    """Без target_heading в запросе — Pydantic дефолтит в 0.0
+    (обратная совместимость, поведение «вперёд»)."""
+    r = client.post('/api/v1/mps/scenario/run', json={
+        'distance': 1.0, 'v_target': 0.10, 'source': 'sim',
+    })
+    assert r.status_code == 200
+    assert r.json()['result']['request']['target_heading'] == 0.0
+
+
+def test_scenario_run_target_heading_out_of_range_rejected(client):
+    """target_heading вне [−π, π] → 422 (Pydantic ge/le)."""
+    r = client.post('/api/v1/mps/scenario/run', json={
+        'distance': 1.0, 'v_target': 0.10, 'source': 'robot',
+        'target_heading': 4.0,
+    })
+    assert r.status_code == 422
+
+
 # ── /scenario/{run_id} & abort ────────────────────────────────────────
 def test_scenario_status_404_for_unknown(client):
     r = client.get('/api/v1/mps/scenario/bogus-id')
