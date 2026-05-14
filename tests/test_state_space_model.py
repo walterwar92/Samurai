@@ -62,7 +62,7 @@ def test_continuous_eigenvalues():
 
 
 # ──────────────────────── Discretization ────────────────────────
-def testzoh_discretize_eigenvalue_mapping():
+def test_zoh_discretize_eigenvalue_mapping():
     """Discrete eigenvalues = exp(continuous × Ts)."""
     A, B = _continuous_AB(0.2, 0.15, 0.10)
     Ts = 0.05
