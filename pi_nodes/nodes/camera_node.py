@@ -41,6 +41,7 @@ except ImportError:
     cfg = lambda k, d=None: d
 
 try:
+    from libcamera import Transform
     from picamera2 import Picamera2
     from picamera2.encoders import H264Encoder
     from picamera2.outputs import FileOutput
@@ -201,6 +202,10 @@ class CameraNode(MqttNode):
         self._bitrate = int(cfg('mqtt.camera_h264_bitrate', 2_000_000))
         self._iperiod = int(cfg('mqtt.camera_h264_iperiod', 30))
         self._fps = int(cfg('mqtt.camera_fps', 20))
+        # Камера на роботе смонтирована вверх ногами — флип делает ISP
+        # (бесплатно, до энкодинга). hflip+vflip вместе = поворот на 180°.
+        self._hflip = bool(cfg('mqtt.camera_hflip', True))
+        self._vflip = bool(cfg('mqtt.camera_vflip', True))
         self._w, self._h = 640, 480
 
         self._tcp: TCPStreamServer | None = None
@@ -227,6 +232,7 @@ class CameraNode(MqttNode):
             config = self._cam.create_video_configuration(
                 main={'size': (self._w, self._h), 'format': 'YUV420'},
                 controls={'FrameRate': self._fps},
+                transform=Transform(hflip=self._hflip, vflip=self._vflip),
             )
             self._cam.configure(config)
 
@@ -248,8 +254,9 @@ class CameraNode(MqttNode):
             self._cam.start_recording(self._encoder, output)
             self.log_info(
                 'Camera started: %dx%d @ %d fps, H.264 baseline '
-                'bitrate=%d iperiod=%d',
-                self._w, self._h, self._fps, self._bitrate, self._iperiod)
+                'bitrate=%d iperiod=%d hflip=%s vflip=%s',
+                self._w, self._h, self._fps, self._bitrate, self._iperiod,
+                self._hflip, self._vflip)
         except TypeError as exc:
             # Старая picamera2 без profile= — повторяем без него.
             self.log_warn('H.264 profile=baseline не поддерживается '
