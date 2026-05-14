@@ -44,7 +44,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from pi_nodes.control.mpc_controller import MPCController
-from pi_nodes.control.state_space_model import StateSpaceModel
+from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 from pi_nodes.mqtt_node import MqttNode
 
 # Tolerance: «достиг цели» если осталось ≤ этого (метры).
@@ -100,6 +100,7 @@ class MpsNode(MqttNode):
             raise
 
         self._tick_dt = float(self._cfg('mps.tick_dt', 0.02))
+        self._mps_ts = float(self._cfg('mps.plant.Ts', 0.02))
         self._distance_max = float(self._cfg('mps.scenario.distance_max', 5.0))
         self._v_target_max = float(self._cfg('mps.scenario.v_target_max', 0.30))
         self._omega_max_fwd = float(self._cfg('mps.scenario.omega_max_in_forward', 0.5))
@@ -170,11 +171,19 @@ class MpsNode(MqttNode):
             self._publish_error('precondition', f'matrices/set: {exc}')
             return
 
+        # A/B приходят НЕПРЕРЫВНЫМИ (контракт docs/mps/api.md) —
+        # ZOH-дискретизируем перед передачей в дискретные plant/MPC.
+        try:
+            Ad, Bd = zoh_discretize(A, B, self._mps_ts)
+        except Exception as exc:
+            self._publish_error('precondition', f'matrices/set: ZOH failed: {exc}')
+            return
+
         with self._lock:
             try:
-                self._plant.reload(Ad=A, Bd=B, Cd=C, Dd=D)
+                self._plant.reload(Ad=Ad, Bd=Bd, Cd=C, Dd=D)
                 self._mpc.rebuild(
-                    Ad=A, Bd=B, Q_diag=Q, R_diag=R, N=N,
+                    Ad=Ad, Bd=Bd, Q_diag=Q, R_diag=R, N=N,
                     u_min=u_min, u_max=u_max,
                 )
             except Exception as exc:
@@ -187,9 +196,9 @@ class MpsNode(MqttNode):
             'applied_at': datetime.now(timezone.utc).isoformat(),
             'schema_version': payload.get('schema_version', '1.0'),
         }, qos=1)
-        self.log_info('mps: matrices applied (N=%d, λ_open=%s)',
-                      N,
-                      [f'{abs(z):.3f}' for z in np.linalg.eigvals(A)])
+        self.log_info('mps: matrices applied (N=%d, Ts=%.3f, λ_open(Ad)=%s)',
+                      N, self._mps_ts,
+                      [f'{abs(z):.3f}' for z in np.linalg.eigvals(Ad)])
 
     # ── /scenario/run handler ─────────────────────────────────────────
     def _on_scenario_run(self, topic: str, payload):

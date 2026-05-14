@@ -56,20 +56,22 @@ def mps_node():
 
 # ── matrices/set ───────────────────────────────────────────────────────
 def _good_matrices() -> dict:
+    """Каноническая НЕПРЕРЫВНАЯ модель [s, v, θ, ω, e_int]."""
+    tau_v, tau_w = 0.15, 0.10
     return {
         'A': [
-            [1, 0, 0, 0.0425203, 0],
-            [0, 1, 0.01, 0, 0.000213061],
-            [0, 0, 1, 0, 0.0393469],
-            [0, 0, 0, 0.716531, 0],
-            [0, 0, 0, 0, 0.606531],
+            [0.0,  1.0,        0.0,  0.0,        0.0],
+            [0.0, -1.0/tau_v,  0.0,  0.0,        0.0],
+            [0.0,  0.0,        0.0,  1.0,        0.0],
+            [0.0,  0.0,        0.0, -1.0/tau_w,  0.0],
+            [0.0,  0.0,       -1.0,  0.0,        0.0],
         ],
         'B': [
-            [0.0074797, 0],
-            [0, 3.69387e-05],
-            [0, 0.0106531],
-            [0.283469, 0],
-            [0, 0.393469],
+            [0.0,        0.0],
+            [1.0/tau_v,  0.0],
+            [0.0,        0.0],
+            [0.0,        1.0/tau_w],
+            [0.0,        0.0],
         ],
         'C': [[1.0 if i == j else 0.0 for j in range(5)] for i in range(5)],
         'D': [[0.0, 0.0] for _ in range(5)],
@@ -108,6 +110,20 @@ def test_matrices_set_during_run_rejected(mps_node):
     mps_node._on_matrices_set('mps/matrices/set', _good_matrices())
     err_payloads = [p[1] for p in mps_node._published if p[0] == 'mps/error']
     assert any(e['error_type'] == 'precondition' for e in err_payloads)
+
+
+def test_matrices_set_discretizes_before_rebuild(mps_node):
+    """A/B приходят непрерывными; mpc/plant должны получить ZOH-дискретные
+    Ad/Bd, а не сырые непрерывные значения."""
+    import numpy as np
+    mps_node._on_matrices_set('mps/matrices/set', _good_matrices())
+    # Непрерывная A_c[1][1] = -1/0.15 ≈ -6.667; дискретная Ad[1][1] =
+    # exp(-6.667·0.02) ≈ 0.8752 — должна быть в (0, 1).
+    assert 0.0 < mps_node._mpc.Ad[1][1] < 1.0
+    assert 0.0 < mps_node._plant.Ad[1][1] < 1.0
+    np.testing.assert_allclose(
+        mps_node._mpc.Ad[1][1], np.exp(-1.0 / 0.15 * 0.02), atol=1e-9
+    )
 
 
 # ── scenario/run pre-validate ─────────────────────────────────────────
