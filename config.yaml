@@ -329,6 +329,8 @@ mqtt:
   camera_h264_port: 8554       # TCP server port (Pi → клиенты NAL units)
   camera_h264_bitrate: 2000000 # 2 Mbps default (можно снизить до 1 Mbps на узком WiFi)
   camera_h264_iperiod: 30      # I-frame каждые N кадров (30 = 1.5с @ 20fps)
+  camera_hflip: true           # горизонтальный флип кадра (камера на роботе вверх ногами)
+  camera_vflip: true           # вертикальный флип; hflip+vflip вместе = поворот на 180°
   # camera_jpeg_quality удалено — JPEG режим больше не поддерживается
   keepalive: 15                # MQTT keepalive (sec) — быстрое обнаружение потери связи
   reconnect_min: 0.5           # MQTT reconnect min delay (sec)

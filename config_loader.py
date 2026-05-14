@@ -107,6 +107,8 @@ if _HAS_PYDANTIC:
         camera_fps: int = Field(default=20, gt=0, le=120)
         camera_h264_port: int = Field(default=8554, gt=0, lt=65536)
         camera_h264_bitrate: int = Field(default=2_000_000, gt=0)
+        camera_hflip: bool = Field(default=True)
+        camera_vflip: bool = Field(default=True)
         keepalive: int = Field(default=15, gt=0, lt=600)
 
     class _VoiceSchema(BaseModel):

@@ -80,6 +80,21 @@ def test_committed_config_control_matrices_populated():
     assert matrices["B"] is not None, "control.matrices.B is null — Pi crashes importing scipy"
 
 
+def test_committed_config_has_camera_flip_keys():
+    """mqtt.camera_hflip/vflip должны быть в config.yaml как bool.
+
+    camera_node читает их через cfg() и передаёт в picamera2 Transform.
+    Без них флип не применяется и H.264-поток идёт перевёрнутым (камера
+    на роботе смонтирована вверх ногами)."""
+    with open(config_loader._CONFIG_PATH, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    mqtt = data["mqtt"]
+    assert isinstance(mqtt.get("camera_hflip"), bool), \
+        "mqtt.camera_hflip отсутствует или не bool"
+    assert isinstance(mqtt.get("camera_vflip"), bool), \
+        "mqtt.camera_vflip отсутствует или не bool"
+
+
 # ── Scipy-free bootstrap (the Raspberry Pi runtime environment) ───────────
 def _block_scipy_and_reload_config(monkeypatch):
     """Simulate the Pi: scipy unavailable, config.yaml re-read fresh from disk."""
