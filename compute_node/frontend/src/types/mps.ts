@@ -45,6 +45,9 @@ export interface MpsScenarioRequest {
   /** Целевая продольная скорость (0 < v ≤ 0.30) */
   v_target: number
   source: ScenarioSource
+  /** Относительный целевой курс (рад, −π…π) от курса на старте сценария.
+   *  0 = ехать прямо. Используется только при source='robot'. */
+  target_heading?: number
   schema_version?: string
 }
 

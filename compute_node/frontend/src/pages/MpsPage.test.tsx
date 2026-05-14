@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MpsPage } from './MpsPage'
 import { buildCanonical, DEFAULT_TAU_V, DEFAULT_TAU_OMEGA } from '@/lib/mps/canonical'
-import type { MpsMatrices, MpsScenarioResult } from '@/types/mps'
+import type { MpsMatrices, MpsScenarioRequest, MpsScenarioResult } from '@/types/mps'
 
 function makeMatrices(): MpsMatrices {
   const { A, B } = buildCanonical(DEFAULT_TAU_V, DEFAULT_TAU_OMEGA)
@@ -41,6 +41,7 @@ function makeResult(runId: string = 'r-test'): MpsScenarioResult {
 
 let mockRunResult: MpsScenarioResult | null = null
 let mockRunId: string | null = null
+let mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
 
 vi.mock('@/hooks/useMpsMatrices', () => ({
   useMpsMatrices: () => ({
@@ -62,7 +63,7 @@ vi.mock('@/hooks/useMpsRun', () => ({
     result: mockRunResult,
     runId: mockRunId,
     error: null,
-    run: vi.fn(),
+    run: mockRun,
     abort: vi.fn(),
   }),
 }))
@@ -100,10 +101,15 @@ vi.mock('@/components/mps/Mps3DScene', () => ({
   Mps3DScene: () => <div data-testid="mps3d-scene-stub" />,
 }))
 
+vi.mock('@/components/mps/MpsTargetScene', () => ({
+  MpsTargetScene: () => <div data-testid="mps-target-scene-stub" />,
+}))
+
 describe('MpsPage integration', () => {
   beforeEach(() => {
     mockRunResult = null
     mockRunId = null
+    mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
     if (typeof globalThis.ResizeObserver === 'undefined') {
       globalThis.ResizeObserver = class {
         observe() {}
@@ -150,6 +156,7 @@ describe('MpsPage — 3D toast', () => {
   beforeEach(() => {
     mockRunResult = null
     mockRunId = null
+    mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
     if (typeof globalThis.ResizeObserver === 'undefined') {
       globalThis.ResizeObserver = class {
         observe() {}
@@ -191,5 +198,53 @@ describe('MpsPage — 3D toast', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(screen.queryByText(/Симуляция завершена/i)).toBeNull()
+  })
+})
+
+describe('MpsPage — robot target picker', () => {
+  beforeEach(() => {
+    mockRunResult = null
+    mockRunId = null
+    mockRun = vi.fn() as unknown as import('vitest').Mock<(req: MpsScenarioRequest) => Promise<MpsScenarioResult | null>>
+    if (typeof globalThis.ResizeObserver === 'undefined') {
+      globalThis.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      } as unknown as typeof ResizeObserver
+    }
+  })
+
+  it('Run на роботе открывает пикер и НЕ запускает прогон сразу', () => {
+    render(<MpsPage />)
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /^Robot$/i })) })
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /Run on Robot/i })) })
+    expect(
+      screen.getByRole('dialog', { name: /Выбор цели для робота/i }),
+    ).toBeInTheDocument()
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  it('Run на симуляторе запускает прогон сразу, без пикера', () => {
+    render(<MpsPage />)
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /Run on Sim/i })) })
+    expect(
+      screen.queryByRole('dialog', { name: /Выбор цели для робота/i }),
+    ).toBeNull()
+    expect(mockRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('«Старт» в пикере запускает robot-прогон с target_heading и закрывает пикер', () => {
+    render(<MpsPage />)
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /^Robot$/i })) })
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /Run on Robot/i })) })
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /Старт/i })) })
+    expect(
+      screen.queryByRole('dialog', { name: /Выбор цели для робота/i }),
+    ).toBeNull()
+    expect(mockRun).toHaveBeenCalledTimes(1)
+    const req = mockRun.mock.calls[0][0] as { source: string; target_heading?: number }
+    expect(req.source).toBe('robot')
+    expect(req.target_heading).toBe(0)
   })
 })
