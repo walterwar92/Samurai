@@ -116,4 +116,26 @@ describe('PhysicsParams', () => {
     const patched = onPatch.mock.calls[0][0] as MpsMatrices
     expect(patched.A[1][1]).toBeCloseTo(-1 / DEFAULT_TAU_V, 4)
   })
+
+  it('patchCanonicalCells restores e_int canonical cell A[4][2] = -1 (ė_int = −θ)', () => {
+    // Simulate a base matrix where A[4][2] was corrupted (cleared to 0).
+    // patchCanonicalCells must restore A[4][2] = -1 (ė_int = −θ, Option D).
+    const onPatch = vi.fn()
+    const m = makeMatrices()
+    m.A[4][2] = 0   // corrupt the correct canonical cell
+    render(
+      <PhysicsParams
+        applied={m}
+        draft={null}
+        onPatch={onPatch}
+        defaults={DEFAULTS}
+      />,
+    )
+    const tauVSlider = screen.getByLabelText('τ_v') as HTMLInputElement
+    fireEvent.change(tauVSlider, { target: { value: '0.20' } })
+    expect(onPatch).toHaveBeenCalled()
+    const patched = onPatch.mock.calls[0][0] as MpsMatrices
+    // e_int canonical cell: A[4][2] = -1 (ė_int = −θ, Option D)
+    expect(patched.A[4][2]).toBeCloseTo(-1, 4)
+  })
 })

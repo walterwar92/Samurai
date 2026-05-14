@@ -103,7 +103,7 @@ function patchCanonicalCells(
   A_next[1][1] = A[1][1]
   A_next[2][3] = A[2][3]
   A_next[3][3] = A[3][3]
-  A_next[4][1] = A[4][1]
+  A_next[4][2] = A[4][2]
   B_next[1][0] = B[1][0]
   B_next[3][1] = B[3][1]
   return { ...base, A: A_next, B: B_next }
