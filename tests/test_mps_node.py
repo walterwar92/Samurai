@@ -165,7 +165,7 @@ def test_tick_publishes_cmd_vel_and_telemetry(mps_node):
     })
     # Provide a non-zero odom so watchdog doesn't trip immediately.
     mps_node._on_odom('odom', {
-        's': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0,
+        'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0,
     })
     mps_node._published.clear()
 
@@ -229,3 +229,38 @@ def test_drive_forward_mps_is_in_fsm_states():
     from pi_nodes.nodes.fsm_node import State, _ALL_STATES
     assert State.DRIVE_FORWARD_MPS == 'DRIVE_FORWARD_MPS'
     assert State.DRIVE_FORWARD_MPS in _ALL_STATES
+
+
+# ── odom unit conversion cm→m ──────────────────────────────────────────
+def test_on_odom_converts_cm_to_metres(mps_node):
+    """motor_node публикует odom['x'] в САНТИМЕТРАХ (motor_node.py:804).
+    _on_odom должен конвертировать см→м БЕЗУСЛОВНО. Старая эвристика
+    `if abs(s) > 20` оставляла 0-20 см не сконвертированными → x_meas[0]
+    в 100× раз больше → MPC упирал cmd_vel в u_max."""
+    mps_node._on_odom('odom', {'x': 10.0, 'vx': 0.05, 'theta': 0.0, 'vz': 0.0})
+    assert mps_node._x_meas[0] == pytest.approx(0.10)   # 10 см → 0.10 м
+    mps_node._on_odom('odom', {'x': 5.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    assert mps_node._x_meas[0] == pytest.approx(0.05)    # старый код: 5.0
+    mps_node._on_odom('odom', {'x': 150.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    assert mps_node._x_meas[0] == pytest.approx(1.50)    # 150 см → 1.5 м
+
+
+def test_tick_position_is_scenario_relative(mps_node):
+    """mps_node снапшотит позицию одометрии на старте сценария: x_meas[0]
+    в тике считается ОТНОСИТЕЛЬНО точки старта (s_ref начинается с 0).
+    Иначе накопленная dead-reckoning одометрия даёт фантомную ошибку
+    позиции на t=0."""
+    # Робот стоит на 1.2 м (120 см) по одометрии ДО старта сценария.
+    mps_node._on_odom('odom', {'x': 120.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-rel',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    # Ещё odom на той же позиции (робот не двинулся).
+    mps_node._on_odom('odom', {'x': 120.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    tel = [p[1] for p in mps_node._published if p[0] == 'mps/telemetry']
+    assert tel, 'expected mps/telemetry to be published'
+    s_rel = tel[0]['point']['x'][0]
+    assert abs(s_rel) < 0.01, f'position should be scenario-relative (~0), got {s_rel}'

@@ -66,10 +66,11 @@ class _RunState:
     __slots__ = (
         'run_id', 'distance', 'v_target', 'started_at',
         'telemetry', 't',
-        'no_odom_ticks',
+        'no_odom_ticks', 's_start',
     )
 
-    def __init__(self, run_id: str, distance: float, v_target: float):
+    def __init__(self, run_id: str, distance: float, v_target: float,
+                 s_start: float = 0.0):
         self.run_id = run_id
         self.distance = distance
         self.v_target = v_target
@@ -77,6 +78,9 @@ class _RunState:
         self.telemetry: list[dict] = []
         self.t = 0.0
         self.no_odom_ticks = 0
+        # Абсолютная позиция одометрии на момент старта сценария.
+        # `s_ref` стартует с 0, поэтому позицию считаем относительно неё.
+        self.s_start = s_start
 
 
 class MpsNode(MqttNode):
@@ -233,7 +237,10 @@ class MpsNode(MqttNode):
                                     f'run already active ({self._run.run_id if self._run else "?"})',
                                     run_id=run_id)
                 return
-            self._run = _RunState(run_id, distance, v_target)
+            # Снапшот позиции одометрии — сценарий считает s относительно
+            # точки старта (s_ref начинается с 0).
+            s_start = float(self._x_meas[_S])
+            self._run = _RunState(run_id, distance, v_target, s_start)
             self._fsm_state = 'DRIVE_FORWARD_MPS'
 
         self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f',
@@ -251,18 +258,20 @@ class MpsNode(MqttNode):
     def _on_odom(self, topic: str, payload):
         if not isinstance(payload, dict):
             return
-        # samurai/{id}/odom — wheel/EKF combined; здесь нам важны s, v, θ, ω.
-        # Маппинг: x_wheel/x → s в метрах (если в см — делим на 100).
+        # samurai/{id}/odom — motor_node публикует: x в САНТИМЕТРАХ
+        # (см. motor_node.py:804 и докстринг odom-топика), vx — м/с,
+        # theta — рад, vz — рад/с. Конвертируем x см→м БЕЗУСЛОВНО по
+        # контракту. Старый код угадывал единицы эвристикой
+        # `if abs(s) > 20` — она оставляла первые 20 см не
+        # сконвертированными (x_meas[0] в 100× раз больше), из-за чего
+        # MPC ловил фантомную ошибку позиции и упирал cmd_vel в u_max.
         try:
-            s = float(payload.get('s', payload.get('x', 0.0)))
-            v = float(payload.get('vx', payload.get('linear_x', 0.0)))
+            s = float(payload.get('x', 0.0)) / 100.0
+            v = float(payload.get('vx', 0.0))
             theta = float(payload.get('theta', 0.0))
-            omega = float(payload.get('vz', payload.get('angular_z', 0.0)))
+            omega = float(payload.get('vz', 0.0))
         except (TypeError, ValueError):
             return
-        # If 's' looks like centimetres (>20 — odom_x обычно в см) — нормализуем.
-        if abs(s) > 20.0:
-            s = s / 100.0
         with self._lock:
             self._x_meas = np.array([s, v, theta, omega, self._x_meas[_EINT]])
             self._x_meas_ts = time.time()
@@ -276,6 +285,8 @@ class MpsNode(MqttNode):
             if run is None or self._fsm_state != 'DRIVE_FORWARD_MPS':
                 return
             x = self._x_meas.copy()
+        # Позиция относительно старта сценария (s_ref начинается с 0).
+        x[_S] = x[_S] - run.s_start
 
         # Reference: ramp s_ref to D, hold v_target.
         s_ref = min(run.distance, run.t * run.v_target)
