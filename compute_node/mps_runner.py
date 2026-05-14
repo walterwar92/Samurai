@@ -35,7 +35,17 @@ from compute_node.dashboard.schemas.mps import (
     MpsTelemetryPoint,
 )
 from pi_nodes.control.mpc_controller import MPCController
-from pi_nodes.control.state_space_model import StateSpaceModel
+from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
+
+try:
+    from config_loader import cfg
+except ImportError:
+    cfg = lambda key, default=None: default  # type: ignore
+
+
+def _mps_ts() -> float:
+    """Период дискретизации/цикла МПС — единый источник правды."""
+    return float(cfg('mps.plant.Ts', 0.02))
 
 
 # Состояние на индексе 0 — пройденная дистанция s.
@@ -61,17 +71,20 @@ def _matrices_to_arrays(m: MpsMatrices) -> tuple[np.ndarray, ...]:
     )
 
 
-def _build_controller(m: MpsMatrices) -> tuple[StateSpaceModel, MPCController]:
+def _build_controller(m: MpsMatrices, ts: float) -> tuple[StateSpaceModel, MPCController]:
     """Build state-space model + MPC from the supplied matrices.
 
-    Mirrors what `mps_node` does on Pi for `source="robot"`. Both paths
-    must produce identical control signals for identical initial state.
+    `m.A`, `m.B` — НЕПРЕРЫВНЫЕ канонические матрицы (контракт
+    docs/mps/api.md). Они ZOH-дискретизируются при `ts` перед передачей
+    в StateSpaceModel / MPCController, которые работают с дискретными Ad/Bd.
+    Mirrors what `mps_node` does on Pi for `source="robot"`.
     """
     A, B, C, D, Q_diag, R_diag, u_min, u_max = _matrices_to_arrays(m)
-    plant = StateSpaceModel(Ad=A, Bd=B, Cd=C, Dd=D, Ts=0.05)
+    Ad, Bd = zoh_discretize(A, B, ts)
+    plant = StateSpaceModel(Ad=Ad, Bd=Bd, Cd=C, Dd=D, Ts=ts)
     mpc = MPCController(
-        Ad=A,
-        Bd=B,
+        Ad=Ad,
+        Bd=Bd,
         Q=np.diag(Q_diag),
         R=np.diag(R_diag),
         N=int(m.horizon_N),
@@ -144,7 +157,7 @@ def _isfinite_all(*arrays: np.ndarray) -> bool:
 def run_scenario_idealized(
     matrices: MpsMatrices,
     request: MpsScenarioRequest,
-    dt: float = 0.02,
+    dt: Optional[float] = None,
     max_steps: int = 10_000,
     run_id: Optional[str] = None,
     initial_state: Optional[np.ndarray] = None,
@@ -175,6 +188,8 @@ def run_scenario_idealized(
         - 'timeout'  — wall-clock budget t > 3·D / v_target
         - 'error'    — NaN/Inf in u or x, or |x| blows up
     """
+    if dt is None:
+        dt = _mps_ts()
     started_at = datetime.now(timezone.utc)
     rid = run_id or f"sim-{started_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:6]}"
 
@@ -201,7 +216,7 @@ def run_scenario_idealized(
     # Build plant + controller; on failure (bad matrices, scipy error) →
     # report status='error' with the raised message rather than crashing.
     try:
-        plant, mpc = _build_controller(matrices)
+        plant, mpc = _build_controller(matrices, dt)
     except Exception as exc:
         return MpsScenarioResult(
             run_id=rid,
@@ -294,14 +309,15 @@ def run_scenario_idealized(
 
 # ── Validate helper (used by /api/v1/mps/validate) ────────────────────
 def short_step_response(matrices: MpsMatrices, duration_s: float = 2.0,
-                        dt: float = 0.02) -> list[MpsTelemetryPoint]:
+                        dt: Optional[float] = None) -> list[MpsTelemetryPoint]:
     """Run an unforced step from x=0 with v_target=0.15 for `duration_s`.
 
     Used by the validate endpoint to surface «what does the closed loop
     actually do» without running a full scenario.
     """
     request = MpsScenarioRequest(distance=5.0, v_target=0.15, source='sim')
-    n_steps = max(1, int(duration_s / dt))
+    resolved_dt = dt if dt is not None else _mps_ts()
+    n_steps = max(1, int(duration_s / resolved_dt))
     result = run_scenario_idealized(
         matrices, request, dt=dt, max_steps=n_steps,
         run_id='validate-step',
@@ -310,18 +326,24 @@ def short_step_response(matrices: MpsMatrices, duration_s: float = 2.0,
 
 
 def closed_loop_eigenvalues(matrices: MpsMatrices) -> tuple[list[complex], list[complex]]:
-    """Return (λ(Ad), λ(Ad − Bd·K_first)) as Python complex lists."""
+    """Return (λ(Ad), λ(Ad − Bd·K_first)) as Python complex lists.
+
+    `matrices.A/B` — НЕПРЕРЫВНЫЕ; ZOH-дискретизируются при mps.plant.Ts
+    перед анализом собственных значений.
+    """
     A, B, _, _, Q_diag, R_diag, u_min, u_max = _matrices_to_arrays(matrices)
-    eig_open = list(np.linalg.eigvals(A))
+    ts = _mps_ts()
+    Ad, Bd = zoh_discretize(A, B, ts)
+    eig_open = list(np.linalg.eigvals(Ad))
     try:
         mpc = MPCController(
-            Ad=A, Bd=B,
+            Ad=Ad, Bd=Bd,
             Q=np.diag(Q_diag), R=np.diag(R_diag),
             N=int(matrices.horizon_N),
             u_min=u_min, u_max=u_max,
             solver='clip',
         )
-        eig_closed = list(np.linalg.eigvals(A - B @ mpc.K_first))
+        eig_closed = list(np.linalg.eigvals(Ad - Bd @ mpc.K_first))
     except Exception:
         eig_closed = [complex('nan')] * len(eig_open)
     return eig_open, eig_closed
@@ -332,18 +354,18 @@ if __name__ == '__main__':
     # Default matrices from config.yaml — kept self-contained so this
     # script doesn't depend on a running dashboard.
     A_DEFAULT = [
-        [1, 0, 0, 0.0425203, 0],
-        [0, 1, 0.01, 0, 0.000213061],
-        [0, 0, 1, 0, 0.0393469],
-        [0, 0, 0, 0.716531, 0],
-        [0, 0, 0, 0, 0.606531],
+        [0.0,  1.0,             0.0,  0.0,             0.0],
+        [0.0, -1.0 / 0.15,      0.0,  0.0,             0.0],
+        [0.0,  0.0,             0.0,  1.0,             0.0],
+        [0.0,  0.0,             0.0, -1.0 / 0.10,      0.0],
+        [0.0, -1.0,             0.0,  0.0,             0.0],
     ]
     B_DEFAULT = [
-        [0.0074797, 0],
-        [0, 3.69387e-05],
-        [0, 0.0106531],
-        [0.283469, 0],
-        [0, 0.393469],
+        [0.0,         0.0],
+        [1.0 / 0.15,  0.0],
+        [0.0,         0.0],
+        [0.0,         1.0 / 0.10],
+        [0.0,         0.0],
     ]
     m = MpsMatrices(
         A=A_DEFAULT, B=B_DEFAULT,
