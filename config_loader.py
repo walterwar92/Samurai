@@ -13,6 +13,7 @@ Validation:
     Run `python config_loader.py --validate` to surface issues manually.
 """
 
+import collections.abc
 import logging
 import os
 from typing import Optional, Tuple
@@ -28,13 +29,40 @@ _data: dict = {}
 _validation_done = False
 
 
+class _DuplicateKeyLoader(yaml.SafeLoader):
+    """SafeLoader that surfaces duplicate mapping keys.
+
+    PyYAML silently keeps the last value when a mapping repeats a key. That
+    once hid a corrupted config.yaml — a duplicated `control:` block whose
+    null matrices shadowed the real ones — surfacing only as a confusing
+    crash four layers deep. This loader logs every collision with its line
+    number. The last value still wins, so loading behaviour is unchanged.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen: set = set()
+        for key_node, _value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, collections.abc.Hashable):
+                continue  # SafeLoader.construct_mapping raises on this below
+            if key in seen:
+                _log.error(
+                    'config.yaml: duplicate key %r at line %d — the later '
+                    'definition shadows the earlier one; de-duplicate the '
+                    'section (likely a bad merge or a buggy generator)',
+                    key, key_node.start_mark.line + 1,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def _load():
     global _data
     if _data:
         return
     try:
         with open(_CONFIG_PATH, 'r', encoding='utf-8') as f:
-            _data = yaml.safe_load(f) or {}
+            _data = yaml.load(f, Loader=_DuplicateKeyLoader) or {}
     except FileNotFoundError:
         pass  # all callers use defaults
     except yaml.YAMLError as exc:
