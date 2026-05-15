@@ -117,6 +117,17 @@ class IMUNode(MqttNode):
         else:
             self.log_info('EKF disabled by config')
 
+        # IMU mounting orientation: на Adeept HAT V3.1 чип MPU-6050 смонтирован
+        # осью Z вниз, поэтому raw gz по правилу правой руки имеет обратный знак
+        # относительно ROS-конвенции (positive ω = CCW при Z-up). Без инверсии
+        # MPC heading-loop становится positive-feedback'ом — робот наматывает
+        # круги и разворачивается на 180° (см. mps_node.py). Флаг применяется
+        # один раз сразу после _read_raw, до EMA/калибровки/EKF, чтобы все
+        # downstream видели согласованный знак.
+        self._invert_yaw = bool(cfg('imu.invert_yaw', False))
+        if self._invert_yaw:
+            self.log_info('imu.invert_yaw=true — gz будет инвертирован (mounting Z-down)')
+
         self._last_time = time.monotonic()
 
         # Pre-allocated payload dict — updated in-place each tick
@@ -282,6 +293,12 @@ class IMUNode(MqttNode):
         self._last_time = now
 
         ax, ay, az, gx, gy, gz = self._read_raw()
+
+        # ── Mounting orientation fix ──────────────────────────────────
+        # Применяем ДО EMA/калибровки/EKF — все downstream должны видеть
+        # gz в согласованной системе координат (ROS Z-up, positive=CCW).
+        if self._invert_yaw:
+            gz = -gz
 
         # ── EMA low-pass filter (in-place, no tuple alloc) ────────────
         self._apply_ema_inplace(ax, ay, az, gx, gy, gz)
