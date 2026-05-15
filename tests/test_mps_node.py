@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -51,6 +52,12 @@ def mps_node():
             node._published.append((suffix, payload, qos))
 
         node.publish = _capture  # type: ignore[assignment]
+
+        # По умолчанию считаем, что свежая одометрия пришла —
+        # _on_scenario_run проверяет это с 2026-05-15 (Bug A). Тесты,
+        # специально проверяющие реджект stale-odom, перетирают значение.
+        node._x_meas_ts = time.time()
+
         yield node
 
 
@@ -252,6 +259,50 @@ def test_tick_reaches_goal(mps_node):
     assert finished[0]['status'] == 'reached'
 
 
+# ── Bug C: reach_tolerance default 0.02 м (был 0.05 м = D/2 на D=0.10) ──
+def test_reach_tolerance_default_is_2cm(mps_node):
+    """Дефолт mps.scenario.reach_tolerance_m = 0.02 м.
+
+    Reason (Bug C, diagnostics 2026-05-15): run #1 status='reached' при
+    s_end=0.251 на D=0.30 — 84% дистанции засчитывалось как «достиг»
+    из-за tolerance 0.05 м. Для D=0.10 это была tolerance D/2 — любой
+    short hop проходил. 0.02 м сопоставимо с разрешением dead-reckoning
+    одометрии.
+    """
+    assert mps_node._reach_eps == pytest.approx(0.02)
+
+
+def test_reach_at_98_percent_with_default_tolerance(mps_node):
+    """Граница reach: s=0.985 на D=1.0 → reached (1 - 0.02 = 0.98)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-edge',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    mps_node._run.phase = 'drive'  # пропускаем TURN для чистоты теста
+    mps_node._x_meas = np.array([0.985, 0.10, 0.0, 0.0, 0.0])
+    mps_node._x_meas_ts = time.time()
+    mps_node._tick()
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished']
+    assert finished and finished[0]['status'] == 'reached'
+
+
+def test_no_reach_at_95_percent_with_default_tolerance(mps_node):
+    """Граница reach: s=0.95 на D=1.0 → НЕ reached (0.95 < 0.98)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-no-reach',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    mps_node._run.phase = 'drive'
+    mps_node._x_meas = np.array([0.95, 0.10, 0.0, 0.0, 0.0])
+    mps_node._x_meas_ts = time.time()
+    mps_node._tick()
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished'
+                and p[1].get('status') == 'reached']
+    assert not finished, '0.95 м из 1.0 м (95%) не должно засчитываться как reached'
+
+
 # ── FSM state DRIVE_FORWARD_MPS is registered ─────────────────────────
 def test_drive_forward_mps_is_in_fsm_states():
     from pi_nodes.nodes.fsm_node import State, _ALL_STATES
@@ -259,18 +310,39 @@ def test_drive_forward_mps_is_in_fsm_states():
     assert State.DRIVE_FORWARD_MPS in _ALL_STATES
 
 
-# ── odom unit conversion cm→m ──────────────────────────────────────────
-def test_on_odom_converts_cm_to_metres(mps_node):
-    """motor_node публикует odom['x'] в САНТИМЕТРАХ (motor_node.py:804).
-    _on_odom должен конвертировать см→м БЕЗУСЛОВНО. Старая эвристика
-    `if abs(s) > 20` оставляла 0-20 см не сконвертированными → x_meas[0]
-    в 100× раз больше → MPC упирал cmd_vel в u_max."""
+# ── odom: prefers s_body (м, body-frame) over legacy x (см, world-frame) ─
+def test_on_odom_prefers_s_body_when_present(mps_node):
+    """Новый motor_node публикует s_body — body-frame дистанция в метрах,
+    знаковая. mps должен брать ИМЕННО её, не world.x.
+
+    Reason: world.x = ∫v·cos(θ_abs)·dt — переворачивается в минус, если
+    IMU абсолютный курс ≈ ±π (видели в diagnostics 2026-05-15: u_v>0,
+    но x шёл в минус). s_body = ∫v·dt — независим от θ.
+    """
+    # Намеренно противоречивые поля: s_body=+0.50 м, x=-200 см (world).
+    # mps должен взять s_body — не x/100=-2.0.
+    mps_node._on_odom('odom', {
+        's_body': 0.50, 'x': -200.0, 'vx': 0.10, 'theta': 3.14, 'vz': 0.0,
+    })
+    assert mps_node._x_meas[0] == pytest.approx(0.50)
+
+
+def test_on_odom_falls_back_to_x_cm_when_no_s_body(mps_node):
+    """Backward-compat: если s_body отсутствует (старый motor_node),
+    читаем x в сантиметрах и конвертируем в метры."""
     mps_node._on_odom('odom', {'x': 10.0, 'vx': 0.05, 'theta': 0.0, 'vz': 0.0})
     assert mps_node._x_meas[0] == pytest.approx(0.10)   # 10 см → 0.10 м
-    mps_node._on_odom('odom', {'x': 5.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    assert mps_node._x_meas[0] == pytest.approx(0.05)    # старый код: 5.0
     mps_node._on_odom('odom', {'x': 150.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    assert mps_node._x_meas[0] == pytest.approx(1.50)    # 150 см → 1.5 м
+    assert mps_node._x_meas[0] == pytest.approx(1.50)
+
+
+def test_on_odom_signed_s_body(mps_node):
+    """s_body знаковый — отрицательный, если робот реально едет назад."""
+    mps_node._on_odom('odom', {
+        's_body': -0.30, 'vx': -0.15, 'theta': 0.0, 'vz': 0.0,
+    })
+    assert mps_node._x_meas[0] == pytest.approx(-0.30)
+    assert mps_node._x_meas[1] == pytest.approx(-0.15)
 
 
 def test_tick_position_is_scenario_relative(mps_node):
@@ -321,6 +393,52 @@ def test_tick_heading_is_scenario_relative(mps_node):
         f"angular_z={cmd_vel['angular_z']:.4f} ≠ 0 — робот доворачивает к "
         f'абсолютному курсу 0 вместо «вперёд куда смотрит»'
     )
+
+
+def test_scenario_run_rejected_when_no_odom_received(mps_node):
+    """Если odom не приходил вовсе (_x_meas_ts == 0) — реджект.
+
+    Reason (Bug A, diagnostics 2026-05-15): без свежей одометрии snapshot
+    (s_start, theta_start) берётся из np.zeros() из __init__, а к первому
+    тику odom приходит с реальным курсом → relative-θ становится огромным
+    → робот застревает в TURN-фазе. Тихий старт с фейковым нулевым snapshot'ом
+    хуже явного reject'a — пользователь думает что мпс сломан, на самом деле
+    робот-стек ещё не запустился.
+    """
+    mps_node._x_meas_ts = 0.0  # перетираем дефолт fixture
+    mps_node._published.clear()
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-no-odom',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert not mps_node.is_running
+    err = [p[1] for p in mps_node._published if p[0] == 'mps/error']
+    assert err and err[0]['error_type'] == 'precondition'
+    assert 'odom' in err[0]['message'].lower()
+
+
+def test_scenario_run_rejected_when_odom_stale(mps_node):
+    """Если последний odom старее odom_max_age (default 0.5 c) — реджект."""
+    mps_node._x_meas_ts = time.time() - 5.0  # 5 секунд назад
+    mps_node._published.clear()
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-stale',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert not mps_node.is_running
+    err = [p[1] for p in mps_node._published if p[0] == 'mps/error']
+    assert err and err[0]['error_type'] == 'precondition'
+    assert 'stale' in err[0]['message'].lower()
+
+
+def test_scenario_run_accepted_with_fresh_odom(mps_node):
+    """Counter-positive: при свежем _x_meas_ts старт идёт нормально."""
+    mps_node._x_meas_ts = time.time()
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-fresh',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert mps_node.is_running
 
 
 def test_on_scenario_run_reads_target_heading(mps_node):
