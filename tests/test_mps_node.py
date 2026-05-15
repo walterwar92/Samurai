@@ -260,6 +260,50 @@ def test_tick_reaches_goal(mps_node):
     assert finished[0]['status'] == 'reached'
 
 
+# ── Bug C: reach_tolerance default 0.02 м (был 0.05 м = D/2 на D=0.10) ──
+def test_reach_tolerance_default_is_2cm(mps_node):
+    """Дефолт mps.scenario.reach_tolerance_m = 0.02 м.
+
+    Reason (Bug C, diagnostics 2026-05-15): run #1 status='reached' при
+    s_end=0.251 на D=0.30 — 84% дистанции засчитывалось как «достиг»
+    из-за tolerance 0.05 м. Для D=0.10 это была tolerance D/2 — любой
+    short hop проходил. 0.02 м сопоставимо с разрешением dead-reckoning
+    одометрии.
+    """
+    assert mps_node._reach_eps == pytest.approx(0.02)
+
+
+def test_reach_at_98_percent_with_default_tolerance(mps_node):
+    """Граница reach: s=0.985 на D=1.0 → reached (1 - 0.02 = 0.98)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-edge',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    mps_node._run.phase = 'drive'  # пропускаем TURN для чистоты теста
+    mps_node._x_meas = np.array([0.985, 0.10, 0.0, 0.0, 0.0])
+    mps_node._x_meas_ts = time.time()
+    mps_node._tick()
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished']
+    assert finished and finished[0]['status'] == 'reached'
+
+
+def test_no_reach_at_95_percent_with_default_tolerance(mps_node):
+    """Граница reach: s=0.95 на D=1.0 → НЕ reached (0.95 < 0.98)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-no-reach',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    mps_node._run.phase = 'drive'
+    mps_node._x_meas = np.array([0.95, 0.10, 0.0, 0.0, 0.0])
+    mps_node._x_meas_ts = time.time()
+    mps_node._tick()
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished'
+                and p[1].get('status') == 'reached']
+    assert not finished, '0.95 м из 1.0 м (95%) не должно засчитываться как reached'
+
+
 # ── FSM state DRIVE_FORWARD_MPS is registered ─────────────────────────
 def test_drive_forward_mps_is_in_fsm_states():
     from pi_nodes.nodes.fsm_node import State, _ALL_STATES
