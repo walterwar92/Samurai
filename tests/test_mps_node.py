@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -51,6 +52,12 @@ def mps_node():
             node._published.append((suffix, payload, qos))
 
         node.publish = _capture  # type: ignore[assignment]
+
+        # По умолчанию считаем, что свежая одометрия пришла —
+        # _on_scenario_run проверяет это с 2026-05-15 (Bug A). Тесты,
+        # специально проверяющие реджект stale-odom, перетирают значение.
+        node._x_meas_ts = time.time()
+
         yield node
 
 
@@ -342,6 +349,52 @@ def test_tick_heading_is_scenario_relative(mps_node):
         f"angular_z={cmd_vel['angular_z']:.4f} ≠ 0 — робот доворачивает к "
         f'абсолютному курсу 0 вместо «вперёд куда смотрит»'
     )
+
+
+def test_scenario_run_rejected_when_no_odom_received(mps_node):
+    """Если odom не приходил вовсе (_x_meas_ts == 0) — реджект.
+
+    Reason (Bug A, diagnostics 2026-05-15): без свежей одометрии snapshot
+    (s_start, theta_start) берётся из np.zeros() из __init__, а к первому
+    тику odom приходит с реальным курсом → relative-θ становится огромным
+    → робот застревает в TURN-фазе. Тихий старт с фейковым нулевым snapshot'ом
+    хуже явного reject'a — пользователь думает что мпс сломан, на самом деле
+    робот-стек ещё не запустился.
+    """
+    mps_node._x_meas_ts = 0.0  # перетираем дефолт fixture
+    mps_node._published.clear()
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-no-odom',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert not mps_node.is_running
+    err = [p[1] for p in mps_node._published if p[0] == 'mps/error']
+    assert err and err[0]['error_type'] == 'precondition'
+    assert 'odom' in err[0]['message'].lower()
+
+
+def test_scenario_run_rejected_when_odom_stale(mps_node):
+    """Если последний odom старее odom_max_age (default 0.5 c) — реджект."""
+    mps_node._x_meas_ts = time.time() - 5.0  # 5 секунд назад
+    mps_node._published.clear()
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-stale',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert not mps_node.is_running
+    err = [p[1] for p in mps_node._published if p[0] == 'mps/error']
+    assert err and err[0]['error_type'] == 'precondition'
+    assert 'stale' in err[0]['message'].lower()
+
+
+def test_scenario_run_accepted_with_fresh_odom(mps_node):
+    """Counter-positive: при свежем _x_meas_ts старт идёт нормально."""
+    mps_node._x_meas_ts = time.time()
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-fresh',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert mps_node.is_running
 
 
 def test_on_scenario_run_reads_target_heading(mps_node):
