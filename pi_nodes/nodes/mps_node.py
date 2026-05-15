@@ -48,8 +48,12 @@ from pi_nodes.control.mpc_controller import MPCController
 from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 from pi_nodes.mqtt_node import MqttNode
 
-# Tolerance: «достиг цели» если осталось ≤ этого (метры).
-_REACH_EPS = 0.05
+# Default tolerance: «достиг цели» если осталось ≤ этого (метры).
+# Перетирается через mps.scenario.reach_tolerance_m в config.yaml. Старое
+# дефолтное значение 0.05 м засчитывало 84% дистанции на D=0.30 как «reached»
+# и было ровно D/2 на D=0.10 — слишком грубо. Новый дефолт 0.02 м (2 см) —
+# сопоставимо с разрешением dead-reckoning одометрии, не зашумит status.
+_REACH_EPS_DEFAULT = 0.02
 
 # Состояние x = [s, v, θ, ω, e_int]
 _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
@@ -149,6 +153,8 @@ class MpsNode(MqttNode):
         # (см. Bug A в diagnostics 2026-05-15: race-condition theta_start
         # из-за пустого _x_meas).
         self._odom_max_age = float(self._cfg('mps.scenario.odom_max_age_s', 0.5))
+        self._reach_eps = float(self._cfg('mps.scenario.reach_tolerance_m',
+                                           _REACH_EPS_DEFAULT))
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
@@ -509,7 +515,7 @@ class MpsNode(MqttNode):
             stale = run.no_odom_ticks > _WATCHDOG_TICKS
 
         # Reached?
-        if x[_S] >= run.distance - _REACH_EPS:
+        if x[_S] >= run.distance - self._reach_eps:
             self._finish_run('reached', None)
             return
 
