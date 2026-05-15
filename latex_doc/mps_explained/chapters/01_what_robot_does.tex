@@ -1,0 +1,166 @@
+% ============================================================
+%  Глава 1 — Что робот вообще делает
+% ============================================================
+\chapter{Робот глазами пользователя}
+\label{ch:user_view}
+
+\section{Сценарий «D метров вперёд»}
+
+Открываем веб-дашборд (\filepath{compute\_node/frontend/}), идём на страницу
+\texttt{/mps}. Видим окружность с маркером, поля «\textit{дистанция $D$}»
+и «\textit{целевая скорость $v_\text{target}$}», кнопку «Run on Robot».
+
+\begin{enumerate}
+  \item Двигаем маркер на окружности --- выбираем \textbf{целевой курс}
+        $\varphi$ (на сколько градусов отвернуть от «прямо вперёд»).
+  \item Вводим $D$ и $v_\text{target}$.
+  \item Жмём «Run on Robot».
+\end{enumerate}
+
+Робот делает три вещи:
+
+\begin{enumerate}
+  \item \textbf{Поворачивается на месте} на угол $\varphi$. Едет на нуле,
+        крутится только разворот.
+  \item \textbf{Проезжает $D$ метров} с целевой скоростью $v_\text{target}$,
+        удерживая курс $\varphi$.
+  \item \textbf{Останавливается} и публикует результат: сколько проехал,
+        какой был перерегулирующий выброс, как долго «успокаивался».
+\end{enumerate}
+
+Всё. Один сценарий, конечный. Никакой карты, никакого глобального плана.
+
+\begin{ideabox}
+Книжка построена вокруг \emph{этого} сценария. Каждый следующий вопрос
+--- «а как робот\dots» --- разбираем именно для этого сценария. Простота
+сценария --- наше учебное преимущество: можно вглядеться в каждую формулу
+без отвлечения на другие задачи.
+\end{ideabox}
+
+\section{Что нужно роботу, чтобы это сделать}
+
+Распакуем то, что мы только что увидели. У робота должна быть способность
+ответить на пять вопросов.
+
+\begin{enumerate}
+  \item[\textbf{(Q1)}] \textbf{Где я?}
+        Чтобы понять, что проехал $D$ метров, надо знать, на сколько
+        я уже сдвинулся. Это \emph{состояние позиции}.
+        Об этом --- глава~\ref{ch:state}.
+
+  \item[\textbf{(Q2)}] \textbf{Куда я смотрю?}
+        Чтобы повернуться к $\varphi$ и не уехать боком, надо знать
+        текущий курс $\theta$. Это \emph{состояние курса}.
+        Тоже глава~\ref{ch:state}.
+
+  \item[\textbf{(Q3)}] \textbf{Как мне сдвинуться/повернуться, если я скажу
+        моторам «езжай»?}
+        Если послать команду $u_v = 0.2$~м/с, робот не сразу станет ехать
+        $0.2$~м/с --- моторы инерционны. Это \emph{динамика}.
+        Об этом --- главы~\ref{ch:kinematics}, \ref{ch:dynamics}.
+
+  \item[\textbf{(Q4)}] \textbf{Какую команду подать, чтобы достичь цели?}
+        Не любой набор команд приведёт к цели хорошо. Нужен \emph{регулятор}.
+        Об этом --- главы~\ref{ch:controllers}, \ref{ch:lqr}, \ref{ch:mpc}.
+
+  \item[\textbf{(Q5)}] \textbf{Когда остановиться и как сказать «готово»?}
+        Это \emph{логика сценария}, конечный автомат и подсчёт метрик.
+        Об этом --- главы~\ref{ch:scenario}, \ref{ch:turn_phase}.
+\end{enumerate}
+
+\section{Три слоя проекта}
+
+Робот --- не один компьютер, а три. Они общаются через сеть.
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=8mm,
+  layer/.style={
+    draw, rounded corners=3pt, thick,
+    align=center, font=\small,
+    minimum width=4.6cm, minimum height=1.7cm,
+  },
+  flow/.style={-{Stealth[length=2.5mm]}, thick}
+]
+  \node[layer, fill=blue!8]   (ui)  {\textbf{Browser / React}\\
+                                     UI \texttt{/mps}, MatrixEditor,\\
+                                     Target picker};
+  \node[layer, fill=green!8, right=of ui]  (cn) {\textbf{Compute Node (ноут)}\\
+                                     FastAPI, MQTT-broker,\\
+                                     idealised simulator};
+  \node[layer, fill=orange!8, right=of cn] (pi) {\textbf{Raspberry Pi 4}\\
+                                     \texttt{mps\_node.py}, FSM,\\
+                                     MPC, motor driver};
+  \draw[flow] (ui) -- node[above, font=\scriptsize] {REST + WS} (cn);
+  \draw[flow] (cn) -- node[above, font=\scriptsize] {MQTT} (pi);
+\end{tikzpicture}
+\end{center}
+
+Что где живёт:
+
+\begin{itemize}
+  \item \textbf{Browser} (React) --- то, что видит человек: пикер курса,
+        поля распределения, графики прогона. Жесть математики тут
+        минимум, но есть --- глава~\ref{ch:picker} разберёт.
+  \item \textbf{Compute Node} (FastAPI на ноутбуке) --- посредник: принимает
+        команды от UI, шлёт их роботу по MQTT, сохраняет историю прогонов.
+        Заодно умеет \emph{симулировать} прогон без физического робота
+        --- это идеальный $\vect{x}_{k+1} = \mat{A}_d\vect{x}_k + \mat{B}_d\vect{u}_k$
+        без шумов. Полезно для UI и юнит-тестов.
+  \item \textbf{Pi} (Python, MQTT) --- собственно мозг робота. Подписан
+        на топик \texttt{mps/scenario/run}; запускает тик-цикл $50$~Гц,
+        внутри которого \emph{вся боевая математика} --- считывание
+        одометрии, шаг MPC, выдача команды моторам.
+\end{itemize}
+
+\begin{codebox}[title={Где что лежит}]
+\begin{tabular}{ll}
+\filepath{compute\_node/frontend/src/pages/MpsPage.tsx} & UI страница\\
+\filepath{compute\_node/frontend/src/lib/targetAngle.ts} & математика пикера\\
+\filepath{compute\_node/dashboard/routers/mps.py}        & REST + WS\\
+\filepath{compute\_node/mps\_runner.py}                  & идеальный симулятор\\
+\filepath{pi\_nodes/nodes/mps\_node.py}                  & оркестратор на Pi\\
+\filepath{pi\_nodes/control/state\_space\_model.py}      & plant ($\mat{A}_d, \mat{B}_d$)\\
+\filepath{pi\_nodes/control/mpc\_controller.py}          & MPC ($\mat{Q}, \mat{R}$, $\mat{K}$, QP)\\
+\filepath{config.yaml}                                   & секция \texttt{mps:} с матрицами\\
+\filepath{matlab/main.m}                                 & оффлайн-синтез матриц\\
+\end{tabular}
+\end{codebox}
+
+\section{Граничные правила}
+
+Перед тем как нырять в математику, зафиксируем правила игры, которые
+не выводятся, а просто заданы дизайном модуля. Если ты увидишь в коде
+проверку, которая кажется лишней --- скорее всего, она охраняет одно
+из этих правил.
+
+\begin{notebox}
+\begin{enumerate}
+  \item MPC активен \textbf{только в FSM-состоянии} \texttt{DRIVE\_FORWARD\_MPS}.
+        В любом другом (IDLE, SEARCHING, GRABBING, ...) команды моторам
+        идут от \emph{другого} контроллера (старый PID), а MPC ничего не
+        делает.
+  \item Сценарий \textbf{финитный}: достижение цели, тайм-аут, abort или
+        ошибка --- любое из четырёх событий завершает прогон, и FSM
+        возвращается в IDLE.
+  \item Между прогонами можно \textbf{пересобрать} матрицы (MQTT-команда
+        \texttt{mps/matrices/set}) --- это и есть «учебный пульт».
+        Во время прогона матрицы не меняются.
+  \item В состоянии \texttt{DRIVE\_FORWARD\_MPS} \textbf{cmd\_vel} (команда
+        моторам) приходит \emph{только} от \texttt{mps\_node}. Голосовые
+        команды, детекции мяча и джойстик игнорируются.
+  \item Симулятор \textbf{идеальный}: $\vect{x}_{k+1} = \mat{A}_d\vect{x}_k +
+        \mat{B}_d\vect{u}_k$ без шумов, без \emph{motor lag}, без проскальзывания.
+        Робот --- неидеальный, разница между симом и реальным прогоном
+        --- это и есть «ошибка моделирования».
+\end{enumerate}
+\end{notebox}
+
+\section{Что дальше}
+
+Дальше мы аккуратно ответим на пять вопросов (Q1)--(Q5) по очереди. Сначала
+$\to$ кинематика (глава~\ref{ch:kinematics}): что значит «робот едет вперёд»
+формально. Потом --- откуда состояние берётся (глава~\ref{ch:state}). Затем
+динамика, линеаризация, регуляторы, и наконец --- сам сценарий.
+
+Идём.

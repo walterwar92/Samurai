@@ -1,0 +1,176 @@
+% ============================================================
+%  Глава 2 — Дифференциальная кинематика
+% ============================================================
+\chapter{Дифференциальная кинематика}
+\label{ch:kinematics}
+
+\section{Вопрос}
+
+Робот --- гусеничное шасси с \textbf{двумя задними моторами} (передние
+физически отсутствуют, см. \filepath{hardware\_presets/samurai\_default.yaml}).
+Левый мотор крутит левую гусеницу, правый --- правую.
+
+\begin{ideabox}
+Мы хотим сказать роботу: «езжай со скоростью $0.2$~м/с и поворачивай
+со скоростью $0.5$~рад/с». Внутри у него --- две гусеницы, которые
+крутятся каждая со своей скоростью. Откуда взять скорости гусениц
+из «езжай вперёд + поворачивай»?
+\end{ideabox}
+
+\section{Геометрия}
+
+Введём систему координат, связанную с роботом. Робот ---  это «жёсткий
+прямоугольник» шириной $B$ метров (расстояние между серединами левой и
+правой гусениц, \texttt{wheel\_base}). Ось $x_b$ робота смотрит вперёд,
+ось $y_b$ --- влево.
+
+\begin{center}
+\begin{tikzpicture}[scale=1.1, every node/.style={font=\small}]
+  % Корпус робота
+  \draw[thick, fill=gray!10, rounded corners=2pt]
+    (-1.0, -0.7) rectangle (1.0, 0.7);
+  % Левая и правая гусеницы (полоски)
+  \fill[gray!50] (-1.05, 0.45) rectangle (1.05, 0.7);
+  \fill[gray!50] (-1.05,-0.7)  rectangle (1.05,-0.45);
+  % Стрелка вперёд
+  \draw[-{Stealth[length=3mm]}, thick, blue!60!black] (0,0) -- (1.6,0)
+       node[right]{\(x_b\) (вперёд)};
+  % Ось y_b
+  \draw[-{Stealth[length=3mm]}, thick, blue!60!black] (0,0) -- (0,1.4)
+       node[above]{\(y_b\) (влево)};
+  % Скорости гусениц
+  \draw[-{Stealth[length=2.5mm]}, very thick, red!70!black]
+       (-0.8, 0.575) -- (0.5, 0.575)
+       node[right]{\(v_L\)};
+  \draw[-{Stealth[length=2.5mm]}, very thick, red!70!black]
+       (-0.8,-0.575) -- (0.2,-0.575)
+       node[right]{\(v_R\)};
+  % Ширина базы
+  \draw[<->, thick] (-1.25, 0.575) -- (-1.25, -0.575)
+       node[midway, left]{\(B\)};
+\end{tikzpicture}
+\end{center}
+
+Пусть гусеницы крутятся со скоростями $v_L$ (левая) и $v_R$ (правая)
+--- это \textbf{линейные} скорости центров гусениц в продольном
+направлении, м/с.
+
+\section{Команды робота: $u_v$ и $u_\omega$}
+
+Команды роботу --- не «крути левую и правую», а более удобная пара:
+\[
+  \vect{u} = \begin{pmatrix} u_v \\ u_\omega \end{pmatrix},
+  \qquad
+  u_v \text{ -- линейная скорость [м/с]},
+  \qquad
+  u_\omega \text{ -- угловая скорость [рад/с]}.
+\]
+
+\begin{itemize}
+  \item $u_v > 0$ --- ехать вперёд, $u_v < 0$ --- назад.
+  \item $u_\omega > 0$ --- поворот \emph{налево} (CCW против часовой,
+        стандарт ROS и наш проект).
+  \item $u_v = 0$, $u_\omega \ne 0$ --- разворот на месте.
+  \item $u_v \ne 0$, $u_\omega \ne 0$ --- движение по дуге.
+\end{itemize}
+
+\begin{formulabox}[title={Прямая дифференциальная кинематика}]
+Из геометрии: центр шасси едет со скоростью $u_v$, а каждая гусеница ---
+на расстоянии $\tfrac{B}{2}$ от центра, поэтому добавочно скользит на
+$\pm\tfrac{B}{2}\,u_\omega$ (знак зависит от того, левая она или правая).
+
+\begin{equation}
+  \boxed{\;v_L = u_v + \tfrac{B}{2}\,u_\omega,\qquad
+         v_R = u_v - \tfrac{B}{2}\,u_\omega.\;}
+  \label{eq:diff_forward}
+\end{equation}
+\end{formulabox}
+
+\begin{notebox}
+\textbf{Откуда знаки?} При повороте налево ($u_\omega > 0$) робот «закидывает
+зад» вправо, его левая гусеница должна крутиться \emph{быстрее} центра,
+а правая --- медленнее. Поэтому к $u_v$ добавляем $+\tfrac{B}{2}u_\omega$
+для левой и вычитаем для правой.
+\end{notebox}
+
+\section{Обратная задача: гусеницы $\to$ команды}
+
+Часто нужна обратная задача --- по измеренным скоростям гусениц найти
+$u_v$ и $u_\omega$. Складываем и вычитаем \eqref{eq:diff_forward}:
+
+\begin{equation}
+  u_v = \frac{v_L + v_R}{2},
+  \qquad
+  u_\omega = \frac{v_L - v_R}{B}.
+  \label{eq:diff_inverse}
+\end{equation}
+
+\begin{examplebox}[title={Численный пример}]
+$B = 0.17$~м. Хотим $u_v = 0.2$~м/с, $u_\omega = 0.5$~рад/с.
+
+\begin{align*}
+  v_L &= 0.2 + \tfrac{0.17}{2}\cdot 0.5 = 0.2 + 0.0425 = 0.2425 \text{ м/с},\\
+  v_R &= 0.2 - 0.0425 = 0.1575 \text{ м/с}.
+\end{align*}
+
+Левая гусеница на 30\% быстрее правой $\to$ робот поворачивает налево.
+\end{examplebox}
+
+\section{Положение и курс в мировой системе}
+
+Команды $u_v$, $u_\omega$ --- в \emph{связанной} с роботом системе. Но
+позиция $(p_x, p_y)$ и курс $\theta$ --- в \emph{мировой}. Чтобы
+получить их, нужно вспомнить, куда робот смотрит.
+
+\begin{ideabox}
+Если робот смотрит под углом $\theta$ к мировой оси $x$ и движется вперёд
+со скоростью $v$, то проекции этой скорости на мировые оси --- $v\cos\theta$
+и $v\sin\theta$. Курс $\theta$ меняется со скоростью $\omega$.
+\end{ideabox}
+
+\begin{formulabox}[title={Кинематика робота в мировой СК}]
+\begin{equation}
+  \begin{cases}
+    \dot{p}_x = v\,\cos\theta,\\[2pt]
+    \dot{p}_y = v\,\sin\theta,\\[2pt]
+    \dot{\theta} = \omega.
+  \end{cases}
+  \label{eq:world_kinematics}
+\end{equation}
+\end{formulabox}
+
+Это \textbf{первое нелинейное звено} модели. Нелинейность здесь --- из-за
+$\cos\theta$ и $\sin\theta$, зависящих от состояния.
+
+\section{Где это в коде}
+
+\begin{codebox}[title={\filepath{pi\_nodes/nodes/motor\_node.py}}]
+В микшере моторов \eqref{eq:diff_forward} применяется к \texttt{cmd\_vel},
+полученному из MPC. Дальше скорости гусениц переводятся в ШИМ через
+калибровочные коэффициенты (PCA9685, каналы M1 ch10--11, M2 ch8--9).
+Подробнее --- глава \filepath{latex\_doc/chapters/14\_pwm\_motor.tex}.
+\end{codebox}
+
+\begin{codebox}[title={\filepath{config.yaml}, секция \texttt{simulator:}}]
+\begin{verbatim}
+simulator:
+  wheel_base:  0.17    # B [м]
+  max_linear:  0.30    # |u_v|_max [м/с]
+  max_angular: 2.00    # |u_omega|_max [рад/с]
+\end{verbatim}
+\end{codebox}
+
+\section{Что мы получили}
+
+\begin{itemize}
+  \item Команда роботу --- это пара $(u_v, u_\omega)$, размерность $r = 2$.
+  \item Мгновенно «исполнить» команду робот не может --- сначала надо
+        перевести её в скорости гусениц (тривиально, \eqref{eq:diff_forward}),
+        а потом --- в ШИМ (см. отдельную главу). \emph{Это всё ещё чистая
+        кинематика без инерции}.
+  \item Перевод в мировые координаты --- через \eqref{eq:world_kinematics}.
+        Здесь появилась первая нелинейность модели.
+\end{itemize}
+
+В следующей главе разберёмся, \emph{откуда} робот узнаёт свои $p_x, p_y, \theta$
+(и можно ли им верить).

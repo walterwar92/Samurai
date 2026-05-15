@@ -1,0 +1,410 @@
+% ============================================================
+%  Глава 8 — MPC: горизонт, лифтинг, QP
+% ============================================================
+\chapter{MPC: Model Predictive Control}
+\label{ch:mpc}
+
+\section{Вопрос}
+
+ЛКР минимизирует $J$ на \emph{бесконечном} горизонте, выдаёт постоянное
+усиление $\mat{K}$ и не знает о ограничениях $\vect{u}_\text{min} \le
+\vect{u} \le \vect{u}_\text{max}$. Эти два недостатка устраняет MPC.
+
+\begin{ideabox}
+\textbf{Идея MPC:} вместо одного решения на $\infty$ --- решать
+\emph{маленькую} оптимизационную задачу \emph{на каждом тике}, на
+конечный горизонт $N$ вперёд, с явными ограничениями.
+
+\textbf{Receding horizon (скользящий горизонт):}
+\begin{enumerate}
+  \item Сейчас, в момент $k$, посмотри на $N$ шагов вперёд.
+  \item Сосчитай \emph{весь будущий план} $\vect{u}_0, \vect{u}_1, \ldots,
+        \vect{u}_{N-1}$, минимизируя стоимость.
+  \item Примени \emph{только первый шаг} $\vect{u}_0$ к роботу.
+  \item На следующем тике начни заново с $\vect{x}_{k+1}$.
+\end{enumerate}
+Это похоже на шахматы: считаем дерево на N ходов, делаем один, считаем
+заново.
+\end{ideabox}
+
+\section{Постановка}
+
+\begin{formulabox}[title={MPC-задача (с ограничениями)}]
+\begin{equation}
+  \begin{aligned}
+  \min_{\,\vect{u}_0, \ldots, \vect{u}_{N-1}}\;
+  & J = \sum_{i=0}^{N-1}\Big(\vect{x}_i\T \mat{Q}\vect{x}_i +
+                              \vect{u}_i\T \mat{R}\vect{u}_i\Big)
+        + \vect{x}_N\T \mat{P}_f\,\vect{x}_N\\
+  \text{при условиях } &
+        \vect{x}_{i+1} = \mat{A}_d\vect{x}_i + \mat{B}_d\vect{u}_i,
+        \quad i = 0, \ldots, N-1,\\
+  & \vect{u}_\text{min} \le \vect{u}_i \le \vect{u}_\text{max},
+        \quad i = 0, \ldots, N-1,\\
+  & \vect{x}_0 \text{ задано (измерено сейчас)}.
+  \end{aligned}
+  \label{eq:mpc_problem}
+\end{equation}
+\end{formulabox}
+
+Новое:
+\begin{itemize}
+  \item Сумма по \emph{конечному} $N$ (не до бесконечности).
+  \item \textbf{Терминальный штраф} $\mat{P}_f$ --- штраф за последнее
+        состояние $\vect{x}_N$. Если выбрать $\mat{P}_f$ как решение DARE
+        для $(\mat{A}_d, \mat{B}_d, \mat{Q}, \mat{R})$, то конечный горизонт
+        ведёт себя «как бесконечный» --- сумма от $N$ до $\infty$
+        заменяется аккуратно квадратичным выражением.
+  \item Явные box-ограничения на $\vect{u}_i$.
+\end{itemize}
+
+\section{Лифтированная динамика}
+
+Переменными оптимизации в \eqref{eq:mpc_problem} являются $\vect{u}_0, \ldots,
+\vect{u}_{N-1}$ --- всего $rN$ скаляров. Состояние $\vect{x}_i$ не
+независимая переменная: оно \emph{зависит} от $\vect{u}_i$ через
+$\vect{x}_{i+1} = \mat{A}_d\vect{x}_i + \mat{B}_d\vect{u}_i$. Удобно это
+зависимое представление сделать явным.
+
+\begin{ideabox}
+\textbf{Лифтинг (lifting).} Разворачиваем рекурсию по динамике.
+\begin{align*}
+  \vect{x}_1 &= \mat{A}_d\vect{x}_0 + \mat{B}_d\vect{u}_0,\\
+  \vect{x}_2 &= \mat{A}_d\vect{x}_1 + \mat{B}_d\vect{u}_1
+              = \mat{A}_d^2\vect{x}_0 + \mat{A}_d\mat{B}_d\vect{u}_0 + \mat{B}_d\vect{u}_1,\\
+  \vect{x}_3 &= \mat{A}_d^3\vect{x}_0 + \mat{A}_d^2\mat{B}_d\vect{u}_0
+              + \mat{A}_d\mat{B}_d\vect{u}_1 + \mat{B}_d\vect{u}_2,\\
+             & \vdots
+\end{align*}
+Складываем все состояния в большой столбец $\vect{X}$ и все управления
+--- в $\vect{U}$:
+\end{ideabox}
+
+Введём блочные векторы:
+\[
+  \vect{X} = \begin{pmatrix} \vect{x}_1\\ \vect{x}_2\\ \vdots\\ \vect{x}_N \end{pmatrix} \in \Real^{nN},
+  \qquad
+  \vect{U} = \begin{pmatrix} \vect{u}_0\\ \vect{u}_1\\ \vdots\\ \vect{u}_{N-1} \end{pmatrix} \in \Real^{rN}.
+\]
+
+Тогда вся динамика «помещается» в одно матричное равенство:
+
+\begin{formulabox}[title={Лифтированная динамика}]
+\begin{equation}
+  \vect{X} \;=\; \mat{\Phi}\,\vect{x}_0 \;+\; \mat{\Gamma}\,\vect{U},
+  \label{eq:lifted}
+\end{equation}
+где
+\[
+  \mat{\Phi} = \begin{pmatrix}
+    \mat{A}_d\\ \mat{A}_d^2\\ \vdots\\ \mat{A}_d^N
+  \end{pmatrix} \in \Real^{nN \times n},
+  \qquad
+  \mat{\Gamma} = \begin{pmatrix}
+    \mat{B}_d & 0 & \cdots & 0\\
+    \mat{A}_d\mat{B}_d & \mat{B}_d & \cdots & 0\\
+    \vdots & & \ddots & \vdots\\
+    \mat{A}_d^{N-1}\mat{B}_d & \mat{A}_d^{N-2}\mat{B}_d & \cdots & \mat{B}_d
+  \end{pmatrix} \in \Real^{nN \times rN}.
+\]
+\end{formulabox}
+
+\begin{codebox}[title={\filepath{pi\_nodes/control/mpc\_controller.py:134}}]
+\begin{lstlisting}[language=Python]
+def _build_qp_matrices(self):
+    n, r, N = self.n, self.r, self.N
+    Phi = np.zeros((n * N, n))
+    Gamma = np.zeros((n * N, r * N))
+    Apow = np.eye(n)
+    for i in range(N):
+        Apow = self.Ad @ Apow                    # A^{i+1}
+        Phi[i*n:(i+1)*n, :] = Apow
+        for j in range(i + 1):
+            block = np.linalg.matrix_power(self.Ad, i - j) @ self.Bd
+            Gamma[i*n:(i+1)*n, j*r:(j+1)*r] = block
+    # ... дальше Q_bar, R_bar, H, f_mat
+\end{lstlisting}
+\end{codebox}
+
+\subsection{Стоимость в лифтированной форме}
+
+Соберём блочно-диагональные веса (последний блок --- терминальный):
+
+\[
+  \bar{\mat{Q}} = \begin{pmatrix}
+    \mat{Q} &       &        & \\
+            & \mat{Q} &      & \\
+            &       & \ddots & \\
+            &       &        & \mat{P}_f
+  \end{pmatrix} \in \Real^{nN\times nN},
+  \qquad
+  \bar{\mat{R}} = \mat{I}_N \otimes \mat{R} \in \Real^{rN\times rN}.
+\]
+
+Подставим \eqref{eq:lifted} в стоимость $J$:
+
+\[
+  J(\vect{U}) = (\mat{\Phi}\vect{x}_0 + \mat{\Gamma}\vect{U})\T \bar{\mat{Q}}
+                 (\mat{\Phi}\vect{x}_0 + \mat{\Gamma}\vect{U})
+               + \vect{U}\T \bar{\mat{R}}\,\vect{U}.
+\]
+
+Раскрываем и группируем по степеням $\vect{U}$:
+
+\begin{formulabox}[title={Квадратичная форма стоимости}]
+\begin{equation}
+  J(\vect{U}) = \half\,\vect{U}\T \mat{H}\,\vect{U} + \vect{f}(\vect{x}_0)\T \vect{U} + \text{const},
+  \label{eq:quad_cost}
+\end{equation}
+\[
+  \mat{H} = 2\,(\mat{\Gamma}\T \bar{\mat{Q}}\mat{\Gamma} + \bar{\mat{R}}),
+  \qquad
+  \vect{f}(\vect{x}_0) = 2\,\mat{\Gamma}\T \bar{\mat{Q}}\mat{\Phi}\,\vect{x}_0.
+\]
+\end{formulabox}
+
+«const» --- слагаемое, зависящее только от $\vect{x}_0$. Для оптимизации
+по $\vect{U}$ оно неважно.
+
+\section{Квадратичное программирование (QP)}
+
+С учётом ограничений MPC превращается в каноническую \textbf{QP-задачу}:
+
+\begin{formulabox}[title={QP-постановка MPC}]
+\begin{equation}
+  \min_{\vect{U}}\; \half \vect{U}\T \mat{H}\vect{U} + \vect{f}\T \vect{U},
+  \qquad
+  \vect{U}_\text{min} \le \vect{U} \le \vect{U}_\text{max}.
+  \label{eq:qp}
+\end{equation}
+\end{formulabox}
+
+Здесь $\vect{U}_\text{min}, \vect{U}_\text{max}$ --- повторение
+$\vect{u}_\text{min}, \vect{u}_\text{max}$ по $N$ блокам.
+
+\textbf{Свойства задачи:}
+\begin{itemize}
+  \item $\mat{H} = \mat{H}\T$, положительно определённая
+        $\Rightarrow$ задача \textbf{выпуклая}, имеет единственный
+        минимум.
+  \item Ограничения --- линейные неравенства, выпуклые.
+  \item Существуют десятки QP-солверов (OSQP, qpOASES, scipy.optimize и др.).
+\end{itemize}
+
+\section{Два режима в проекте: \texttt{clip} и \texttt{qp}}
+
+В \filepath{pi\_nodes/control/mpc\_controller.py} реализованы \textbf{две}
+стратегии решения:
+
+\subsection{\texttt{clip} (по умолчанию)}
+
+\textbf{Без} ограничений (\emph{в задаче, не в железе}) решение QP
+\eqref{eq:qp} аналитическое --- производная по $\vect{U}$, равная нулю:
+
+\[
+  \mat{H}\,\vect{U}^* + \vect{f} = 0
+  \;\;\Rightarrow\;\;
+  \vect{U}^* = -\mat{H}^{-1}\vect{f}(\vect{x}_0).
+\]
+
+Берём первые $r$ компонент --- это $\vect{u}_0$. После лишних выкладок
+получается, что
+
+\begin{equation}
+  \vect{u}_0 = -\mat{K}_\text{first}\,\vect{x}_0,
+  \qquad
+  \mat{K}_\text{first} = (\mat{H}^{-1}\,2\mat{\Gamma}\T \bar{\mat{Q}}\mat{\Phi})_{[1\ldots r,\,:]}.
+  \label{eq:K_first}
+\end{equation}
+
+То есть аналитический MPC --- это \textbf{та же линейная обратная связь},
+что ЛКР, только усиление $\mat{K}_\text{first}$ другое (зависит от $N$).
+После умножения мы \emph{клиппим} управление к ограничениям:
+
+\[
+  \vect{u}_0 \leftarrow \operatorname{clip}(\vect{u}_0, \vect{u}_\text{min}, \vect{u}_\text{max}).
+\]
+
+\begin{notebox}
+\textbf{Когда это оптимально:} ровно когда невозмущённое решение
+$-\mat{K}_\text{first}\vect{x}_0$ \emph{и так} попадает в box. Тогда
+клип ничего не меняет. Если выходит за границы --- клиппинг даёт
+\emph{допустимое}, но \emph{не оптимальное} управление. В большинстве
+рабочих режимов робота этого хватает.
+\end{notebox}
+
+\begin{codebox}[title={\filepath{mpc\_controller.py:288}}]
+\begin{lstlisting}[language=Python]
+def step(self, x, x_ref=None):
+    if x_ref is None:
+        dx = x
+    else:
+        dx = x - x_ref
+    if self._solver == "qp":
+        return self._solve_qp(dx)
+    # Explicit clip
+    u = -self.K_first @ dx
+    return np.clip(u, self.u_min, self.u_max)
+\end{lstlisting}
+\end{codebox}
+
+\subsection{\texttt{qp} (полный)}
+
+При \texttt{control.mpc.solver: qp} в конфиге проект решает QP \emph{честно}:
+
+\begin{codebox}[title={\filepath{mpc\_controller.py:303}}]
+\begin{lstlisting}[language=Python]
+def _solve_qp(self, dx):
+    f = self.f_mat @ dx
+    H = self.H
+    u_lo = np.tile(self.u_min, self.N)
+    u_hi = np.tile(self.u_max, self.N)
+    bounds = list(zip(u_lo, u_hi))
+    U0 = -np.linalg.solve(H, f)              # warm start
+    U0 = np.clip(U0, u_lo, u_hi)
+    res = minimize(lambda U: 0.5*U@H@U + f@U,
+                   U0, jac=lambda U: H@U + f,
+                   method="L-BFGS-B", bounds=bounds)
+    return (res.x if res.success else U0)[:self.r]
+\end{lstlisting}
+\end{codebox}
+
+Используется L-BFGS-B (scipy) с warm start от аналитического решения.
+Делает то же, что OSQP, только медленнее. \emph{Включают только если
+clip регулярно упирается в ограничения}.
+
+\section{Выбор горизонта $N$}
+
+\begin{ideabox}
+\textbf{Большой $N$} (например, 50):
+\begin{itemize}
+  \item Регулятор «видит дальше» --- может заранее тормозить, чтобы
+        не перелететь цель.
+  \item QP становится больше: размер $\vect{U}$ растёт как $rN$,
+        размер $\mat{H}$ --- как $(rN)^2$. Время на тик растёт нелинейно.
+\end{itemize}
+
+\textbf{Маленький $N$} (например, 1):
+\begin{itemize}
+  \item Решается быстро.
+  \item Регулятор «близорукий», поведение ближе к ЛКР с малым весом
+        конечного штрафа.
+\end{itemize}
+
+\textbf{Рабочий компромисс:} $N \cdot T_s \gtrsim 2 \tau_\text{slow}$, где
+$\tau_\text{slow}$ --- самая медленная постоянная времени объекта. Для
+нас $\tau_\text{slow} = \tau_v = 0.15$~с, $T_s = 0.02$~с $\Rightarrow$
+$N \ge 15$. В дефолтах --- $N = 10$ или $20$ (см. \texttt{mps.horizon\_N}).
+\end{ideabox}
+
+\section{Терминальный штраф $\mat{P}_f$}
+
+\begin{ideabox}
+\textbf{Проблема конечного горизонта:} что мешает MPC сделать «хитрое»
+движение, которое в окне $[0, N]$ выглядит выгодно, а после $N$
+оставляет робот «в плохой позе» (далеко от цели)? Ничего, если стоимость
+после $N$ мы игнорируем.
+
+\textbf{Решение:} добавить терминальный штраф $\vect{x}_N\T \mat{P}_f\,
+\vect{x}_N$, который аппроксимирует «стоимость до бесконечности» из
+$\vect{x}_N$.
+
+Лучшая такая аппроксимация --- решение DARE \eqref{eq:dare} для
+$(\mat{A}_d, \mat{B}_d, \mat{Q}, \mat{R})$, то есть $\mat{P}_f = \mat{P}_\text{LQR}$.
+Тогда MPC \emph{в пределе} $N \to \infty$ сходится к ЛКР, а на конечном
+$N$ ведёт себя «как ЛКР, но с уважением к ограничениям».
+\end{ideabox}
+
+\begin{codebox}[title={\filepath{mpc\_controller.py:126}}]
+\begin{lstlisting}[language=Python]
+def _compute_terminal_penalty(self):
+    """If Pf not given, solve DARE for a guaranteed-stable terminal cost."""
+    return solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
+\end{lstlisting}
+\end{codebox}
+
+\section{Слежение за reference}
+
+До сих пор минимизировали $\vect{x}\T \mat{Q}\vect{x}$ --- штраф за
+отклонение от \emph{нуля}. Но цель сценария --- $\vect{x}^\text{ref} \ne 0$
+(например, $s_\text{ref}$ растёт линейно к $D$). Стандартный приём ---
+работать в \emph{ошибке слежения} $\Delta\vect{x} = \vect{x} - \vect{x}^\text{ref}$:
+
+\begin{equation}
+  J = \sum_{i=0}^{N-1}\Big((\vect{x}_i - \vect{x}^\text{ref})\T \mat{Q}\,(\vect{x}_i - \vect{x}^\text{ref})
+        + \vect{u}_i\T \mat{R}\vect{u}_i\Big)
+        + (\vect{x}_N - \vect{x}^\text{ref})\T \mat{P}_f\,(\vect{x}_N - \vect{x}^\text{ref}).
+  \label{eq:mpc_tracking}
+\end{equation}
+
+В коде --- именно так:
+
+\begin{codebox}[title={\filepath{mpc\_controller.py:288}}]
+\begin{lstlisting}[language=Python]
+def step(self, x, x_ref=None):
+    dx = x - x_ref  if x_ref is not None  else x
+    ...
+\end{lstlisting}
+\end{codebox}
+
+\section{Sanity-check замкнутой системы}
+
+После \texttt{rebuild()} (Apply из UI) можно убедиться, что новый
+регулятор устойчив:
+
+\begin{codebox}[title={\filepath{mpc\_controller.py:332}}]
+\begin{lstlisting}[language=Python]
+def closed_loop_eigenvalues(self):
+    """|λ| < 1 ⇔ closed-loop x_{k+1} = (Ad - Bd K_first) x is stable."""
+    return np.linalg.eigvals(self.Ad - self.Bd @ self.K_first)
+
+def is_stable(self):
+    return bool(np.all(np.abs(self.closed_loop_eigenvalues()) < 1.0 - 1e-9))
+\end{lstlisting}
+\end{codebox}
+
+Этот тест в UI делает «Validate matrices» --- кнопка перед Apply.
+
+\section{Hot-reload между прогонами}
+
+В МПС-учебном модуле пользователь \emph{редактирует} матрицы из UI и
+жмёт Apply. На Pi прилетает \texttt{mps/matrices/set}, и нода вызывает
+\texttt{mpc.rebuild()}: атомарно пересчитываются $\mat{\Phi}, \mat{\Gamma},
+\mat{H}, \mat{K}_\text{first}$, при ошибке --- rollback к предыдущему
+снимку. Это и есть «учебный пульт».
+
+\begin{codebox}[title={\filepath{mpc\_controller.py:172}, фрагмент rebuild}]
+\begin{lstlisting}[language=Python]
+def rebuild(self, *, Ad=None, Bd=None, Q_diag=None, R_diag=None,
+            N=None, u_min=None, u_max=None, Pf=None):
+    snapshot = (self.Ad.copy(), ..., self.K_first.copy())
+    try:
+        # обновить поля, провалидировать формы, пересчитать matrices
+        self._build_qp_matrices()
+    except Exception:
+        # Rollback on ANY failure
+        (self.Ad, ..., self.K_first) = snapshot
+        raise
+\end{lstlisting}
+\end{codebox}
+
+\section{Что мы получили}
+
+\begin{itemize}
+  \item \textbf{MPC} --- решение QP-задачи на каждом тике с явными
+        ограничениями.
+  \item Через \emph{лифтинг} динамики QP сводится к канонической форме
+        $\half\vect{U}\T \mat{H}\vect{U} + \vect{f}\T \vect{U}$.
+  \item Без ограничений решение аналитическое, $\vect{u}_0 =
+        -\mat{K}_\text{first}\vect{x}_0$. С ограничениями --- настоящая
+        QP-задача, в проекте --- L-BFGS-B с warm start.
+  \item Дефолтный режим --- \texttt{clip}: считаем $\mat{K}_\text{first}$,
+        умножаем, клипуем. Быстро и в большинстве случаев оптимально.
+  \item Терминальный штраф $\mat{P}_f$ --- решение DARE; делает короткий
+        горизонт «бесконечно-устойчивым».
+  \item Горизонт $N$ --- компромисс: $N T_s \gtrsim 2 \tau_\text{slow}$.
+  \item \texttt{rebuild()} --- атомарное пересоздание контроллера с
+        rollback на ошибку; используется при Apply из UI.
+\end{itemize}
+
+Теперь, наконец, всё готово, чтобы запустить настоящий сценарий.

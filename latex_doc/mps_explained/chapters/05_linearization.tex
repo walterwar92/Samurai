@@ -1,0 +1,441 @@
+% ============================================================
+%  Глава 5 — Линеаризация и дискретизация
+% ============================================================
+\chapter{Из нелинейной ОДУ в матрицы $\mat{A}_d, \mat{B}_d$}
+\label{ch:linearization}
+
+\section{Вопрос}
+
+Нелинейная модель \eqref{eq:nonlinear_ode} --- честная, но \textbf{нерешаемая
+аналитически} и плохо подходящая для оптимизаторов. ЛКР и MPC, которые
+мы будем строить дальше, работают \emph{только с линейными моделями}
+в дискретном времени:
+
+\[
+  \vect{x}_{k+1} = \mat{A}_d\,\vect{x}_k + \mat{B}_d\,\vect{u}_k.
+\]
+
+Надо превратить \eqref{eq:nonlinear_ode} в эту форму.
+
+\begin{ideabox}
+Две операции, обе из учебника Козлова:
+\begin{enumerate}
+  \item \textbf{Линеаризация.} Разложение в ряд Тейлора первого порядка
+        вокруг \emph{опорной точки} (равномерное движение вперёд).
+        Получаем \emph{непрерывные} матрицы $\mat{A}, \mat{B}$.
+  \item \textbf{Дискретизация.} Переход от $\dot{\vect{x}} = \mat{A}\vect{x}
+        + \mat{B}\vect{u}$ к $\vect{x}_{k+1} = \mat{A}_d\vect{x}_k +
+        \mat{B}_d\vect{u}_k$ через ZOH (zero-order hold).
+\end{enumerate}
+В этой главе пройдём по обеим.
+\end{ideabox}
+
+\section{Выбор опорной точки}
+
+\textbf{Опорная точка} (operating point, англ.\,\emph{trim point}) --- это
+тот режим, вокруг которого мы линеаризуем. Выберем его так, чтобы он
+был \emph{реальной целью} сценария: робот едет вперёд с постоянной
+скоростью $v_0$, ничего не вращая.
+
+\begin{equation}
+  \bar{\vect{x}} = (\bar{p}_x,\; \bar{p}_y,\; \underbrace{0}_{\bar\theta},\;
+                    v_0,\; \underbrace{0}_{\bar\omega})\T,
+  \qquad
+  \bar{\vect{u}} = (v_0,\; 0)\T.
+  \label{eq:op_point}
+\end{equation}
+
+Подставим $\bar{\vect{x}}, \bar{\vect{u}}$ в \eqref{eq:nonlinear_ode}:
+
+\[
+  \vect{f}(\bar{\vect{x}}, \bar{\vect{u}}) =
+  (v_0\cos 0,\, v_0\sin 0,\, 0,\, (v_0 - v_0)/\tau_v,\, (0-0)/\tau_\omega)\T
+  = (v_0, 0, 0, 0, 0)\T.
+\]
+
+Координата $p_x$ растёт со скоростью $v_0$ --- логично; всё остальное
+не меняется. Опорная точка корректна: при $\vect{x} = \bar{\vect{x}}$,
+$\vect{u} = \bar{\vect{u}}$ робот действительно равномерно едет
+вперёд.
+
+\section{Ряд Тейлора}
+
+Пусть $\Delta\vect{x} = \vect{x} - \bar{\vect{x}}$,
+$\Delta\vect{u} = \vect{u} - \bar{\vect{u}}$ --- \emph{малые}
+отклонения от опорной. Разложим $\vect{f}$ в ряд:
+
+\[
+  \vect{f}(\vect{x}, \vect{u}) \;=\;
+    \underbrace{\vect{f}(\bar{\vect{x}}, \bar{\vect{u}})}_{\dot{\bar{\vect{x}}}}
+    +
+    \underbrace{\left.\frac{\partial \vect{f}}{\partial \vect{x}}\right|_*}_{\mat{A}}
+    \Delta\vect{x}
+    +
+    \underbrace{\left.\frac{\partial \vect{f}}{\partial \vect{u}}\right|_*}_{\mat{B}}
+    \Delta\vect{u}
+    + O(\|\Delta\|^2).
+\]
+
+Вычитая $\dot{\bar{\vect{x}}}$ из обеих частей и обозначив
+$\Delta\dot{\vect{x}} = \dot{\vect{x}} - \dot{\bar{\vect{x}}}$, отбрасывая
+квадратичные члены, получаем:
+
+\begin{formulabox}[title={Линеаризованная модель}]
+\begin{equation}
+  \Delta\dot{\vect{x}}(t) \;=\; \mat{A}\,\Delta\vect{x}(t)
+                                 + \mat{B}\,\Delta\vect{u}(t).
+  \label{eq:linear_ode}
+\end{equation}
+\end{formulabox}
+
+\textbf{Важно:} формула \eqref{eq:linear_ode} верна \emph{только в окрестности}
+$\bar{\vect{x}}, \bar{\vect{u}}$. Если робот сильно отклонится от опорной
+траектории (например, разверулся на $90^\circ$), линейная модель станет
+заметно врать.
+
+\subsection{Вычисление матрицы $\mat{A}$}
+
+Матрица Якоби $\mat{A} = \partial \vect{f}/\partial \vect{x}$ --- это
+матрица $5 \times 5$ со столбцами $\partial \vect{f}/\partial x_j$.
+Считаем частные производные функций $f_1, \ldots, f_5$ по $x_j \in \{p_x,
+p_y, \theta, v, \omega\}$ и подставляем опорные значения
+$\bar{\theta} = 0$, $\bar{v} = v_0$.
+
+\textbf{Строка 1:} $f_1 = v\cos\theta$.
+\[
+  \frac{\partial f_1}{\partial p_x} = 0,
+  \quad
+  \frac{\partial f_1}{\partial p_y} = 0,
+  \quad
+  \frac{\partial f_1}{\partial \theta}\bigg|_* = -v\sin\theta\big|_0 = 0,
+  \quad
+  \frac{\partial f_1}{\partial v}\bigg|_* = \cos\theta\big|_0 = 1,
+  \quad
+  \frac{\partial f_1}{\partial \omega} = 0.
+\]
+
+\textbf{Строка 2:} $f_2 = v\sin\theta$.
+\[
+  \frac{\partial f_2}{\partial \theta}\bigg|_* = v\cos\theta\big|_0 = v_0,
+  \quad
+  \frac{\partial f_2}{\partial v}\bigg|_* = \sin\theta\big|_0 = 0.
+\]
+Остальные --- нули.
+
+\textbf{Строка 3:} $f_3 = \omega$.
+$\partial f_3/\partial \omega = 1$. Остальные --- нули.
+
+\textbf{Строка 4:} $f_4 = (u_v - v)/\tau_v$.
+$\partial f_4/\partial v = -1/\tau_v$. Остальные --- нули.
+
+\textbf{Строка 5:} $f_5 = (u_\omega - \omega)/\tau_\omega$.
+$\partial f_5/\partial \omega = -1/\tau_\omega$. Остальные --- нули.
+
+Собираем:
+\begin{formulabox}[title={Матрица $\mat{A}$ (непрерывная)}]
+\begin{equation}
+  \mat{A} = \begin{pmatrix}
+    0 & 0 & 0   & 1         & 0          \\
+    0 & 0 & v_0 & 0         & 0          \\
+    0 & 0 & 0   & 0         & 1          \\
+    0 & 0 & 0   & -1/\tau_v & 0          \\
+    0 & 0 & 0   & 0         & -1/\tau_\omega
+  \end{pmatrix}.
+  \label{eq:A_continuous}
+\end{equation}
+\end{formulabox}
+
+\subsection{Вычисление матрицы $\mat{B}$}
+
+Аналогично для $\mat{B} = \partial \vect{f}/\partial \vect{u}$, размер $5 \times 2$:
+
+\[
+  \frac{\partial f_4}{\partial u_v} = \frac{1}{\tau_v},
+  \quad
+  \frac{\partial f_5}{\partial u_\omega} = \frac{1}{\tau_\omega}.
+\]
+Остальные элементы --- нули.
+
+\begin{formulabox}[title={Матрица $\mat{B}$ (непрерывная)}]
+\begin{equation}
+  \mat{B} = \begin{pmatrix}
+    0          & 0              \\
+    0          & 0              \\
+    0          & 0              \\
+    1/\tau_v   & 0              \\
+    0          & 1/\tau_\omega
+  \end{pmatrix}.
+  \label{eq:B_continuous}
+\end{equation}
+\end{formulabox}
+
+Если сравнить эти матрицы с кодом \filepath{state\_space\_model.py:29}
+(глава~\ref{ch:dynamics}, листинг) --- буквально одно и то же.
+\emph{Это и есть наша модель.}
+
+\subsection{Численный пример}
+
+При $v_0 = 0.2$~м/с, $\tau_v = 0.15$~с, $\tau_\omega = 0.10$~с:
+
+\begin{equation}
+  \mat{A} = \begin{pmatrix}
+    0 & 0 & 0    & 1      & 0 \\
+    0 & 0 & 0.2  & 0      & 0 \\
+    0 & 0 & 0    & 0      & 1 \\
+    0 & 0 & 0    & -6.667 & 0 \\
+    0 & 0 & 0    & 0      & -10
+  \end{pmatrix},
+  \quad
+  \mat{B} = \begin{pmatrix}
+    0      & 0 \\
+    0      & 0 \\
+    0      & 0 \\
+    6.667  & 0 \\
+    0      & 10
+  \end{pmatrix}.
+  \label{eq:AB_numeric}
+\end{equation}
+
+\section{Управляемость}
+
+Перед тем как строить регулятор, надо убедиться, что робот \emph{в принципе}
+может быть приведён из любого состояния в любое другое. Это свойство
+\textbf{управляемости}.
+
+\begin{formulabox}[title={Критерий Калмана}]
+Объект полностью управляем тогда и только тогда, когда матрица
+управляемости имеет полный ранг:
+\begin{equation}
+  \mat{S}_y = \big[\,\mat{B}\,\big|\,\mat{A}\mat{B}\,\big|\,\mat{A}^2\mat{B}
+              \,\big|\,\ldots\,\big|\,\mat{A}^{n-1}\mat{B}\,\big],
+  \qquad
+  \rank \mat{S}_y = n.
+  \label{eq:controllability}
+\end{equation}
+\end{formulabox}
+
+Для нашей $n = 5$, $r = 2$: $\mat{S}_y$ имеет размер $5 \times 10$.
+Численная проверка в MATLAB (\filepath{matlab/analyze\_system.m}) даёт
+$\rank \mat{S}_y = 5$ при $v_0 \ne 0$ --- система полностью управляема.
+
+\begin{warnbox}
+\textbf{При $v_0 = 0$} опорная точка вырождена. В \eqref{eq:A_continuous}
+второй столбец, отвечающий за связь $\dot{p}_y$ с $\theta$, обнуляется ---
+координата $p_y$ становится неуправляемой через малые отклонения
+$\Delta\theta$. Физически: стоя на месте, робот не умеет «поехать вбок»,
+не повернувшись сильно (а это уже не «малые отклонения», и линейная
+модель не работает).
+
+\textbf{Следствие:} линеаризуем только вокруг $v_0 > 0$. Чтобы стартовать
+с нуля, мы используем \emph{два разных режима}: TURN на стоящем роботе
+управляется тем же MPC, но \emph{с другой опорной} (об этом --- глава
+\ref{ch:turn_phase}).
+\end{warnbox}
+
+\section{Дискретизация: ZOH}
+
+MPC работает с дискретной моделью, потому что:
+
+\begin{itemize}
+  \item Цикл управления --- дискретный (тик $T_s$).
+  \item Команды моторам тоже подаются дискретно: «на интервале $[k T_s,
+        (k+1) T_s)$ команда $\vect{u}_k$, потом следующая».
+\end{itemize}
+
+\begin{ideabox}
+\textbf{ZOH (zero-order hold).} «Нулевого порядка удержание»: команда
+$\vect{u}_k$ \emph{постоянна} на всём интервале $[k T_s, (k+1)T_s)$.
+Это точно соответствует тому, как мы кормим $\texttt{cmd\_vel}$
+моторам --- между тиками значение не меняется.
+
+В этом предположении уравнение $\dot{\vect{x}} = \mat{A}\vect{x} +
+\mat{B}\vect{u}$ можно проинтегрировать \emph{точно} от $kT_s$ до
+$(k+1)T_s$ --- получим формулу с матричной экспонентой.
+\end{ideabox}
+
+\subsection{Аналитический вывод}
+
+Решение линейной ОДУ с постоянной $\vect{u}_k$ на $[t_0, t_0 + T_s]$:
+
+\[
+  \vect{x}(t_0 + T_s)
+    = e^{\mat{A} T_s}\,\vect{x}(t_0)
+    + \int_0^{T_s} e^{\mat{A}(T_s - \tau)}\mat{B}\,d\tau \cdot \vect{u}_k.
+\]
+
+Сменой переменной $\sigma = T_s - \tau$ интеграл превращается в
+
+\[
+  \int_0^{T_s} e^{\mat{A}\sigma}\,d\sigma \cdot \mat{B}.
+\]
+
+Поэтому:
+
+\begin{formulabox}[title={ZOH-дискретизация}]
+\begin{equation}
+  \boxed{\;
+    \mat{A}_d = e^{\mat{A} T_s},
+    \qquad
+    \mat{B}_d = \left(\int_0^{T_s} e^{\mat{A}\sigma}\,d\sigma\right) \mat{B}.
+    \;}
+  \label{eq:zoh}
+\end{equation}
+\end{formulabox}
+
+\subsection{Блочная экспонента (как считают в коде)}
+
+Численно интеграл считать неудобно --- есть \textbf{трюк с блочной
+матричной экспонентой}. Соберём блочную матрицу
+
+\[
+  \mat{M} =
+  \begin{pmatrix}
+    \mat{A} & \mat{B} \\
+    \mat{0} & \mat{0}
+  \end{pmatrix} \in \Real^{(n+r) \times (n+r)}.
+\]
+
+Аккуратное матричное возведение в экспоненту даёт:
+
+\begin{equation}
+  \exp(\mat{M} T_s) =
+  \begin{pmatrix}
+    e^{\mat{A} T_s} & \int_0^{T_s} e^{\mat{A}\sigma}d\sigma \cdot \mat{B} \\
+    \mat{0}         & \mat{I}_r
+  \end{pmatrix}
+  =
+  \begin{pmatrix}
+    \mat{A}_d & \mat{B}_d \\
+    \mat{0}   & \mat{I}_r
+  \end{pmatrix}.
+  \label{eq:block_exp}
+\end{equation}
+
+То есть: \textbf{одна} операция \texttt{expm} даёт сразу обе матрицы.
+
+\begin{codebox}[title={\filepath{pi\_nodes/control/state\_space\_model.py:48}}]
+\begin{lstlisting}[language=Python]
+def zoh_discretize(A, B, Ts):
+    """Exact ZOH discretization via block matrix exponential."""
+    n, r = A.shape[0], B.shape[1]
+    M = np.zeros((n + r, n + r))
+    M[:n, :n] = A
+    M[:n, n:] = B
+    M_d = expm(M * Ts)
+    Ad = M_d[:n, :n]
+    Bd = M_d[:n, n:]
+    return Ad, Bd
+\end{lstlisting}
+\end{codebox}
+
+\subsection{Полученная дискретная модель}
+
+\begin{formulabox}[title={Дискретная модель робота}]
+\begin{equation}
+  \boxed{\;\vect{x}_{k+1} = \mat{A}_d\,\vect{x}_k + \mat{B}_d\,\vect{u}_k.\;}
+  \label{eq:discrete_model}
+\end{equation}
+\end{formulabox}
+
+\textbf{Это финальная форма}, с которой будут работать ЛКР, MPC, симулятор.
+
+\section{Собственные значения}
+
+Собственные значения говорят, как себя ведёт открытая (без управления)
+система.
+
+\begin{notebox}
+Связь между непрерывным $\lambda$ и дискретным $\tilde{\lambda}$:
+\[
+  \tilde{\lambda}_i = e^{\lambda_i T_s}.
+\]
+Устойчивость:
+\begin{itemize}
+  \item непрерывная: $\operatorname{Re}\lambda_i < 0$ (левая полуплоскость);
+  \item дискретная: $|\tilde{\lambda}_i| < 1$ (внутри единичного круга).
+\end{itemize}
+\end{notebox}
+
+Для нашей $\mat{A}$ \eqref{eq:A_continuous} собственные значения легко
+считать «руками» --- $\mat{A}$ блочно-треугольная:
+
+\[
+  \det(\mat{A} - \lambda \mat{I}) =
+  (-\lambda)^3 \cdot (-1/\tau_v - \lambda) \cdot (-1/\tau_\omega - \lambda).
+\]
+
+\begin{equation}
+  \lambda_{1,2,3} = 0,
+  \qquad
+  \lambda_4 = -1/\tau_v,
+  \qquad
+  \lambda_5 = -1/\tau_\omega.
+  \label{eq:eigenvalues}
+\end{equation}
+
+Три нуля --- это \emph{интеграторы}: $p_x, p_y, \theta$ накапливаются
+во времени без внутреннего «возврата к нулю». Два отрицательных корня
+--- инерционность моторов: возмущение по скорости затухает.
+
+В дискретной форме: $\tilde\lambda_{1,2,3} = 1$ (на границе устойчивости),
+$\tilde\lambda_4 = e^{-T_s/\tau_v} \approx 0.717$,
+$\tilde\lambda_5 = e^{-T_s/\tau_\omega} \approx 0.607$.
+
+\begin{warnbox}
+\textbf{Объект не асимптотически устойчив.} Три собственных значения
+на единичной окружности означают: без управления отклонения по координатам
+и курсу не затухают (что логично --- робот не «возвращается домой» сам
+по себе). Это норма для движущихся объектов. ЛКР/MPC сделают замкнутую
+систему устойчивой.
+\end{warnbox}
+
+\section{Каноническая МПС-форма $(s, v, \theta, \omega, e_\text{int})$}
+
+Выше мы работали с легаси-формой $(p_x, p_y, \theta, v, \omega)$,
+потому что её удобно линеаризовать «с нуля» из физики. В коде
+\filepath{mps\_node.py} используется \emph{другая}, каноническая форма
+$(s, v, \theta, \omega, e_\text{int})$. Концептуально это та же модель,
+просто:
+
+\begin{itemize}
+  \item вместо двух декартовых $(p_x, p_y)$ --- одна продольная $s$
+        (мы заранее знаем, что в сценарии $p_y \equiv 0$);
+  \item плюс интегральный член $e_\text{int}$, чтобы устранить
+        установившуюся ошибку скорости.
+\end{itemize}
+
+Конкретные матрицы $\mat{A}, \mat{B}$ для этой формы синтезируются
+в \filepath{matlab/main.m} и экспортируются в \filepath{config.yaml},
+секция \texttt{mps.matrices.\{A,B,C,D\}}. Размер тот же ---  $5 \times 5$ и $5
+\times 2$, но числа другие. Период тоже \emph{другой}: $T_s = 0.02$~с
+(50~Гц), а не $0.05$~с легаси-контура.
+
+\begin{notebox}
+В коде эти матрицы приходят в \emph{непрерывной} форме (контракт
+\filepath{docs/mps/api.md}). \texttt{mps\_node} ZOH-дискретизирует их
+при загрузке/Apply --- так что одна и та же $\mat{A}$ работает
+и в симе на ноуте, и на Pi, в любых обновлениях.
+\end{notebox}
+
+\section{Что мы получили}
+
+\begin{itemize}
+  \item \textbf{Линеаризация}: ряд Тейлора 1-го порядка вокруг опорного
+        $(v_0, 0)\T$. Получились $\mat{A} \in \Real^{5\times 5}$,
+        $\mat{B} \in \Real^{5\times 2}$ с явными формулами \eqref{eq:A_continuous},
+        \eqref{eq:B_continuous}.
+  \item Объект \textbf{полностью управляем} при $v_0 \ne 0$.
+  \item \textbf{Дискретизация ZOH}: $\mat{A}_d = e^{\mat{A}T_s}$, $\mat{B}_d$
+        --- через интеграл. Вычисляется одним вызовом \texttt{expm} от
+        блочной матрицы.
+  \item Собственные значения непрерывной системы: три нуля (интеграторы
+        по $p_x, p_y, \theta$) и два отрицательных. Открытый объект не
+        асимптотически устойчив, но управляем.
+  \item Каноническая МПС-форма --- та же модель с $(s, \cdot, \theta, \omega,
+        e_\text{int})$ вместо $(p_x, p_y, \theta, v, \omega)$ и
+        $T_s = 0.02$~с.
+\end{itemize}
+
+\medskip
+\textbf{Теперь у нас есть всё, что нужно для регулятора.} Дальше начинаем
+строить управляющий контур.
