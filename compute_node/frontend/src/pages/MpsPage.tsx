@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { DiagnosticsPanel } from '@/components/mps/DiagnosticsPanel'
 import { DraftStatus } from '@/components/mps/DraftStatus'
 import { EigenvaluePanel } from '@/components/mps/EigenvaluePanel'
 import { HistoryPanel } from '@/components/mps/HistoryPanel'
@@ -287,6 +288,8 @@ function MpsPageInner() {
               onCompareChange={setCompareSelection}
               loading={historyHook.loading}
             />
+
+            <DiagnosticsPanel history={historyHook.history} />
           </main>
         </div>
       </div>
