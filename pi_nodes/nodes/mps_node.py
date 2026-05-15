@@ -416,16 +416,33 @@ class MpsNode(MqttNode):
     def _on_odom(self, topic: str, payload):
         if not isinstance(payload, dict):
             return
-        # samurai/{id}/odom — motor_node публикует: x в САНТИМЕТРАХ
-        # (см. motor_node.py:804 и докстринг odom-топика), vx — м/с,
-        # theta — рад, vz — рад/с. Конвертируем x см→м БЕЗУСЛОВНО по
-        # контракту. Старый код угадывал единицы эвристикой
-        # `if abs(s) > 20` — она оставляла первые 20 см не
-        # сконвертированными (x_meas[0] в 100× раз больше), из-за чего
-        # MPC ловил фантомную ошибку позиции и упирал cmd_vel в u_max.
+        # samurai/{id}/odom — motor_node публикует:
+        #   • s_body — м, signed body-frame distance (предпочитаем; см. ниже);
+        #   • x      — см, world-frame координата (legacy fallback);
+        #   • vx     — м/с (продольная скорость, body-frame);
+        #   • theta  — рад (абсолютный курс IMU);
+        #   • vz     — рад/с (угловая скорость).
+        #
+        # Сценарий «вперёд D метров» хочет body-frame дистанцию, а не world.x.
+        # world.x = ∫v·cos(θ_abs)·dt — переворачивается в минус, если IMU
+        # абсолютный курс ≈ ±π (видели в diagnostics 2026-05-15: u_v>0,
+        # v_actual>0, но x шёл в минус → mps думал что робот едет назад).
+        # s_body = ∫v·dt — независим от θ, всегда «сколько проехал вперёд».
+        #
+        # Fallback на x/100 нужен на случай старого motor_node без s_body —
+        # сохраняем backward-compat. После раскатки нового motor_node на робота
+        # ветка fallback станет мёртвой.
         try:
-            s = float(payload.get('x', 0.0)) / 100.0
-            y_abs = float(payload.get('y', 0.0)) / 100.0
+            # state[0] — body-frame distance ("сколько проехал вперёд").
+            # Предпочитаем s_body = ∫v·dt (новый motor_node), fallback на
+            # x/100 (старый motor_node без s_body — backward-compat).
+            s_body = payload.get('s_body')
+            x_world = float(payload.get('x', 0.0)) / 100.0
+            y_world = float(payload.get('y', 0.0)) / 100.0
+            if s_body is not None:
+                s = float(s_body)
+            else:
+                s = x_world
             v = float(payload.get('vx', 0.0))
             theta = float(payload.get('theta', 0.0))
             omega = float(payload.get('vz', 0.0))
@@ -434,11 +451,12 @@ class MpsNode(MqttNode):
         with self._lock:
             self._x_meas = np.array([s, v, theta, omega, self._x_meas[_EINT]])
             self._x_meas_ts = time.time()
-            # Параллельно держим абсолютные (x, y) для outer LQR-петли.
-            # `s` тут = abs_x по контракту motor_node.odom (см. _on_odom выше);
-            # _x_abs/_y_abs нужны только для проекции на ideal-line.
-            self._x_abs = s
-            self._y_abs = y_abs
+            # Абсолютные (x, y) — нужны outer LQR-петле для проекции на
+            # ideal-line. ИМЕННО world.x/world.y, не s_body: e_y живёт в
+            # мировой системе координат, body-frame distance в неё не
+            # проецируется.
+            self._x_abs = x_world
+            self._y_abs = y_world
             if self._run is not None:
                 self._run.no_odom_ticks = 0
 

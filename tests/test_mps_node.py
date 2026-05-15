@@ -260,18 +260,39 @@ def test_drive_forward_mps_is_in_fsm_states():
     assert State.DRIVE_FORWARD_MPS in _ALL_STATES
 
 
-# ── odom unit conversion cm→m ──────────────────────────────────────────
-def test_on_odom_converts_cm_to_metres(mps_node):
-    """motor_node публикует odom['x'] в САНТИМЕТРАХ (motor_node.py:804).
-    _on_odom должен конвертировать см→м БЕЗУСЛОВНО. Старая эвристика
-    `if abs(s) > 20` оставляла 0-20 см не сконвертированными → x_meas[0]
-    в 100× раз больше → MPC упирал cmd_vel в u_max."""
+# ── odom: prefers s_body (м, body-frame) over legacy x (см, world-frame) ─
+def test_on_odom_prefers_s_body_when_present(mps_node):
+    """Новый motor_node публикует s_body — body-frame дистанция в метрах,
+    знаковая. mps должен брать ИМЕННО её, не world.x.
+
+    Reason: world.x = ∫v·cos(θ_abs)·dt — переворачивается в минус, если
+    IMU абсолютный курс ≈ ±π (видели в diagnostics 2026-05-15: u_v>0,
+    но x шёл в минус). s_body = ∫v·dt — независим от θ.
+    """
+    # Намеренно противоречивые поля: s_body=+0.50 м, x=-200 см (world).
+    # mps должен взять s_body — не x/100=-2.0.
+    mps_node._on_odom('odom', {
+        's_body': 0.50, 'x': -200.0, 'vx': 0.10, 'theta': 3.14, 'vz': 0.0,
+    })
+    assert mps_node._x_meas[0] == pytest.approx(0.50)
+
+
+def test_on_odom_falls_back_to_x_cm_when_no_s_body(mps_node):
+    """Backward-compat: если s_body отсутствует (старый motor_node),
+    читаем x в сантиметрах и конвертируем в метры."""
     mps_node._on_odom('odom', {'x': 10.0, 'vx': 0.05, 'theta': 0.0, 'vz': 0.0})
     assert mps_node._x_meas[0] == pytest.approx(0.10)   # 10 см → 0.10 м
-    mps_node._on_odom('odom', {'x': 5.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    assert mps_node._x_meas[0] == pytest.approx(0.05)    # старый код: 5.0
     mps_node._on_odom('odom', {'x': 150.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    assert mps_node._x_meas[0] == pytest.approx(1.50)    # 150 см → 1.5 м
+    assert mps_node._x_meas[0] == pytest.approx(1.50)
+
+
+def test_on_odom_signed_s_body(mps_node):
+    """s_body знаковый — отрицательный, если робот реально едет назад."""
+    mps_node._on_odom('odom', {
+        's_body': -0.30, 'vx': -0.15, 'theta': 0.0, 'vz': 0.0,
+    })
+    assert mps_node._x_meas[0] == pytest.approx(-0.30)
+    assert mps_node._x_meas[1] == pytest.approx(-0.15)
 
 
 def test_tick_position_is_scenario_relative(mps_node):

@@ -164,6 +164,12 @@ class MotorNode(MqttNode):
         self._vx = 0.0      # published forward velocity
         self._vz = 0.0      # published angular velocity
         self._speed = 0.0   # velocity magnitude (scalar)
+        # Body-frame distance: signed integral of v_actual over time. Independent
+        # of theta, so consumers wanting "how far did I drive forward" (e.g.,
+        # mps_node's «вперёд D метров» сценарий) read this — NOT world.x. The
+        # latter is ∫v·cos(θ)·dt and reverses sign when robot is rotated ±π.
+        # See ADR in PR description (Bug B from MPS diagnostics 2026-05-15).
+        self._s_body = 0.0
         self._last_time = self.now_sec()
         self._linear = 0.0
         self._angular = 0.0
@@ -283,6 +289,7 @@ class MotorNode(MqttNode):
         # (wheel|imu|complementary|ekf). Allows the dashboard to label & compare.
         self._odom_msg = {
             'x': 0.0, 'y': 0.0, 'theta': 0.0, 'vx': 0.0, 'vz': 0.0,
+            's_body': 0.0,
             'speed': 0.0,
             'accel_x': 0.0, 'accel_y': 0.0, 'stationary': False, 'ts': 0.0,
             'x_wheel': 0.0, 'y_wheel': 0.0,
@@ -544,6 +551,7 @@ class MotorNode(MqttNode):
         self._vx = 0.0
         self._vz = 0.0
         self._v_lagged = 0.0
+        self._s_body = 0.0
         if self._pos_estimator is not None:
             self._pos_estimator.reset()
         self._push.reset()
@@ -726,9 +734,14 @@ class MotorNode(MqttNode):
             v_actual = v_target
             self._v_lagged = v_target  # keep state coherent if disabled
 
-        # Integrate position from lagged velocity + IMU heading
+        # Integrate position from lagged velocity + IMU heading.
+        # world.x reverses sign at θ ≈ ±π — that's correct for world coords,
+        # but a forward-distance scenario reading world.x would think the robot
+        # drives backwards. s_body is the body-frame integral that doesn't
+        # depend on θ — published below for that exact use case.
         self._x += v_actual * dt * cy
         self._y += v_actual * dt * sy
+        self._s_body += v_actual * dt
 
         # Published velocity / state
         self._vx = v_actual
@@ -806,6 +819,7 @@ class MotorNode(MqttNode):
         m['theta'] = round(self._theta, 4)
         m['vx'] = round(self._vx, 3)
         m['vz'] = round(self._vz, 3)
+        m['s_body'] = round(self._s_body, 4)      # m, signed (body-frame)
         m['speed'] = round(self._speed, 3)
         m['accel_x'] = round(la_x, 4)
         m['accel_y'] = round(la_y, 4)
