@@ -157,6 +157,12 @@ class MpsNode(MqttNode):
         self._turn_tol = float(self._cfg('mps.scenario.turn_tolerance_rad', 0.05))
         self._turn_timeout = float(self._cfg('mps.scenario.turn_timeout_s', 10.0))
         self._omega_max_turn = float(self._cfg('mps.scenario.omega_max_in_turn', 1.0))
+        # Максимальный возраст последнего odom (с) для старта сценария.
+        # Если odom не пришёл вовсе или старее этого порога — _on_scenario_run
+        # возвращает precondition error без перехода в DRIVE_FORWARD_MPS
+        # (см. Bug A в diagnostics 2026-05-15: race-condition theta_start
+        # из-за пустого _x_meas).
+        self._odom_max_age = float(self._cfg('mps.scenario.odom_max_age_s', 0.5))
 
         # ── Outer LQR-петля коррекции бокового сноса (см. lateral_lqr.py) ─
         # Параметры читаются один раз; контроллер строится per-scenario
@@ -348,6 +354,29 @@ class MpsNode(MqttNode):
             self._publish_error('precondition',
                                 f'v_target {v_target} not in (0, {self._v_target_max}]',
                                 run_id=run_id)
+            return
+
+        # Reject если одометрия не пришла или устарела — без свежего snapshot'а
+        # (s_start, theta_start) сценарий ловит race-condition: _x_meas остаётся
+        # zeros() из __init__, theta_start=0, а к первому тику odom приходит
+        # с реальным курсом → relative-θ становится огромным → робот застревает
+        # в TURN-фазе (видели в diagnostics 2026-05-15: run #2 timeout 10 c
+        # с theta_meas = -3.05 при target_heading=0). Reject лучше тихого failure.
+        odom_age = time.time() - self._x_meas_ts
+        if self._x_meas_ts == 0.0:
+            self._publish_error(
+                'precondition',
+                'odom not received yet — start the robot stack and retry',
+                run_id=run_id,
+            )
+            return
+        if odom_age > self._odom_max_age:
+            self._publish_error(
+                'precondition',
+                f'odom stale ({odom_age:.2f}s > {self._odom_max_age:.2f}s) — '
+                f'robot may be disconnected',
+                run_id=run_id,
+            )
             return
 
         # Outer LQR-петля строится ДО взятия lock'а: DARE может занять
