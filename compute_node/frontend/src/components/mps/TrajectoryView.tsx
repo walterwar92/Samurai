@@ -31,11 +31,23 @@ export function TrajectoryView({ result, liveTelemetry }: TrajectoryViewProps) {
     ? liveTelemetry
     : result?.telemetry ?? []
   const distance = result?.request.distance ?? 2.0
+  // target_heading φ — куда едем после TURN-фазы (рад, относительный курс
+  // от старта сценария). Для sim/legacy без heading — 0 (вперёд по оси X).
+  const targetHeading = result?.request.target_heading ?? 0
+  const targetX = distance * Math.cos(targetHeading)
+  const targetY = distance * Math.sin(targetHeading)
   const pts = points2d(telemetry)
 
-  // Auto-scale
-  const maxAbs = Math.max(distance + 0.5, ...pts.map((p) => Math.max(Math.abs(p.x), Math.abs(p.y))))
-  const scale = (W - 2 * PADDING) / (2 * maxAbs)
+  // Auto-scale: aspect-preserving fit. Берём min(scaleX, scaleY) — иначе
+  // диагональная траектория (target_heading=π/4) вылезает за viewBox,
+  // т.к. W:H = 520:220 ≈ 2.4:1, а отношение |y|:|x| у диагонального
+  // прогона ≈ 1:1.
+  const maxAbsX = Math.max(0.5, Math.abs(targetX), ...pts.map((p) => Math.abs(p.x)))
+  const maxAbsY = Math.max(0.5, Math.abs(targetY), ...pts.map((p) => Math.abs(p.y)))
+  const PAD_FACTOR = 1.15
+  const scaleX = (W - 2 * PADDING) / (2 * maxAbsX * PAD_FACTOR)
+  const scaleY = (H - 2 * PADDING) / (2 * maxAbsY * PAD_FACTOR)
+  const scale = Math.min(scaleX, scaleY)
   const centerX = W / 2
   const centerY = H / 2
 
@@ -54,7 +66,7 @@ export function TrajectoryView({ result, liveTelemetry }: TrajectoryViewProps) {
     : ''
 
   const last = pts.length > 0 ? pts[pts.length - 1] : null
-  const target = project(distance, 0)
+  const target = project(targetX, targetY)
   const start = project(0, 0)
 
   return (
