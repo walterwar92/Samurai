@@ -212,6 +212,27 @@ launch_docker() {
         "
 }
 
+# ── Резолв параметров деплоя с приоритетом CLI > env > default ─────────────
+resolve_pi_user() {
+    local cli_val="${1:-}"
+    if [[ -n "$cli_val" ]]; then echo "$cli_val"; return; fi
+    if [[ -n "${SAMURAI_PI_USER:-}" ]]; then echo "$SAMURAI_PI_USER"; return; fi
+    echo "pi"
+}
+
+resolve_pi_path() {
+    local cli_val="${1:-}"
+    if [[ -n "$cli_val" ]]; then echo "$cli_val"; return; fi
+    if [[ -n "${SAMURAI_PI_PATH:-}" ]]; then echo "$SAMURAI_PI_PATH"; return; fi
+    echo "~/Samurai"
+}
+
+resolve_ssh_key() {
+    local cli_val="${1:-}"
+    if [[ -n "$cli_val" ]]; then echo "$cli_val"; return; fi
+    echo "${SAMURAI_PI_SSH_KEY:-}"
+}
+
 # ── Деплой кода на Pi через rsync + рестарт samurai-robot ──────────────────
 # Использование: deploy_to_pi <pi_ip> <pi_user> <pi_path> [ssh_key]
 # Завершается через die при любой ошибке. На успехе — log_ok.
@@ -280,10 +301,18 @@ main() {
     local samcan_port=""
     local no_frontend_build=false
     local force_frontend_build=false
+    local no_deploy=false
+    local pi_user_arg=""
+    local pi_path_arg=""
+    local ssh_key_arg=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --pi)              pi_ip_arg="$2"; shift 2 ;;
+            --no-deploy)       no_deploy=true; shift ;;
+            --pi-user)         pi_user_arg="$2"; shift 2 ;;
+            --pi-path)         pi_path_arg="$2"; shift 2 ;;
+            --ssh-key)         ssh_key_arg="$2"; shift 2 ;;
             --hotspot)         hotspot=true; shift ;;
             --rebuild)         rebuild_image=true; rebuild_ws=true; shift ;;
             --rebuild-image)   rebuild_image=true; shift ;;
@@ -301,6 +330,10 @@ main() {
 
 Опции:
   --pi IP             IP Raspberry Pi (без аргумента — авто mDNS)
+  --no-deploy         Не деплоить код на Pi (только поднять compute-стек)
+  --pi-user USER      SSH-юзер на Pi (default: pi; env: SAMURAI_PI_USER)
+  --pi-path PATH      Путь репо на Pi (default: ~/Samurai; env: SAMURAI_PI_PATH)
+  --ssh-key FILE      SSH ключ для аутентификации (env: SAMURAI_PI_SSH_KEY)
   --hotspot           Unicast DDS режим (мобильный хотспот)
   --rebuild           Пересобрать Docker + ROS2 workspace
   --rebuild-image     Только Docker
@@ -344,6 +377,17 @@ EOF
     if $hotspot; then
         peer_ip="$pi_ip"
         log_ok "Хотспот: unicast DDS, peer_ip=$peer_ip"
+    fi
+
+    # ── Автодеплой кода на Pi (если задан --pi и не --no-deploy) ──────────────
+    if [[ -n "$pi_ip" && "$no_deploy" != "true" ]]; then
+        local resolved_user resolved_path resolved_key
+        resolved_user=$(resolve_pi_user "$pi_user_arg")
+        resolved_path=$(resolve_pi_path "$pi_path_arg")
+        resolved_key=$(resolve_ssh_key "$ssh_key_arg")
+        deploy_to_pi "$pi_ip" "$resolved_user" "$resolved_path" "$resolved_key"
+    elif [[ "$no_deploy" == "true" ]]; then
+        log_info "Деплой пропущен (--no-deploy)"
     fi
 
     if $force_frontend_build; then
