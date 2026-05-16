@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Фейк ssh. Пишет полный argv в $FAKE_SSH_LOG (одна строка на вызов).
+# Возвращает stdout по содержимому $FAKE_SSH_STDOUT (если задан),
+# код возврата по $FAKE_SSH_EXIT (default 0).
+# Если в команде есть подстрока из $FAKE_SSH_FAIL_ON_MATCH — exit 1.
+
+echo "ssh $*" >> "${FAKE_SSH_LOG:-/dev/null}"
+
+# Поведение по аргументам — для разных проверок в одном тесте.
+cmd_str="$*"
+
+if [[ -n "${FAKE_SSH_FAIL_ON_MATCH:-}" && "$cmd_str" == *"$FAKE_SSH_FAIL_ON_MATCH"* ]]; then
+    exit 1
+fi
+
+# Симуляция конкретных команд:
+case "$cmd_str" in
+    *"systemctl list-unit-files samurai-robot.service"*)
+        if [[ "${FAKE_SSH_UNIT_MISSING:-0}" == "1" ]]; then
+            echo "UNIT FILE                          STATE   PRESET"
+            # без строки samurai-robot — grep -q даст fail
+        else
+            echo "samurai-robot.service enabled enabled"
+        fi
+        ;;
+    *"systemctl is-active samurai-robot"*)
+        echo "${FAKE_IS_ACTIVE:-active}"
+        ;;
+    *"journalctl -u samurai-robot"*)
+        echo "fake journalctl line 1"
+        echo "fake journalctl line 2"
+        ;;
+    *)
+        [[ -n "${FAKE_SSH_STDOUT:-}" ]] && echo "$FAKE_SSH_STDOUT"
+        ;;
+esac
+
+exit "${FAKE_SSH_EXIT:-0}"

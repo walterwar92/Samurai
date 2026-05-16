@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Фейк rsync. Пишет полный argv в $FAKE_RSYNC_LOG.
+# Возвращает $FAKE_RSYNC_EXIT (default 0).
+echo "rsync $*" >> "${FAKE_RSYNC_LOG:-/dev/null}"
+exit "${FAKE_RSYNC_EXIT:-0}"

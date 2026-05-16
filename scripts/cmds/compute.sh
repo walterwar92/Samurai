@@ -212,6 +212,64 @@ launch_docker() {
         "
 }
 
+# ── Деплой кода на Pi через rsync + рестарт samurai-robot ──────────────────
+# Использование: deploy_to_pi <pi_ip> <pi_user> <pi_path> [ssh_key]
+# Завершается через die при любой ошибке. На успехе — log_ok.
+deploy_to_pi() {
+    local pi_ip="$1"
+    local pi_user="$2"
+    local pi_path="$3"
+    local ssh_key="${4:-}"
+
+    local ssh_opts=(-o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes)
+    [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+    local ssh_target="$pi_user@$pi_ip"
+
+    log_step "Деплой кода на Pi ($ssh_target:$pi_path)"
+
+    # 1. Pre-flight: SSH доступен?
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" true 2>/dev/null; then
+        die "SSH до $ssh_target недоступен. Проверь: Pi включён, ключ в ~/.ssh/authorized_keys на Pi, sshd работает."
+    fi
+
+    # 2. Pre-flight: установлен ли systemd-юнит?
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" \
+            'systemctl list-unit-files samurai-robot.service --no-pager' 2>/dev/null \
+            | grep -q samurai-robot; then
+        die "samurai-robot.service не установлен на Pi. Запусти: ssh $ssh_target 'cd Samurai && sudo ./scripts/bootstrap_pi.sh'"
+    fi
+
+    # 3. rsync.
+    log_info "rsync (.deployignore применён)..."
+    # Собираем -e ssh строку с теми же опциями.
+    local ssh_cmd="ssh ${ssh_opts[*]}"
+    if ! rsync -az --delete \
+            --exclude-from="$SAMURAI_ROOT/.deployignore" \
+            -e "$ssh_cmd" \
+            "$SAMURAI_ROOT/" "$ssh_target:$pi_path/"; then
+        die "rsync на $ssh_target провалился"
+    fi
+
+    # 4. Рестарт сервиса.
+    log_info "Рестарт samurai-robot..."
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" 'sudo systemctl restart samurai-robot'; then
+        die "systemctl restart провалился. NOPASSWD настроен? Запусти на Pi: sudo ./scripts/systemd/install.sh --with-remote-deploy"
+    fi
+
+    # 5. Verify — дать пару секунд и проверить is-active.
+    sleep 2
+    local status
+    status=$(ssh "${ssh_opts[@]}" "$ssh_target" \
+             'systemctl is-active samurai-robot' 2>/dev/null || true)
+    if [[ "$status" != "active" ]]; then
+        log_err "samurai-robot не active (status=$status). Логи:"
+        ssh "${ssh_opts[@]}" "$ssh_target" \
+            'journalctl -u samurai-robot -n 30 --no-pager' >&2 || true
+        die "Робот не стартовал — compute-стек не поднимаю"
+    fi
+    log_ok "samurai-robot запущен на Pi"
+}
+
 main() {
     local pi_ip_arg=""
     local hotspot=false
@@ -303,4 +361,7 @@ EOF
     launch_docker "$pi_ip" "$peer_ip" "$remote_yolo"
 }
 
-main "$@"
+# Запускать main только при прямом исполнении, не при source (для тестов).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
