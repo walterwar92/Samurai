@@ -63,9 +63,14 @@ run apt-get install -y \
     rsync openssh-server
 
 # 2. Pip-зависимости под целевым юзером ──────────────────────────────────────
+# На Debian 13 Trixie / RPi OS Bookworm+ системный Python — PEP 668 (externally
+# managed). Pip отказывается ставить без флага --break-system-packages.
+# Это легитимный override для контролируемого Pi-окружения (альтернатива —
+# venv, но systemd-юнит ожидает user-site пакеты, см. SAMURAI_SKIP_PIP_INSTALL).
 log_step "2/6 Pip-зависимости из requirements.txt"
 if [[ -f "$REPO_ROOT/requirements.txt" ]]; then
-    run sudo -u "$TARGET_USER" pip3 install --user -r "$REPO_ROOT/requirements.txt"
+    run sudo -u "$TARGET_USER" pip3 install --user --break-system-packages \
+        -r "$REPO_ROOT/requirements.txt"
 else
     log_warn "requirements.txt не найден — пропускаю pip"
 fi
