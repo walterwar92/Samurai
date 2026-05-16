@@ -32,9 +32,18 @@ assert_contains "$content" "/bin/systemctl is-active samurai-robot" "is-active c
 assert_contains "$content" "/bin/systemctl status samurai-robot" "status cmd"
 assert_contains "$content" "/bin/journalctl -u samurai-robot" "journalctl cmd"
 
-# Права 0440.
-perm=$(stat -c '%a' "$sudoers_file" 2>/dev/null || stat -f '%A' "$sudoers_file" 2>/dev/null)
-assert_eq "440" "$perm" "permissions 0440"
+# Права 0440. На Windows NTFS POSIX-режимы ниже 444 не поддерживаются
+# (chmod 0440 даёт 444), поэтому скипаем этот ассерт там — реальные права
+# проверятся при установке на Linux Pi.
+case "${OSTYPE:-}" in
+    msys*|cygwin*|win32*)
+        echo "  [skip] perm 0440 check — Windows NTFS не различает 440/444"
+        ;;
+    *)
+        perm=$(stat -c '%a' "$sudoers_file" 2>/dev/null || stat -f '%A' "$sudoers_file" 2>/dev/null)
+        assert_eq "440" "$perm" "permissions 0440"
+        ;;
+esac
 
 # visudo валидация (skip если visudo нет).
 if command -v visudo &>/dev/null; then
