@@ -770,10 +770,13 @@ def test_tighter_q_keeps_closed_loop_stable(mps_node):
     assert np.all(eigs < 1.0 - 1e-3), f'closed-loop unstable: |λ|={eigs}'
 
 
-def test_turn_tolerance_is_one_degree(mps_node):
-    """turn_tolerance_rad ≈ 1° (0.0175 рад) — жёсткий критерий выхода
-    из TURN, чтобы DRIVE стартовал с минимальной начальной ошибкой курса."""
-    assert mps_node._turn_tol == pytest.approx(0.0175, abs=1e-4)
+def test_turn_tolerance_is_three_degrees(mps_node):
+    """turn_tolerance_rad ≈ 3° (0.05 рад). ±1° на реальном роботе
+    недостижимо: шум IMU/трение → колебания вокруг target → TURN
+    никогда не сходится → s остаётся 0 → траектория «не двигается»
+    на UI. 3° — компромисс: DRIVE стартует с малой ошибкой курса
+    (которую дожимает heading hold), а не висит в TURN до timeout."""
+    assert mps_node._turn_tol == pytest.approx(0.05, abs=1e-4)
 
 
 def test_tick_drive_correction_along_rotated_line(mps_node):

@@ -455,8 +455,14 @@ mps:
     omega_max_in_forward: 0.5
     default_distance: 2.0
     default_v_target: 0.15
-    turn_tolerance_rad: 0.0175     # |θ−φ| < этого ⇒ фаза TURN завершена (~1°)
-    turn_timeout_s: 15.0           # TURN не сошёлся за это ⇒ timeout (увеличен под жёсткий tol)
+    # ±1° (0.0175) на реальном роботе недостижимо из-за шума IMU/трения:
+    # робот колеблется вокруг target и никогда не выходит из TURN, поэтому
+    # _tick_drive не вызывается, s остаётся 0 и траектория «не двигается»
+    # на UI весь turn_timeout. Возврат к четверговым 0.05 (~3°) — TURN
+    # завершается мгновенно при target_heading=0 и за десятые секунды
+    # при ненулевом target.
+    turn_tolerance_rad: 0.05       # |θ−φ| < этого ⇒ фаза TURN завершена (~3°)
+    turn_timeout_s: 10.0           # TURN не сошёлся за это ⇒ timeout
     omega_max_in_turn: 1.0         # кап ω в TURN (выше omega_max_in_forward)
     e_int_max: 0.5                 # рад·с — anti-windup на ∫θ_err
 
