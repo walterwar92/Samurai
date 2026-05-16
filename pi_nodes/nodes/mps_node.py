@@ -44,6 +44,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
+from pi_nodes.control.lateral_lqr import LateralLqrController
 from pi_nodes.control.mpc_controller import MPCController
 from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 from pi_nodes.mqtt_node import MqttNode
@@ -74,11 +75,15 @@ class _RunState:
         'telemetry', 't',
         'no_odom_ticks', 's_start', 'theta_start',
         'target_heading', 'phase', 'drive_t',
+        # Outer-loop LQR коррекции бокового сноса (см. lateral_lqr.py).
+        'x_start_abs', 'y_start_abs', 'line_dir', 'lateral_lqr',
     )
 
     def __init__(self, run_id: str, distance: float, v_target: float,
                  s_start: float = 0.0, theta_start: float = 0.0,
-                 target_heading: float = 0.0):
+                 target_heading: float = 0.0,
+                 x_start_abs: float = 0.0, y_start_abs: float = 0.0,
+                 lateral_lqr: Optional[LateralLqrController] = None):
         self.run_id = run_id
         self.distance = distance
         self.v_target = v_target
@@ -106,6 +111,15 @@ class _RunState:
         # считается от начала езды, а не от старта сценария). `t` при этом
         # остаётся монотонным суммарным временем (turn + drive).
         self.drive_t = 0.0
+        # ── Outer LQR-петля (lateral): абсолютные (x, y) одометрии на
+        # момент старта и абсолютное направление идеальной прямой =
+        # theta_start + target_heading. e_y = перпендикулярное расстояние
+        # от этой прямой; обновляется в _tick_drive. lateral_lqr=None
+        # если outer-петля выключена в config или v_target<v_min.
+        self.x_start_abs = x_start_abs
+        self.y_start_abs = y_start_abs
+        self.line_dir = theta_start + target_heading
+        self.lateral_lqr = lateral_lqr
 
 
 class MpsNode(MqttNode):
@@ -144,9 +158,26 @@ class MpsNode(MqttNode):
         self._turn_timeout = float(self._cfg('mps.scenario.turn_timeout_s', 10.0))
         self._omega_max_turn = float(self._cfg('mps.scenario.omega_max_in_turn', 1.0))
 
+        # ── Outer LQR-петля коррекции бокового сноса (см. lateral_lqr.py) ─
+        # Параметры читаются один раз; контроллер строится per-scenario
+        # в _on_scenario_run (зависит от v_target). При lateral_enabled=False
+        # либо при v_target<lateral_v_min outer-петля молча выключается и
+        # поведение возвращается к чистому inner-MPC.
+        self._lateral_enabled = bool(self._cfg('mps.scenario.lateral.enabled', True))
+        self._lateral_tau_inner = float(self._cfg('mps.scenario.lateral.tau_inner', 0.10))
+        self._lateral_q = list(self._cfg('mps.scenario.lateral.Q_diag', [50.0, 5.0]))
+        self._lateral_r = list(self._cfg('mps.scenario.lateral.R_diag', [1.0]))
+        self._lateral_delta_max = float(self._cfg('mps.scenario.lateral.delta_theta_max', 0.30))
+        self._lateral_v_min = float(self._cfg('mps.scenario.lateral.v_min', 0.02))
+
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
         self._x_meas_ts = 0.0
+        # Абсолютная позиция одометрии (x, y) для outer-loop расчёта e_y.
+        # Хранится отдельно от _x_meas (которое уже в относительных координатах
+        # от старта сценария по `s`).
+        self._x_abs = 0.0
+        self._y_abs = 0.0
 
         self._run: Optional[_RunState] = None
         self._fsm_state = 'IDLE'
@@ -313,6 +344,29 @@ class MpsNode(MqttNode):
                                 run_id=run_id)
             return
 
+        # Outer LQR-петля строится ДО взятия lock'а: DARE может занять
+        # миллисекунды на Pi с numpy fallback (без scipy), и нет смысла
+        # держать tick-loop заблокированным на это время.
+        lateral_lqr: Optional[LateralLqrController] = None
+        if self._lateral_enabled and v_target >= self._lateral_v_min:
+            try:
+                lateral_lqr = LateralLqrController(
+                    Ts=self._tick_dt,
+                    v0=v_target,
+                    tau_inner=self._lateral_tau_inner,
+                    Q_diag=self._lateral_q,
+                    R_diag=self._lateral_r,
+                    delta_theta_max=self._lateral_delta_max,
+                )
+                self.log_info(
+                    'mps: lateral LQR built — v0=%.3f, K=%s, stable=%s',
+                    v_target, lateral_lqr.K.tolist(), lateral_lqr.is_stable(),
+                )
+            except Exception as exc:
+                # Не критично — отвалимся в режим «без outer-петли», но залогим.
+                self.log_warn('mps: lateral LQR build failed (%s) — outer loop disabled', exc)
+                lateral_lqr = None
+
         with self._lock:
             if self.is_running:
                 self._publish_error('precondition',
@@ -323,12 +377,22 @@ class MpsNode(MqttNode):
             # относительно точки старта (s_ref и θ_ref начинаются с 0).
             s_start = float(self._x_meas[_S])
             theta_start = float(self._x_meas[_THETA])
-            self._run = _RunState(run_id, distance, v_target,
-                                  s_start, theta_start, target_heading)
+            # Абсолютные (x, y) одометрии — нужны для проекции e_y на
+            # ideal-line в outer LQR-петле.
+            x_start_abs = float(self._x_abs)
+            y_start_abs = float(self._y_abs)
+            self._run = _RunState(
+                run_id, distance, v_target,
+                s_start, theta_start, target_heading,
+                x_start_abs=x_start_abs,
+                y_start_abs=y_start_abs,
+                lateral_lqr=lateral_lqr,
+            )
             self._fsm_state = 'DRIVE_FORWARD_MPS'
 
-        self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f',
-                      run_id, distance, v_target)
+        self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f, lateral=%s',
+                      run_id, distance, v_target,
+                      'on' if lateral_lqr is not None else 'off')
 
     # ── /scenario/abort handler ───────────────────────────────────────
     def _on_scenario_abort(self, topic: str, payload):
@@ -351,6 +415,7 @@ class MpsNode(MqttNode):
         # MPC ловил фантомную ошибку позиции и упирал cmd_vel в u_max.
         try:
             s = float(payload.get('x', 0.0)) / 100.0
+            y_abs = float(payload.get('y', 0.0)) / 100.0
             v = float(payload.get('vx', 0.0))
             theta = float(payload.get('theta', 0.0))
             omega = float(payload.get('vz', 0.0))
@@ -359,6 +424,11 @@ class MpsNode(MqttNode):
         with self._lock:
             self._x_meas = np.array([s, v, theta, omega, self._x_meas[_EINT]])
             self._x_meas_ts = time.time()
+            # Параллельно держим абсолютные (x, y) для outer LQR-петли.
+            # `s` тут = abs_x по контракту motor_node.odom (см. _on_odom выше);
+            # _x_abs/_y_abs нужны только для проекции на ideal-line.
+            self._x_abs = s
+            self._y_abs = y_abs
             if self._run is not None:
                 self._run.no_odom_ticks = 0
 
@@ -437,13 +507,40 @@ class MpsNode(MqttNode):
         """Один тик фазы движения. `x` — уже относительный (s, θ).
 
         Логика «вперёд D», но θ_ref = target_heading (удержание выбранного
-        курса, НЕ доворот к 0) и тайминг ramp/timeout по run.drive_t.
+        курса, НЕ доворот к 0) и тайминг ramp/timeout по run.drive_t. Если
+        активна outer LQR-петля (`run.lateral_lqr is not None`), к θ_ref
+        прибавляется оптимальная коррекция δθ_ref = -K_lat·[e_y, θ_err],
+        чтобы вернуть робота на ideal-line при боковом сносе.
         """
         phi = run.target_heading
 
-        # Reference: ramp s_ref to D, hold v_target, hold heading φ.
+        # Outer LQR-петля коррекции бокового сноса (см. lateral_lqr.py).
+        # e_y и θ_err публикуются в телеметрию даже если контроллер выключен —
+        # diagnostic-значения нужны UI для построения графиков ошибки.
+        with self._lock:
+            x_abs = self._x_abs
+            y_abs = self._y_abs
+        dx_abs = x_abs - run.x_start_abs
+        dy_abs = y_abs - run.y_start_abs
+        cos_l = math.cos(run.line_dir)
+        sin_l = math.sin(run.line_dir)
+        e_y = -dx_abs * sin_l + dy_abs * cos_l
+        theta_err = _normalize_angle(x[_THETA] - phi)
+
+        if run.lateral_lqr is not None:
+            try:
+                delta_theta = run.lateral_lqr.step(e_y, theta_err)
+            except Exception as exc:
+                # Outer-петля не критична — продолжаем без коррекции, логируем.
+                self.log_warn('mps: lateral_lqr.step failed (%s) — skipping outer', exc)
+                delta_theta = 0.0
+        else:
+            delta_theta = 0.0
+        theta_ref_corrected = phi + delta_theta
+
+        # Reference: ramp s_ref to D, hold v_target, hold heading φ+δθ.
         s_ref = min(run.distance, run.drive_t * run.v_target)
-        x_ref = np.array([s_ref, run.v_target, phi, 0.0, 0.0])
+        x_ref = np.array([s_ref, run.v_target, theta_ref_corrected, 0.0, 0.0])
 
         try:
             u = self._mpc.step(x, x_ref=x_ref)
@@ -459,7 +556,10 @@ class MpsNode(MqttNode):
         # Hard omega cap in forward scenario — guard against accidental rotation.
         u[1] = max(-self._omega_max_fwd, min(self._omega_max_fwd, u[1]))
 
-        self._publish_cmd_and_telemetry(run, x, u)
+        self._publish_cmd_and_telemetry(
+            run, x, u,
+            e_y=e_y, theta_err=theta_err, delta_theta=delta_theta,
+        )
 
         # Watchdog: нет одометрии 3 тика подряд → abort
         with self._lock:
@@ -485,11 +585,24 @@ class MpsNode(MqttNode):
         run.drive_t += self._tick_dt
 
     # ── Публикация cmd_vel + телеметрии (общее для обеих фаз) ──────────
-    def _publish_cmd_and_telemetry(self, run: _RunState, x: np.ndarray,
-                                   u: np.ndarray) -> None:
+    def _publish_cmd_and_telemetry(
+        self,
+        run: _RunState,
+        x: np.ndarray,
+        u: np.ndarray,
+        *,
+        e_y: Optional[float] = None,
+        theta_err: Optional[float] = None,
+        delta_theta: Optional[float] = None,
+    ) -> None:
         """Опубликовать cmd_vel и точку телеметрии. Вызывается из обеих
         фаз сценария (_tick_turn, _tick_drive). `run.t` — монотонное
-        суммарное время прогона, поэтому `point['t']` строго растёт."""
+        суммарное время прогона, поэтому `point['t']` строго растёт.
+
+        Опциональные `e_y`/`theta_err`/`delta_theta` присутствуют только в
+        фазе DRIVE (TURN их не вычисляет). Если переданы — добавляются в
+        точку телеметрии (schema_version 1.1, поля optional).
+        """
         self.publish('cmd_vel', {
             'linear_x': float(u[0]),
             'angular_z': float(u[1]),
@@ -501,18 +614,24 @@ class MpsNode(MqttNode):
             y = x.copy()
 
         s_remaining = max(0.0, run.distance - x[_S])
-        point = {
+        point: dict = {
             't': round(run.t, 6),
             'x': [float(v) for v in x],
             'u': [float(v) for v in u],
             'y': [float(v) for v in y],
             's_remaining': float(s_remaining),
         }
+        if e_y is not None:
+            point['e_y'] = float(e_y)
+        if theta_err is not None:
+            point['theta_err'] = float(theta_err)
+        if delta_theta is not None:
+            point['delta_theta'] = float(delta_theta)
         run.telemetry.append(point)
         self.publish('mps/telemetry', {
             'run_id': run.run_id,
             'point': point,
-            'schema_version': '1.0',
+            'schema_version': '1.1',
         }, qos=0)
 
     # ── Finalisation ─────────────────────────────────────────────────
@@ -558,7 +677,7 @@ class MpsNode(MqttNode):
             },
             'metrics': metrics,
             'error_message': error_message,
-            'schema_version': '1.0',
+            'schema_version': '1.1',
         }
         self.publish('mps/scenario/finished', finished_payload, qos=1)
         self.log_info('mps: run %s finished status=%s (%d points)',
@@ -573,7 +692,7 @@ class MpsNode(MqttNode):
             'run_id': run_id,
             'error_type': error_type,
             'message': message,
-            'schema_version': '1.0',
+            'schema_version': '1.1',
         }, qos=1)
         self.log_warn('mps error [%s]: %s', error_type, message)
 

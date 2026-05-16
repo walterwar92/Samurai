@@ -454,6 +454,18 @@ mps:
     turn_timeout_s: 10.0           # TURN не сошёлся за это ⇒ timeout
     omega_max_in_turn: 1.0         # кап ω в TURN (выше omega_max_in_forward)
 
+    # ── Outer LQR-петля коррекции бокового сноса (Козлов ТАУ §3) ──────
+    # Подсистема ξ=[e_y, θ_err] → δθ_ref; K_lat решается через DARE при
+    # старте сценария (зависит от v_target). Inner MPC получает x_ref с
+    # θ_ref = φ + δθ_ref. См. pi_nodes/control/lateral_lqr.py.
+    lateral:
+      enabled: true
+      tau_inner: 0.10              # с — эфф. постоянная времени inner-контура
+      Q_diag: [50.0, 5.0]          # [w_e_y, w_theta_err] — веса лат. ошибки/курса
+      R_diag: [1.0]                # [w_delta_theta] — штраф величины коррекции
+      delta_theta_max: 0.30        # рад (~17°) — кап чтобы не делать резких поворотов
+      v_min: 0.02                  # м/с — ниже подсистема неуправляема ⇒ outer выключен
+
   history_size: 20
   tick_dt: 0.0200
 # === end of auto-generated mps: block ===

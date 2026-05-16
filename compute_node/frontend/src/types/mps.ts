@@ -5,7 +5,9 @@
 // Размерности: x ∈ ℝ^5, u ∈ ℝ^2. C/D могут быть k×n с произвольным k≥1,
 // но по умолчанию k=n=5 (Cd=I, Dd=0).
 
-export const MPS_SCHEMA_VERSION = '1.0' as const
+// 1.1: добавлены опциональные e_y/theta_err/delta_theta в MpsTelemetryPoint
+// (outer LQR-петля коррекции бокового сноса). Backwards-compatible.
+export const MPS_SCHEMA_VERSION = '1.1' as const
 
 export const N_STATES = 5
 export const N_CONTROLS = 2
@@ -62,6 +64,15 @@ export interface MpsTelemetryPoint {
   y: number[]
   /** D − s, метры */
   s_remaining: number
+  /** Латеральная ошибка от ideal-line (м). Заполнено только на роботе в
+   *  фазе DRIVE с включённой outer LQR-петлёй; в sim или с
+   *  lateral.enabled=false — undefined. */
+  e_y?: number
+  /** Ошибка курса θ − φ (рад). Тот же контекст, что и e_y. */
+  theta_err?: number
+  /** Коррекция курсовой ссылки δθ_ref = -K_lat·[e_y,θ_err], клипнута до
+   *  ±delta_theta_max (рад). Тот же контекст, что и e_y. */
+  delta_theta?: number
 }
 
 export interface MpsMetrics {

@@ -18,6 +18,7 @@ description honestly notes the fallback.
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -462,3 +463,239 @@ def test_tick_transition_publishes_in_same_tick(mps_node):
     topics = [p[0] for p in mps_node._published]
     assert 'cmd_vel' in topics, 'transition-тик обязан опубликовать cmd_vel'
     assert 'mps/telemetry' in topics, 'transition-тик обязан опубликовать телеметрию'
+
+
+# ── Outer LQR-loop (lateral drift correction) ─────────────────────────
+# Проверяет: загрузку config-блока mps.scenario.lateral.*, построение
+# LateralLqrController при старте сценария, гейтинг по enabled/v_min,
+# знак коррекции при синтетическом сносе, наличие/отсутствие e_y-полей
+# в фазах DRIVE/TURN и schema_version='1.1'.
+
+def test_mps_node_loads_lateral_config(mps_node):
+    """__init__ читает блок mps.scenario.lateral.* в instance attrs."""
+    assert mps_node._lateral_enabled is True      # default в config.yaml
+    assert mps_node._lateral_tau_inner > 0
+    assert len(mps_node._lateral_q) == 2
+    assert len(mps_node._lateral_r) == 1
+    assert mps_node._lateral_delta_max > 0
+    assert mps_node._lateral_v_min > 0
+
+
+def test_on_odom_parses_y_field(mps_node):
+    """_on_odom извлекает `y` из payload (см→м) и сохраняет в self._y_abs.
+    Раньше y игнорировался — outer LQR-петля требует абсолютную (x, y)
+    для проекции e_y на ideal-line."""
+    mps_node._on_odom('odom', {'x': 100.0, 'y': 25.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    assert mps_node._x_abs == pytest.approx(1.0)
+    assert mps_node._y_abs == pytest.approx(0.25)
+
+
+def test_on_odom_y_defaults_to_zero_when_missing(mps_node):
+    """Старая одометрия без поля y: _y_abs = 0.0 (старый клиент не должен
+    падать)."""
+    mps_node._on_odom('odom', {'x': 50.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    assert mps_node._y_abs == pytest.approx(0.0)
+
+
+def test_scenario_run_builds_lateral_lqr_when_enabled(mps_node):
+    """С enabled=true и v_target>=v_min — outer LQR строится."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-lat',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    assert mps_node._run is not None
+    assert mps_node._run.lateral_lqr is not None
+    # K_lat имеет форму (1, 2) — один выход, два стейта.
+    assert mps_node._run.lateral_lqr.K.shape == (1, 2)
+    assert mps_node._run.lateral_lqr.is_stable()
+
+
+def test_scenario_run_skips_lateral_when_disabled(mps_node):
+    """С enabled=false — outer LQR не строится, lateral_lqr=None."""
+    mps_node._lateral_enabled = False
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-lat-off',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    assert mps_node._run is not None
+    assert mps_node._run.lateral_lqr is None
+
+
+def test_scenario_run_skips_lateral_when_v_target_below_min(mps_node):
+    """v_target < v_min — подсистема неуправляема (v0≈0), outer LQR не
+    строится. Гейтинг по v_min защищает от ValueError из __init__."""
+    mps_node._lateral_v_min = 0.20    # выше v_target=0.10
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-slow',
+        'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert mps_node._run is not None
+    assert mps_node._run.lateral_lqr is None
+
+
+def test_scenario_run_snapshots_absolute_xy(mps_node):
+    """На старте сценария x_start_abs/y_start_abs снимаются из последней
+    одометрии (для проекции e_y на ideal-line)."""
+    # Робот на (50 см, 30 см) по одометрии.
+    mps_node._on_odom('odom', {'x': 50.0, 'y': 30.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-snap',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    assert mps_node._run.x_start_abs == pytest.approx(0.50)
+    assert mps_node._run.y_start_abs == pytest.approx(0.30)
+    # line_dir = theta_start + target_heading = 0 + 0 = 0.
+    assert mps_node._run.line_dir == pytest.approx(0.0)
+
+
+def test_scenario_run_line_dir_includes_target_heading(mps_node):
+    """line_dir = theta_start_abs + target_heading. Если робот стоит под
+    курсом 0.3 и сценарий «вперёд относительно старта + 0.5 рад», то
+    абсолютное направление прямой = 0.8 рад."""
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.3, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-line',
+        'request': {'distance': 1.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.5},
+    })
+    assert mps_node._run.line_dir == pytest.approx(0.8)
+
+
+def test_tick_drive_publishes_lateral_telemetry_fields(mps_node):
+    """В фазе DRIVE точка телеметрии содержит e_y, theta_err, delta_theta
+    и schema_version='1.1'."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-tel',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    # target_heading=0, theta=0 ⇒ TURN сразу пройдёт и проваливается в DRIVE.
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    tel = [p for p in mps_node._published if p[0] == 'mps/telemetry']
+    assert tel, 'telemetry must be published'
+    payload = tel[0][1]
+    assert payload['schema_version'] == '1.1'
+    point = payload['point']
+    assert 'e_y' in point
+    assert 'theta_err' in point
+    assert 'delta_theta' in point
+    # Без сноса: e_y=0, delta_theta=0.
+    assert point['e_y'] == pytest.approx(0.0)
+    assert point['delta_theta'] == pytest.approx(0.0)
+
+
+def test_tick_drive_correction_sign_for_positive_lateral_drift(mps_node):
+    """Робот съехал влево (e_y > 0) при target_heading=0 ⇒ δθ < 0
+    (поворот направо, чтобы вернуться на линию)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-drift+',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    # (x,y)=(0,0), курс 0 ⇒ TURN мгновенно проходит, фаза → DRIVE.
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._tick()
+    assert mps_node._run.phase == 'drive'
+    # Робот проехал 10 см вперёд и сместился +5 см вбок (e_y = +0.05).
+    mps_node._on_odom('odom', {'x': 10.0, 'y': 5.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert point['e_y'] > 0, f"ожидаем e_y>0, got {point['e_y']}"
+    assert point['delta_theta'] < 0, (
+        f"e_y>0 ⇒ δθ<0 (поворот направо), got {point['delta_theta']}"
+    )
+
+
+def test_tick_drive_correction_sign_for_negative_lateral_drift(mps_node):
+    """Робот съехал вправо (e_y < 0) ⇒ δθ > 0 (поворот налево)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-drift-',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._tick()    # → DRIVE
+    mps_node._on_odom('odom', {'x': 10.0, 'y': -5.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert point['e_y'] < 0
+    assert point['delta_theta'] > 0
+
+
+def test_tick_drive_delta_theta_clipped_to_max(mps_node):
+    """Огромный e_y ⇒ δθ клипуется к ±delta_theta_max."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-clip',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._tick()    # → DRIVE
+    # 5 метров вбок — синтетический предел.
+    mps_node._on_odom('odom', {'x': 10.0, 'y': 500.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert abs(point['delta_theta']) == pytest.approx(mps_node._lateral_delta_max, abs=1e-9)
+
+
+def test_tick_turn_does_not_populate_lateral_fields(mps_node):
+    """TURN-фаза публикует телеметрию без e_y/theta_err/delta_theta —
+    эти поля имеют смысл только в DRIVE (при движении прямо)."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-turn-tel',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 0.8},
+    })
+    # Робот ещё далеко от φ=0.8 → TURN продолжается.
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    assert mps_node._run.phase == 'turn'
+    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert 'e_y' not in point
+    assert 'theta_err' not in point
+    assert 'delta_theta' not in point
+
+
+def test_tick_drive_with_disabled_outer_loop_zero_correction(mps_node):
+    """С enabled=false поля e_y/theta_err публикуются (diagnostic) но
+    delta_theta всегда 0 — outer-петля молча выключена."""
+    mps_node._lateral_enabled = False
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-no-outer',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._tick()    # → DRIVE
+    mps_node._on_odom('odom', {'x': 10.0, 'y': 5.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert point['e_y'] == pytest.approx(0.05)        # diagnostic — публикуется
+    assert point['delta_theta'] == pytest.approx(0.0)  # outer выключен — коррекции нет
+
+
+def test_tick_drive_correction_along_rotated_line(mps_node):
+    """При target_heading=π/2 ideal-line идёт по оси Y. Робот «сдвинут» от
+    линии в направлении +X (т.е. вправо относительно курса) ⇒ e_y < 0
+    ⇒ δθ > 0 (поворот налево, чтобы вернуться на линию)."""
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-rot',
+        'request': {'distance': 1.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': math.pi / 2},
+    })
+    assert mps_node._run.line_dir == pytest.approx(math.pi / 2)
+    # Чтобы пройти TURN — выставляем курс = π/2.
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': math.pi / 2, 'vz': 0.0})
+    mps_node._tick()
+    assert mps_node._run.phase == 'drive'
+    # Робот проехал по Y и сместился +5 см по X (вправо от линии).
+    # e_y = -dx*sin(line_dir) + dy*cos(line_dir) = -0.05*1 + 0.10*0 = -0.05.
+    mps_node._on_odom('odom', {'x': 5.0, 'y': 10.0, 'vx': 0.10, 'theta': math.pi / 2, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert point['e_y'] == pytest.approx(-0.05, abs=1e-9)
+    assert point['delta_theta'] > 0

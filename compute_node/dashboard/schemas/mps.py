@@ -24,7 +24,10 @@ from .common import OkResponse
 
 
 # ── Версия схемы (bump при breaking changes контракта) ─────────────────
-MPS_SCHEMA_VERSION = '1.0'
+# 1.1: добавлены опциональные поля e_y/theta_err/delta_theta в
+# MpsTelemetryPoint (outer LQR-петля коррекции бокового сноса в mps_node).
+# Backwards-compatible: старые клиенты игнорируют None-поля.
+MPS_SCHEMA_VERSION = '1.1'
 
 # ── Размерности (фиксированы для курсовой Козлова) ─────────────────────
 N_STATES = 5            # x = [s, v, θ, ω, e_int]
@@ -195,12 +198,33 @@ class MpsScenarioRequest(BaseModel):
 # ── Телеметрия ─────────────────────────────────────────────────────────
 class MpsTelemetryPoint(BaseModel):
     """Одна точка телеметрии прогона. Публикуется 50 Гц (sim — собирается
-    в массив; robot — стримится через MQTT/WS)."""
+    в массив; robot — стримится через MQTT/WS).
+
+    Поля e_y/theta_err/delta_theta заполняются только на роботе в фазе
+    DRIVE (outer LQR-петля коррекции бокового сноса — см.
+    pi_nodes/control/lateral_lqr.py). В sim они всегда None, поскольку
+    идеальная модель `x[k+1] = Ad·x + Bd·u` физически не имеет lateral
+    drift (нет геометрии x,y). Если outer-петля выключена в config — поля
+    тоже остаются None.
+    """
     t: float = Field(..., description='Секунды от старта')
     x: list[float] = Field(..., description='Состояние, длина 5')
     u: list[float] = Field(..., description='Управление, длина 2')
     y: list[float] = Field(..., description='y = Cx + Du, длина k (default 5)')
     s_remaining: float = Field(..., description='D − s, метры')
+    e_y: Optional[float] = Field(
+        default=None,
+        description='Латеральная ошибка от ideal-line (м, robot/DRIVE only)',
+    )
+    theta_err: Optional[float] = Field(
+        default=None,
+        description='Ошибка курса θ − φ (рад, robot/DRIVE only)',
+    )
+    delta_theta: Optional[float] = Field(
+        default=None,
+        description='Коррекция курсовой ссылки δθ_ref = -K_lat·[e_y,θ_err], '
+                    'клипнута до ±delta_theta_max (рад, robot/DRIVE only)',
+    )
 
 
 # ── Метрики ────────────────────────────────────────────────────────────
