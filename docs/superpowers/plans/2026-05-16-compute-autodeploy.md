@@ -168,7 +168,7 @@ Expected: тест падает потому что `.deployignore` не сущ�
 # Зоны которые крутятся ТОЛЬКО на ноуте
 compute_node/
 ros_ws/
-android/
+android_app/
 matlab/
 docs/
 

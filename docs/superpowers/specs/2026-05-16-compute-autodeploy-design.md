@@ -96,7 +96,7 @@ Pi не нуждается в интернете — только в LAN-вид�
 # Зоны которые крутятся ТОЛЬКО на ноуте
 compute_node/
 ros_ws/
-android/
+android_app/
 matlab/
 docs/
 

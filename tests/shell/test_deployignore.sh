@@ -14,13 +14,15 @@ test_start ".deployignore исключает компонент ноута"
 # Dry-run rsync — печатает список файлов которые БЫ скопировались.
 listing=$(rsync -a --dry-run --out-format='%n' \
     --exclude-from=".deployignore" \
-    ./ /tmp/__deploy_test_dst__/ 2>&1 || true)
+    ./ /tmp/__deploy_test_dst__/ 2>&1)
+rsync_ec=$?
+assert_eq "0" "$rsync_ec" "rsync dry-run succeeded"
 
 # Должны быть исключены:
 assert_not_contains "$listing" ".git/"           "git history excluded"
 assert_not_contains "$listing" "compute_node/"   "compute_node excluded"
 assert_not_contains "$listing" "ros_ws/"         "ros_ws excluded"
-assert_not_contains "$listing" "android/"        "android excluded"
+assert_not_contains "$listing" "android_app/"    "android_app excluded"
 assert_not_contains "$listing" "docs/"           "docs excluded"
 assert_not_contains "$listing" "node_modules"    "node_modules excluded"
 assert_not_contains "$listing" "__pycache__"     "pycache excluded"
