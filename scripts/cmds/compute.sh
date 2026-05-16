@@ -256,13 +256,16 @@ deploy_to_pi() {
     # 2. Pre-flight: установлен ли systemd-юнит?
     if ! ssh "${ssh_opts[@]}" "$ssh_target" \
             'systemctl list-unit-files samurai-robot.service --no-pager' 2>/dev/null \
-            | grep -q samurai-robot; then
+            | grep -q '^samurai-robot\.service'; then
         die "samurai-robot.service не установлен на Pi. Запусти: ssh $ssh_target 'cd Samurai && sudo ./scripts/bootstrap_pi.sh'"
     fi
 
     # 3. rsync.
     log_info "rsync (.deployignore применён)..."
     # Собираем -e ssh строку с теми же опциями.
+    # Array→string flatten: каждый элемент ssh_opts должен быть single-token
+    # (без пробелов внутри). Если когда-то понадобится -o с ProxyCommand или
+    # подобным — переделать на массив через printf -v.
     local ssh_cmd="ssh ${ssh_opts[*]}"
     if ! rsync -az --delete \
             --exclude-from="$SAMURAI_ROOT/.deployignore" \

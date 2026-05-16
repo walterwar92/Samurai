@@ -24,7 +24,8 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 # shellcheck disable=SC1091
 set +e
 source "$REPO_ROOT/scripts/cmds/compute.sh"
-set -e
+# NB: errexit OFF deliberately — тест ассертит на exit-кодах через $?,
+#     re-enable сломал бы failure-сценарии.
 
 test_start "deploy_to_pi happy path"
 

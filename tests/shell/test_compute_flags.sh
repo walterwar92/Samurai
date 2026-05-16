@@ -38,4 +38,13 @@ assert_eq "/env/path" "$result"
 result=$(unset SAMURAI_PI_PATH; resolve_pi_path "")
 assert_eq "~/Samurai" "$result"
 
+# ── Test 5: resolve_ssh_key ────────────────────────────────────────────────
+test_start "resolve_ssh_key priorities"
+result=$(SAMURAI_PI_SSH_KEY=/env/key resolve_ssh_key "/cli/key")
+assert_eq "/cli/key" "$result"
+result=$(SAMURAI_PI_SSH_KEY=/env/key resolve_ssh_key "")
+assert_eq "/env/key" "$result"
+result=$(unset SAMURAI_PI_SSH_KEY; resolve_ssh_key "")
+assert_eq "" "$result"
+
 tests_summary
