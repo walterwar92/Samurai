@@ -43,6 +43,18 @@ export function useMpsLiveTelemetry({
       setPoints([])
       return
     }
+    // НЕ открываем WS пока runId не известен — иначе ловим race:
+    // setRunning(true) → useEffect открывает WS с runId=undefined,
+    // backend накапливает frames; затем setRunId(realId) → cleanup
+    // закрывает WS (frames теряются), новый WS открывается уже с фильтром.
+    // Под капотом backend wait_for(subscribe, timeout=1s) может не успеть
+    // получить subscribe до close — в результате клиент пропускает первые
+    // секунды телеметрии, а в robot-mode часто и всю фазу TURN.
+    // Bug: 2026-05-16 пользователь сообщил «путь не рисуется» в robot live.
+    if (!runId) {
+      setPoints([])
+      return
+    }
 
     setPoints([])
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
