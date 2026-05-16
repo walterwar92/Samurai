@@ -31,6 +31,10 @@ assert_contains "$content" "/bin/systemctl restart samurai-robot" "restart cmd"
 assert_contains "$content" "/bin/systemctl is-active samurai-robot" "is-active cmd"
 assert_contains "$content" "/bin/systemctl status samurai-robot" "status cmd"
 assert_contains "$content" "/bin/journalctl -u samurai-robot" "journalctl cmd"
+assert_contains "$content" "/usr/bin/systemctl restart samurai-robot" "restart cmd (/usr/bin)"
+assert_contains "$content" "/usr/bin/systemctl is-active samurai-robot" "is-active cmd (/usr/bin)"
+assert_contains "$content" "/usr/bin/systemctl status samurai-robot" "status cmd (/usr/bin)"
+assert_contains "$content" "/usr/bin/journalctl -u samurai-robot" "journalctl cmd (/usr/bin)"
 
 # Права 0440. На Windows NTFS POSIX-режимы ниже 444 не поддерживаются
 # (chmod 0440 даёт 444), поэтому скипаем этот ассерт там — реальные права

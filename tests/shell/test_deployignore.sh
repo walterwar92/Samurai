@@ -27,6 +27,8 @@ assert_not_contains "$listing" "docs/"           "docs excluded"
 assert_not_contains "$listing" "node_modules"    "node_modules excluded"
 assert_not_contains "$listing" "__pycache__"     "pycache excluded"
 assert_not_contains "$listing" ".pyc"            "pyc excluded"
+assert_not_contains "$listing" "tests/shell/lib/fakes" "test fakes excluded"
+assert_not_contains "$listing" "latex_doc/"      "latex_doc excluded"
 
 # Должны быть включены:
 assert_contains "$listing" "pi_nodes/"           "pi_nodes included"

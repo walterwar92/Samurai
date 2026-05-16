@@ -40,3 +40,9 @@ slprj/
 # Логи и временные
 *.log
 *.tmp
+
+# Test fakes shadow real ssh/rsync if dir is on PATH — laptop/CI only
+tests/shell/lib/fakes/
+
+# Coursework (LaTeX), не нужно на Pi
+latex_doc/

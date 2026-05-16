@@ -91,9 +91,13 @@ install_sudoers_remote_deploy() {
 # Allows $user to restart/inspect samurai-robot.service without password,
 # so ./samurai.sh compute --pi can ssh-restart the service over LAN.
 $user ALL=(root) NOPASSWD: /bin/systemctl restart samurai-robot, \\
+                          /usr/bin/systemctl restart samurai-robot, \\
                           /bin/systemctl is-active samurai-robot, \\
+                          /usr/bin/systemctl is-active samurai-robot, \\
                           /bin/systemctl status samurai-robot, \\
-                          /bin/journalctl -u samurai-robot *
+                          /usr/bin/systemctl status samurai-robot, \\
+                          /bin/journalctl -u samurai-robot *, \\
+                          /usr/bin/journalctl -u samurai-robot *
 EOF
 
     # visudo -cf обязателен — битый файл может залочить sudo.
