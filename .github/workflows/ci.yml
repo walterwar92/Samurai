@@ -106,6 +106,16 @@ jobs:
         run: npx prettier --check "src/**/*.{ts,tsx,css,md}"
         continue-on-error: true   # baseline formatting drift — fail-soft
 
+  shell-tests:
+    name: Shell tests (deploy scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+      - name: Run shell tests
+        run: bash tests/shell/run_all.sh
+
   frontend-build:
     name: Frontend production build
     runs-on: ubuntu-latest
