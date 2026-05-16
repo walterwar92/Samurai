@@ -165,10 +165,16 @@ class MpsNode(MqttNode):
         # поведение возвращается к чистому inner-MPC.
         self._lateral_enabled = bool(self._cfg('mps.scenario.lateral.enabled', True))
         self._lateral_tau_inner = float(self._cfg('mps.scenario.lateral.tau_inner', 0.10))
-        self._lateral_q = list(self._cfg('mps.scenario.lateral.Q_diag', [50.0, 5.0]))
+        self._lateral_q = list(self._cfg('mps.scenario.lateral.Q_diag', [80.0, 30.0]))
         self._lateral_r = list(self._cfg('mps.scenario.lateral.R_diag', [1.0]))
-        self._lateral_delta_max = float(self._cfg('mps.scenario.lateral.delta_theta_max', 0.30))
+        self._lateral_delta_max = float(self._cfg('mps.scenario.lateral.delta_theta_max', 0.20))
         self._lateral_v_min = float(self._cfg('mps.scenario.lateral.v_min', 0.02))
+
+        # Anti-windup на интегральном члене e_int = ∫(−θ_err) dt. Модель
+        # включает интегратор курсовой ошибки (A[4,2]=−1 в канонической MPS),
+        # но без накопления он стоит в нуле и интегральная часть LQR-закона
+        # не работает. mps_node накапливает его в _tick_drive (см. ниже).
+        self._e_int_max = float(self._cfg('mps.scenario.e_int_max', 0.5))
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
@@ -381,6 +387,10 @@ class MpsNode(MqttNode):
             # ideal-line в outer LQR-петле.
             x_start_abs = float(self._x_abs)
             y_start_abs = float(self._y_abs)
+            # Reset интегрального члена e_int. Без этого накопленный с
+            # предыдущего прогона e_int даёт фантомную ошибку и MPC
+            # «доворачивает» с первого тика.
+            self._x_meas[_EINT] = 0.0
             self._run = _RunState(
                 run_id, distance, v_target,
                 s_start, theta_start, target_heading,
@@ -555,6 +565,22 @@ class MpsNode(MqttNode):
 
         # Hard omega cap in forward scenario — guard against accidental rotation.
         u[1] = max(-self._omega_max_fwd, min(self._omega_max_fwd, u[1]))
+
+        # Integral action: накапливаем e_int = ∫(−θ_err) dt с anti-windup.
+        # Модель ставит интегратор курсовой ошибки в state[4] (A[4,2]=−1):
+        # в дискретной форме e_int_{k+1} = e_int_k − θ_err · Ts. Без этого
+        # самoё накопления интегральная часть LQR-закона мертва — MPC видит
+        # e_int ≡ 0 и удерживает heading только пропорционально (Q[2]=80
+        # помогает, но статическая ошибка от трения/asymmetry остаётся).
+        # Запись под тем же lock что и _on_odom, чтобы не потерять увеличение
+        # при гонке с MQTT-callback.
+        with self._lock:
+            new_eint = self._x_meas[_EINT] + (-theta_err) * self._tick_dt
+            if new_eint > self._e_int_max:
+                new_eint = self._e_int_max
+            elif new_eint < -self._e_int_max:
+                new_eint = -self._e_int_max
+            self._x_meas[_EINT] = new_eint
 
         self._publish_cmd_and_telemetry(
             run, x, u,

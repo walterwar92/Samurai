@@ -676,6 +676,106 @@ def test_tick_drive_with_disabled_outer_loop_zero_correction(mps_node):
     assert point['delta_theta'] == pytest.approx(0.0)  # outer выключен — коррекции нет
 
 
+# ── Integral action на heading (e_int = ∫(−θ_err) dt) ─────────────────
+# Модель MPS включает интегратор курсовой ошибки (A[4,2]=−1), но до этой
+# фиксы mps_node никогда не обновлял e_int — он навсегда оставался 0,
+# и LQR-закон был чисто пропорциональный. Эти тесты проверяют что
+# накопление, reset и anti-windup работают.
+
+def test_e_int_resets_on_scenario_start(mps_node):
+    """На старте сценария e_int обнуляется. Без этого остаток с прошлого
+    прогона давал фантомную ошибку и MPC «доворачивал» с первого тика."""
+    # Симулируем остаток от предыдущего прогона.
+    mps_node._x_meas[4] = 0.3
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-int-reset',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
+    })
+    assert mps_node._x_meas[4] == 0.0
+
+
+def test_e_int_accumulates_in_tick_drive(mps_node):
+    """В фазе DRIVE e_int накапливается как ∫(−θ_err) dt. Знак: при
+    положительном θ_err (робот развернулся правее цели) интеграл
+    уменьшается ⇒ MPC получает дополнительный сигнал отвернуть налево."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-int-acc',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    # theta=0, phi=0 ⇒ TURN сразу пройдёт, переход в DRIVE.
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._tick()
+    assert mps_node._run.phase == 'drive'
+    initial_eint = mps_node._x_meas[4]
+    # Курс ушёл на +0.1 рад от phi=0.
+    mps_node._on_odom('odom', {'x': 5.0, 'y': 0.0, 'vx': 0.10, 'theta': 0.1, 'vz': 0.0})
+    mps_node._tick()
+    new_eint = mps_node._x_meas[4]
+    # Ожидаем e_int += −0.1 · tick_dt = −0.002.
+    expected_delta = -0.1 * mps_node._tick_dt
+    assert abs((new_eint - initial_eint) - expected_delta) < 1e-9, (
+        f'e_int delta {new_eint - initial_eint:.6f} ≠ ожидаемое {expected_delta:.6f}'
+    )
+
+
+def test_e_int_does_not_accumulate_in_turn_phase(mps_node):
+    """TURN-фаза НЕ должна накапливать e_int — там θ_err большое (по
+    определению), и интеграл бы насытился ещё до начала DRIVE."""
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-int-turn',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
+                    'target_heading': 1.0},
+    })
+    # Курс 0, цель 1 рад ⇒ TURN продолжается.
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    initial_eint = mps_node._x_meas[4]
+    mps_node._tick()
+    assert mps_node._run.phase == 'turn'
+    assert mps_node._x_meas[4] == initial_eint, 'TURN не должен трогать e_int'
+
+
+def test_e_int_clipped_by_anti_windup(mps_node):
+    """Под устойчивым θ_err интегратор saturates на ±e_int_max — иначе
+    при долгой невозможности дотянуться (трение, насыщение u_max) e_int
+    уходит в бесконечность и потом «дребезжит» при выходе из насыщения."""
+    mps_node._e_int_max = 0.05    # ужесточаем для быстрого теста
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-windup',
+        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
+    })
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._tick()    # → DRIVE
+    # Удерживаем большое постоянное θ_err = +1 рад через повторный _on_odom.
+    for _ in range(100):
+        mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 1.0, 'vz': 0.0})
+        mps_node._tick()
+    # При θ_err=+1 и tick_dt=0.02 за 100 тиков «без клипа» получили бы −2 рад·с,
+    # с anti-windup e_int_max=0.05 → должно быть −0.05.
+    assert mps_node._x_meas[4] == pytest.approx(-mps_node._e_int_max, abs=1e-9)
+
+
+def test_e_int_max_loaded_from_config(mps_node):
+    """mps_node читает e_int_max из mps.scenario.e_int_max (default 0.5)."""
+    assert isinstance(mps_node._e_int_max, float) and mps_node._e_int_max > 0
+
+
+def test_tighter_q_keeps_closed_loop_stable(mps_node):
+    """С новыми Q_diag=[10,10,80,5,5] закрытый контур inner-MPC всё ещё
+    устойчив (|λ(Ad−Bd·K_first)| < 1). Регрессия для тюнинга весов:
+    если кто-то поднимет Q_θ слишком высоко без коррекции R, MPC может
+    дать неустойчивый замкнутый контур → тут поймаем."""
+    eigs = np.abs(np.linalg.eigvals(
+        mps_node._mpc.Ad - mps_node._mpc.Bd @ mps_node._mpc.K_first
+    ))
+    assert np.all(eigs < 1.0 - 1e-3), f'closed-loop unstable: |λ|={eigs}'
+
+
+def test_turn_tolerance_is_one_degree(mps_node):
+    """turn_tolerance_rad ≈ 1° (0.0175 рад) — жёсткий критерий выхода
+    из TURN, чтобы DRIVE стартовал с минимальной начальной ошибкой курса."""
+    assert mps_node._turn_tol == pytest.approx(0.0175, abs=1e-4)
+
+
 def test_tick_drive_correction_along_rotated_line(mps_node):
     """При target_heading=π/2 ideal-line идёт по оси Y. Робот «сдвинут» от
     линии в направлении +X (т.е. вправо относительно курса) ⇒ e_y < 0
