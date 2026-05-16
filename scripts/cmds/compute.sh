@@ -212,6 +212,88 @@ launch_docker() {
         "
 }
 
+# ── Резолв параметров деплоя с приоритетом CLI > env > default ─────────────
+resolve_pi_user() {
+    local cli_val="${1:-}"
+    if [[ -n "$cli_val" ]]; then echo "$cli_val"; return; fi
+    if [[ -n "${SAMURAI_PI_USER:-}" ]]; then echo "$SAMURAI_PI_USER"; return; fi
+    echo "pi"
+}
+
+resolve_pi_path() {
+    local cli_val="${1:-}"
+    if [[ -n "$cli_val" ]]; then echo "$cli_val"; return; fi
+    if [[ -n "${SAMURAI_PI_PATH:-}" ]]; then echo "$SAMURAI_PI_PATH"; return; fi
+    echo "~/Samurai"
+}
+
+resolve_ssh_key() {
+    local cli_val="${1:-}"
+    if [[ -n "$cli_val" ]]; then echo "$cli_val"; return; fi
+    echo "${SAMURAI_PI_SSH_KEY:-}"
+}
+
+# ── Деплой кода на Pi через rsync + рестарт samurai-robot ──────────────────
+# Использование: deploy_to_pi <pi_ip> <pi_user> <pi_path> [ssh_key]
+# Завершается через die при любой ошибке. На успехе — log_ok.
+deploy_to_pi() {
+    local pi_ip="$1"
+    local pi_user="$2"
+    local pi_path="$3"
+    local ssh_key="${4:-}"
+
+    local ssh_opts=(-o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes)
+    [[ -n "$ssh_key" ]] && ssh_opts+=(-i "$ssh_key")
+    local ssh_target="$pi_user@$pi_ip"
+
+    log_step "Деплой кода на Pi ($ssh_target:$pi_path)"
+
+    # 1. Pre-flight: SSH доступен?
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" true 2>/dev/null; then
+        die "SSH до $ssh_target недоступен. Проверь: Pi включён, ключ в ~/.ssh/authorized_keys на Pi, sshd работает."
+    fi
+
+    # 2. Pre-flight: установлен ли systemd-юнит?
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" \
+            'systemctl list-unit-files samurai-robot.service --no-pager' 2>/dev/null \
+            | grep -q '^samurai-robot\.service'; then
+        die "samurai-robot.service не установлен на Pi. Запусти: ssh $ssh_target 'cd Samurai && sudo ./scripts/bootstrap_pi.sh'"
+    fi
+
+    # 3. rsync.
+    log_info "rsync (.deployignore применён)..."
+    # Собираем -e ssh строку с теми же опциями.
+    # Array→string flatten: каждый элемент ssh_opts должен быть single-token
+    # (без пробелов внутри). Если когда-то понадобится -o с ProxyCommand или
+    # подобным — переделать на массив через printf -v.
+    local ssh_cmd="ssh ${ssh_opts[*]}"
+    if ! rsync -az --delete \
+            --exclude-from="$SAMURAI_ROOT/.deployignore" \
+            -e "$ssh_cmd" \
+            "$SAMURAI_ROOT/" "$ssh_target:$pi_path/"; then
+        die "rsync на $ssh_target провалился"
+    fi
+
+    # 4. Рестарт сервиса.
+    log_info "Рестарт samurai-robot..."
+    if ! ssh "${ssh_opts[@]}" "$ssh_target" 'sudo systemctl restart samurai-robot'; then
+        die "systemctl restart провалился. NOPASSWD настроен? Запусти на Pi: sudo ./scripts/systemd/install.sh --with-remote-deploy"
+    fi
+
+    # 5. Verify — дать пару секунд и проверить is-active.
+    sleep 2
+    local status
+    status=$(ssh "${ssh_opts[@]}" "$ssh_target" \
+             'systemctl is-active samurai-robot' 2>/dev/null || true)
+    if [[ "$status" != "active" ]]; then
+        log_err "samurai-robot не active (status=$status). Логи:"
+        ssh "${ssh_opts[@]}" "$ssh_target" \
+            'journalctl -u samurai-robot -n 30 --no-pager' >&2 || true
+        die "Робот не стартовал — compute-стек не поднимаю"
+    fi
+    log_ok "samurai-robot запущен на Pi"
+}
+
 main() {
     local pi_ip_arg=""
     local hotspot=false
@@ -222,10 +304,18 @@ main() {
     local samcan_port=""
     local no_frontend_build=false
     local force_frontend_build=false
+    local no_deploy=false
+    local pi_user_arg=""
+    local pi_path_arg=""
+    local ssh_key_arg=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --pi)              pi_ip_arg="$2"; shift 2 ;;
+            --no-deploy)       no_deploy=true; shift ;;
+            --pi-user)         pi_user_arg="$2"; shift 2 ;;
+            --pi-path)         pi_path_arg="$2"; shift 2 ;;
+            --ssh-key)         ssh_key_arg="$2"; shift 2 ;;
             --hotspot)         hotspot=true; shift ;;
             --rebuild)         rebuild_image=true; rebuild_ws=true; shift ;;
             --rebuild-image)   rebuild_image=true; shift ;;
@@ -243,6 +333,10 @@ main() {
 
 Опции:
   --pi IP             IP Raspberry Pi (без аргумента — авто mDNS)
+  --no-deploy         Не деплоить код на Pi (только поднять compute-стек)
+  --pi-user USER      SSH-юзер на Pi (default: pi; env: SAMURAI_PI_USER)
+  --pi-path PATH      Путь репо на Pi (default: ~/Samurai; env: SAMURAI_PI_PATH)
+  --ssh-key FILE      SSH ключ для аутентификации (env: SAMURAI_PI_SSH_KEY)
   --hotspot           Unicast DDS режим (мобильный хотспот)
   --rebuild           Пересобрать Docker + ROS2 workspace
   --rebuild-image     Только Docker
@@ -288,6 +382,17 @@ EOF
         log_ok "Хотспот: unicast DDS, peer_ip=$peer_ip"
     fi
 
+    # ── Автодеплой кода на Pi (если задан --pi и не --no-deploy) ──────────────
+    if [[ -n "$pi_ip" && "$no_deploy" != "true" ]]; then
+        local resolved_user resolved_path resolved_key
+        resolved_user=$(resolve_pi_user "$pi_user_arg")
+        resolved_path=$(resolve_pi_path "$pi_path_arg")
+        resolved_key=$(resolve_ssh_key "$ssh_key_arg")
+        deploy_to_pi "$pi_ip" "$resolved_user" "$resolved_path" "$resolved_key"
+    elif [[ "$no_deploy" == "true" ]]; then
+        log_info "Деплой пропущен (--no-deploy)"
+    fi
+
     if $force_frontend_build; then
         build_frontend "true"
     elif ! $no_frontend_build; then
@@ -303,4 +408,7 @@ EOF
     launch_docker "$pi_ip" "$peer_ip" "$remote_yolo"
 }
 
-main "$@"
+# Запускать main только при прямом исполнении, не при source (для тестов).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

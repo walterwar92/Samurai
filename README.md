@@ -296,6 +296,37 @@ CLI автоматически:
 ./samurai.sh compute --no-samcan         # без Samcan bridge
 ```
 
+### Деплой на робота одной командой (compute --pi)
+
+После первичной настройки Pi (один раз) автодеплой с ноута работает по LAN:
+
+**Первичная настройка Pi (один раз):**
+1. Склонировать репо на Pi.
+2. Запустить `sudo ./scripts/bootstrap_pi.sh` — поставит apt-пакеты, pip-зависимости,
+   включит I2C/camera, поднимет mosquitto/ssh, установит `samurai-robot.service`,
+   настроит sudoers.d для NOPASSWD рестарта.
+3. С ноута: `ssh-copy-id <user>@raspberrypi.local` чтобы пробросить SSH-ключ.
+
+**Каждый день:**
+```bash
+./samurai.sh compute --pi raspberrypi.local
+```
+Эта команда:
+- rsync рабочего дерева ноута на Pi (исключения в `.deployignore`).
+- `sudo systemctl restart samurai-robot` через SSH.
+- Проверяет `systemctl is-active samurai-robot`, при фейле — дамп `journalctl`.
+- Поднимает ноутбучный стек (Docker, dashboard, ROS2).
+
+Pi не нуждается в интернете — только в LAN-видимости с ноута.
+
+**Доступные флаги:**
+- `--no-deploy` — не пушить код (только compute-стек).
+- `--pi-user USER` — SSH-юзер (default `pi`, env `SAMURAI_PI_USER`).
+- `--pi-path PATH` — путь репо на Pi (default `~/Samurai`).
+- `--ssh-key FILE` — альтернативный приватный ключ.
+
+См. также: [`docs/superpowers/specs/2026-05-16-compute-autodeploy-design.md`](docs/superpowers/specs/2026-05-16-compute-autodeploy-design.md).
+
 Dashboard: **http://localhost:5000**
 
 **Шаг 3 — Android**:
