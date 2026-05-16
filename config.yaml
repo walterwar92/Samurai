@@ -70,14 +70,6 @@ imu:
   # Startup calibration: robot MUST be stationary during first ~2 seconds
   calibration_samples: 100   # 100 @ 50Hz = 2 sec
 
-  # MPU-6050 на Adeept HAT V3.1 смонтирован осью Z вниз — raw gz по правилу
-  # правой руки приходит с обратным знаком относительно ROS-конвенции
-  # (positive ω = CCW при Z-up). Без инверсии MPC heading-loop (mps_node)
-  # становится positive-feedback'ом — робот наматывает круги и
-  # разворачивается на 180°. Если соберёте на другом шасси с правильным
-  # креплением чипа — выставьте false.
-  invert_yaw: true
-
   ekf:
     enabled: true
     # Process noise (больше = меньше доверия гироскопу, больше следования акселерометру)
