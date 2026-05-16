@@ -453,8 +453,6 @@ mps:
     turn_tolerance_rad: 0.05       # |θ−φ| < этого ⇒ фаза TURN завершена (~3°)
     turn_timeout_s: 10.0           # TURN не сошёлся за это ⇒ timeout
     omega_max_in_turn: 1.0         # кап ω в TURN (выше omega_max_in_forward)
-    reach_tolerance_m: 0.02        # |s−D| < этого ⇒ status='reached' (старое 0.05 = D/2 на D=0.10)
-    odom_max_age_s: 0.5            # max возраст последнего odom для старта сценария (Bug A)
 
   history_size: 20
   tick_dt: 0.0200

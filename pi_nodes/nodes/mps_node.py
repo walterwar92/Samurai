@@ -48,12 +48,8 @@ from pi_nodes.control.mpc_controller import MPCController
 from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 from pi_nodes.mqtt_node import MqttNode
 
-# Default tolerance: «достиг цели» если осталось ≤ этого (метры).
-# Перетирается через mps.scenario.reach_tolerance_m в config.yaml. Старое
-# дефолтное значение 0.05 м засчитывало 84% дистанции на D=0.30 как «reached»
-# и было ровно D/2 на D=0.10 — слишком грубо. Новый дефолт 0.02 м (2 см) —
-# сопоставимо с разрешением dead-reckoning одометрии, не зашумит status.
-_REACH_EPS_DEFAULT = 0.02
+# Tolerance: «достиг цели» если осталось ≤ этого (метры).
+_REACH_EPS = 0.05
 
 # Состояние x = [s, v, θ, ω, e_int]
 _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
@@ -147,14 +143,6 @@ class MpsNode(MqttNode):
         self._turn_tol = float(self._cfg('mps.scenario.turn_tolerance_rad', 0.05))
         self._turn_timeout = float(self._cfg('mps.scenario.turn_timeout_s', 10.0))
         self._omega_max_turn = float(self._cfg('mps.scenario.omega_max_in_turn', 1.0))
-        # Максимальный возраст последнего odom (с) для старта сценария.
-        # Если odom не пришёл вовсе или старее этого порога — _on_scenario_run
-        # возвращает precondition error без перехода в DRIVE_FORWARD_MPS
-        # (см. Bug A в diagnostics 2026-05-15: race-condition theta_start
-        # из-за пустого _x_meas).
-        self._odom_max_age = float(self._cfg('mps.scenario.odom_max_age_s', 0.5))
-        self._reach_eps = float(self._cfg('mps.scenario.reach_tolerance_m',
-                                           _REACH_EPS_DEFAULT))
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
@@ -325,29 +313,6 @@ class MpsNode(MqttNode):
                                 run_id=run_id)
             return
 
-        # Reject если одометрия не пришла или устарела — без свежего snapshot'а
-        # (s_start, theta_start) сценарий ловит race-condition: _x_meas остаётся
-        # zeros() из __init__, theta_start=0, а к первому тику odom приходит
-        # с реальным курсом → relative-θ становится огромным → робот застревает
-        # в TURN-фазе (видели в diagnostics 2026-05-15: run #2 timeout 10 c
-        # с theta_meas = -3.05 при target_heading=0). Reject лучше тихого failure.
-        odom_age = time.time() - self._x_meas_ts
-        if self._x_meas_ts == 0.0:
-            self._publish_error(
-                'precondition',
-                'odom not received yet — start the robot stack and retry',
-                run_id=run_id,
-            )
-            return
-        if odom_age > self._odom_max_age:
-            self._publish_error(
-                'precondition',
-                f'odom stale ({odom_age:.2f}s > {self._odom_max_age:.2f}s) — '
-                f'robot may be disconnected',
-                run_id=run_id,
-            )
-            return
-
         with self._lock:
             if self.is_running:
                 self._publish_error('precondition',
@@ -377,28 +342,15 @@ class MpsNode(MqttNode):
     def _on_odom(self, topic: str, payload):
         if not isinstance(payload, dict):
             return
-        # samurai/{id}/odom — motor_node публикует:
-        #   • s_body — м, signed body-frame distance (предпочитаем; см. ниже);
-        #   • x      — см, world-frame координата (legacy fallback);
-        #   • vx     — м/с (продольная скорость, body-frame);
-        #   • theta  — рад (абсолютный курс IMU);
-        #   • vz     — рад/с (угловая скорость).
-        #
-        # Сценарий «вперёд D метров» хочет body-frame дистанцию, а не world.x.
-        # world.x = ∫v·cos(θ_abs)·dt — переворачивается в минус, если IMU
-        # абсолютный курс ≈ ±π (видели в diagnostics 2026-05-15: u_v>0,
-        # v_actual>0, но x шёл в минус → mps думал что робот едет назад).
-        # s_body = ∫v·dt — независим от θ, всегда «сколько проехал вперёд».
-        #
-        # Fallback на x/100 нужен на случай старого motor_node без s_body —
-        # сохраняем backward-compat. После раскатки нового motor_node на робота
-        # ветка fallback станет мёртвой.
+        # samurai/{id}/odom — motor_node публикует: x в САНТИМЕТРАХ
+        # (см. motor_node.py:804 и докстринг odom-топика), vx — м/с,
+        # theta — рад, vz — рад/с. Конвертируем x см→м БЕЗУСЛОВНО по
+        # контракту. Старый код угадывал единицы эвристикой
+        # `if abs(s) > 20` — она оставляла первые 20 см не
+        # сконвертированными (x_meas[0] в 100× раз больше), из-за чего
+        # MPC ловил фантомную ошибку позиции и упирал cmd_vel в u_max.
         try:
-            s_body = payload.get('s_body')
-            if s_body is not None:
-                s = float(s_body)
-            else:
-                s = float(payload.get('x', 0.0)) / 100.0
+            s = float(payload.get('x', 0.0)) / 100.0
             v = float(payload.get('vx', 0.0))
             theta = float(payload.get('theta', 0.0))
             omega = float(payload.get('vz', 0.0))
@@ -515,7 +467,7 @@ class MpsNode(MqttNode):
             stale = run.no_odom_ticks > _WATCHDOG_TICKS
 
         # Reached?
-        if x[_S] >= run.distance - self._reach_eps:
+        if x[_S] >= run.distance - _REACH_EPS:
             self._finish_run('reached', None)
             return
 

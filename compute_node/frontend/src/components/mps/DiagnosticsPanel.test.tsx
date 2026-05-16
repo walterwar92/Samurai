@@ -92,7 +92,8 @@ describe('buildHeadingErrorRows', () => {
     const run = makeResult({
       targetHeading: 0,
       telemetry: [
-        // x[2] и u[1] отсутствуют → defensive fallback на 0
+        // x[2] missing → falls back to 0
+        // @ts-expect-error — намеренно ломаем форму
         { t: 1, x: [0], u: [], y: [], s_remaining: 0 },
       ],
     })

@@ -153,17 +153,14 @@ class _MpsBlock:
     `mps/matrices/applied`). `draft` — изменённые в UI, не отправленные.
     `history` — последние 20 завершённых прогонов (FIFO). `active_run` —
     прогон в статусе running (только один на source 'robot' за раз).
-    `last_telemetry` — кольцевой буфер 1000 точек (≈20 c при 50 Hz) для
-    подключения посреди стрима (WS replay) и для диагностики длинных
-    прогонов. Старые 200 точек = 4 c обрезали начало 10-секундного
-    timeout-прогона (видели в diagnostics 2026-05-15: run #2 telemetry
-    начиналась с t=6.04 c из 10.02 c — TURN-фаза целиком потеряна).
+    `last_telemetry` — кольцевой буфер 200 точек для подключения посреди
+    стрима (WS replay).
     """
     applied: Optional[MpsMatrices] = None
     draft: Optional[MpsMatrices] = None
     history: deque = field(default_factory=lambda: deque(maxlen=20))
     active_run: Optional[MpsScenarioResult] = None
-    last_telemetry: deque = field(default_factory=lambda: deque(maxlen=1000))
+    last_telemetry: deque = field(default_factory=lambda: deque(maxlen=200))
 
 
 @dataclass
