@@ -1,0 +1,42 @@
+# Что НЕ синхронизировать на Pi через ./samurai.sh compute --pi.
+# Используется rsync --exclude-from. Синтаксис gitignore-подобный.
+
+# Git / CI
+.git/
+.github/
+
+# Зоны которые крутятся ТОЛЬКО на ноуте
+compute_node/
+ros_ws/
+android/
+matlab/
+docs/
+
+# Локальные артефакты
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# IDE / OS мусор
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# MATLAB
+slprj/
+*.slxc
+*.asv
+
+# Логи и временные
+*.log
+*.tmp
