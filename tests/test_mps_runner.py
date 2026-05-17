@@ -82,7 +82,7 @@ def default_matrices() -> MpsMatrices:
 
 
 # ── Reachability ───────────────────────────────────────────────────────
-def test_default_matrices_reach_d2():
+def test_default_matrices_d2_settles_close_but_times_out():
     """Длинный D=2 м с дефолтными матрицами.
 
     Было: ε_s=0.05 м → `reached`. После pose-tracking refactor (Task 4,
@@ -108,11 +108,11 @@ def test_default_matrices_reach_d2():
     assert res.telemetry[-1].s_remaining < 0.02  # был <0.10
 
 
-def test_short_distance_reaches_quickly():
+def test_short_distance_d05_settles_close_but_times_out():
     """Короткий D=0.5 м тоже не успевает на 5 мм за 1.5 с — те же
-    причины, что в test_default_matrices_reach_d2 (моторный лаг τ_v=0.15).
-    Сценарий настолько короткий, что reference triangular,
-    но финиш всё равно бьёт о ε_s=0.005."""
+    причины, что в test_default_matrices_d2_settles_close_but_times_out
+    (моторный лаг τ_v=0.15). Сценарий настолько короткий, что reference
+    triangular, но финиш всё равно бьёт о ε_s=0.005."""
     m = _default_matrices()
     req = MpsScenarioRequest(distance=0.5, v_target=0.10, source='sim')
     res = run_scenario_idealized(m, req)
