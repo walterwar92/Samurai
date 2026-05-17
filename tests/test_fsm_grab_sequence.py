@@ -154,8 +154,14 @@ def test_grab_after_settle_sends_freeze_and_transitions_to_returning(
 
     node = fsm_node_factory()
     node._transition(State.GRABBING)
-    # 15 тиков = 1.5с (tick=0.1с). Точно равно settle_s, должен запуститься
-    # переход после 16-го тика (>1.5).
+    # Float-арифметика: 0.1 * 15 = 1.5000000000000002 в CPython, поэтому
+    # на 15-м тике уже _grab_t >= GRAB_SETTLE_S (1.5) → freeze + transition.
+    # На итерации 16 _transition сбросит _grab_t в 0, и (если тест продолжит
+    # вызывать _do_grab напрямую — а он это делает) Phase 1 повторит
+    # load_preset grab_hold. В продакшене это не происходит, потому что
+    # _tick роутится по state: после RETURNING вызывается _do_return,
+    # не _do_grab. Тест ниже фиксирует контракт: freeze ровно 1 раз,
+    # переход состоялся. См. также len(preset_pubs) assertion ниже.
     for _ in range(16):
         node._do_grab()
 
