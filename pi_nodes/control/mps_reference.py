@@ -17,6 +17,10 @@ import numpy as np
 _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
 
 
+# Wrap convention: returns angle in [-π, π). At the boundary +π collapses to -π
+# because (π + π) % 2π == 0, so 0 − π = −π. This means build_reference(target_heading=+π)
+# produces a clockwise turn (sign = -1), landing at θ_start − π — same orientation
+# as θ_start + π mod 2π. Test: test_turn_positive_pi_uses_cw_per_normalize_convention.
 def _normalize_angle(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
 
@@ -41,6 +45,8 @@ class ReferenceTrajectory:
     distance: float
     v_target: float
     target_heading: float        # final heading отн. θ_start
+    # Used only by r(t) to build absolute θ_ref; segments themselves store
+    # Δθ relative to start (multiplied by sign for direction).
     theta_start: float           # абсолютный курс на старте сценария
     a_max: float
     alpha_max: float
@@ -55,7 +61,46 @@ class ReferenceTrajectory:
     def r(self, t: float) -> np.ndarray:
         """Вернуть [s, v, θ, ω, e_int] на момент `t`. Для t > t_end —
         финальная точка [D, 0, θ_start+φ, 0, 0]."""
-        raise NotImplementedError  # заполним в Step 1.5
+        out = np.zeros(5)
+        # Drive
+        if t < self.t_drive:
+            seg = self._find_segment(self.drive_segments, t)
+            dt = t - seg.t0
+            v = seg.v0 + seg.a * dt
+            s = seg.s0 + seg.v0 * dt + 0.5 * seg.a * dt * dt
+            out[_S] = s
+            out[_V] = v
+            out[_THETA] = self.theta_start
+            out[_OMEGA] = 0.0
+            return out
+        # Turn (t_drive ≤ t < t_end)
+        if t < self.t_end and self.turn_segments:
+            seg = self._find_segment(self.turn_segments, t - self.t_drive)
+            dt = (t - self.t_drive) - seg.t0
+            w = seg.v0 + seg.a * dt
+            dtheta = seg.s0 + seg.v0 * dt + 0.5 * seg.a * dt * dt
+            out[_S] = self.distance
+            out[_V] = 0.0
+            out[_THETA] = self.theta_start + dtheta
+            out[_OMEGA] = w
+            return out
+        # Settling: финальная точка
+        out[_S] = self.distance
+        out[_V] = 0.0
+        out[_THETA] = self.theta_start + self.phi_signed
+        out[_OMEGA] = 0.0
+        return out
+
+    @staticmethod
+    def _find_segment(segments: tuple[_Segment, ...], t: float) -> _Segment:
+        """Линейный поиск (макс 3 сегмента в каждом профиле — bisect overkill).
+        Использует строгое `t < seg.t1` — на стыке сегментов (включая
+        zero-length cruise при D = v²/a) выбирает следующий, а не предыдущий
+        (см. follow-up #3 из code review Task 1)."""
+        for seg in segments:
+            if t < seg.t1:
+                return seg
+        return segments[-1]
 
 
 def build_reference(
@@ -80,9 +125,10 @@ def build_reference(
         raise ValueError(f'distance must be ≥ 0, got {distance}')
     if not (v_target > 0):
         raise ValueError(f'v_target must be > 0, got {v_target}')
-    if not (a_max > 0 and alpha_max > 0 and omega_max > 0):
-        raise ValueError('a_max, alpha_max, omega_max must be > 0')
-    if abs(target_heading) > math.pi + 1e-9:
+    for _name, _val in (('a_max', a_max), ('alpha_max', alpha_max), ('omega_max', omega_max)):
+        if not (_val > 0):
+            raise ValueError(f'{_name} must be > 0, got {_val}')
+    if abs(target_heading) > math.pi + 1e-9:  # numerical epsilon for π boundary
         raise ValueError(f'|target_heading| must be ≤ π, got {target_heading}')
 
     # Drive-сегменты
@@ -130,7 +176,7 @@ def build_reference(
         turn_segs.append(_Segment(t0=t_acc_w + t_cruise_w, t1=t_turn,
                                   s0=sign * (abs_phi - theta_acc_full),
                                   v0=sign * omega_max, a=-sign * alpha_max))
-    elif abs_phi > 1e-9:
+    elif abs_phi > 1e-9:  # numerical epsilon — not control tolerance (see ε_θ in spec §4.1)
         # Triangular по ω
         w_peak = math.sqrt(abs_phi * alpha_max)
         t_acc_w = w_peak / alpha_max
