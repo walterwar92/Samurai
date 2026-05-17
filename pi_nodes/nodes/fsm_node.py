@@ -486,17 +486,35 @@ class FSMNode(MqttNode):
         self._pub_cmd_vel(linear, angular)
 
     def _do_grab(self):
-        self.publish('claw/command', 'open', qos=1)
-        self._approach_timeout += 0.1
-        if self._approach_timeout < 1.0:
-            self._pub_cmd_vel(0.05, 0.0)
-        elif self._approach_timeout < 2.0:
-            self._pub_cmd_vel(0.0, 0.0)
-        elif self._approach_timeout < 3.0:
-            self.publish('claw/command', 'close', qos=1)
-        else:
-            self.log_info('Ball grabbed!')
-            self._transition(State.RETURNING)
+        """Захват объекта новой 3-фазной логикой (заменяет старую с
+        claw/command). См. spec 2026-05-17-arm-grab-sequence.
+
+        Phase 1 (t<=0.1c): один раз публикуем arm/command load_preset grab_hold.
+        Phase 2 (0.1c < t < 1.5c): ждём пока _interpolate_tick доедет до позы.
+        Phase 3 (t >= 1.5c): freeze всех суставов → RETURNING.
+
+        Settle 1.5с обоснован: самая длинная дельта при переходе
+        grab_ready (160,100,180,0) → grab_hold (10,30,180,180) — это CH0
+        (150°). При max_speed_deg_per_sec=120 это 1.25с + 0.25с jitter.
+        """
+        self._grab_t += 0.1
+
+        if self._grab_t <= 0.1:
+            # Phase 1 — единичная команда
+            self.publish('arm/command',
+                         {'command': 'load_preset', 'name': 'grab_hold'},
+                         qos=1)
+            self.log_info('Arm → grab_hold (closing claw)')
+            return
+
+        GRAB_SETTLE_S = 1.5
+        if self._grab_t < GRAB_SETTLE_S:
+            return
+
+        # Phase 3 — freeze + переход
+        self.publish('arm/command', {'command': 'freeze'}, qos=1)
+        self.log_info('Arm FROZEN — holding object')
+        self._transition(State.RETURNING)
 
     def _do_call(self):
         other_id = 'robot2' if self._robot_id == 'robot1' else 'robot1'

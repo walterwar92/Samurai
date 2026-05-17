@@ -107,3 +107,84 @@ def test_approach_resends_grab_ready_after_state_exit(fsm_node_factory):
                 and p[1].get('command') == 'load_preset']
     assert len(arm_pubs) == 2
     assert all(p[1]['name'] == 'grab_ready' for p in arm_pubs)
+
+
+def test_grab_first_tick_sends_grab_hold_preset(fsm_node_factory):
+    """В первый тик _do_grab публикуется arm/command
+    {"command":"load_preset","name":"grab_hold"}.
+    Это разом ставит CH0/CH1/CH2 в позу захвата и CH3=180 (закрывает клешню).
+    """
+    from pi_nodes.nodes.fsm_node import State
+
+    node = fsm_node_factory()
+    node._transition(State.GRABBING)
+    node._do_grab()
+
+    arm_pubs = [p for p in node._published
+                if p[0] == 'arm/command'
+                and isinstance(p[1], dict)
+                and p[1].get('command') == 'load_preset']
+    assert len(arm_pubs) == 1
+    assert arm_pubs[0][1]['name'] == 'grab_hold'
+
+
+def test_grab_does_not_publish_claw_command(fsm_node_factory):
+    """Новая логика НЕ использует topic claw/command (legacy для servo_node,
+    который работает с CH0=Основание — неправильный канал для клешни).
+    Всё идёт через arm/command (CH3 — клешня по новой логике).
+    """
+    from pi_nodes.nodes.fsm_node import State
+
+    node = fsm_node_factory()
+    node._transition(State.GRABBING)
+    for _ in range(20):    # 2 секунды эмулируем
+        node._do_grab()
+
+    claw_pubs = [p for p in node._published if p[0] == 'claw/command']
+    assert claw_pubs == []
+
+
+def test_grab_after_settle_sends_freeze_and_transitions_to_returning(
+        fsm_node_factory):
+    """Через ~1.5с после первой команды grab_hold (интерполятор успевает
+    доехать) FSM шлёт arm/command {"command":"freeze"} и переходит в
+    RETURNING. Рука остаётся frozen в grab_hold, корпус едет домой.
+    """
+    from pi_nodes.nodes.fsm_node import State
+
+    node = fsm_node_factory()
+    node._transition(State.GRABBING)
+    # 15 тиков = 1.5с (tick=0.1с). Точно равно settle_s, должен запуститься
+    # переход после 16-го тика (>1.5).
+    for _ in range(16):
+        node._do_grab()
+
+    arm_pubs = [p for p in node._published
+                if p[0] == 'arm/command'
+                and isinstance(p[1], dict)]
+    freeze_pubs = [p for p in arm_pubs if p[1].get('command') == 'freeze']
+    assert len(freeze_pubs) == 1
+    # Переход в RETURNING
+    assert node._state == State.RETURNING
+
+
+def test_grab_during_settle_does_not_freeze_yet(fsm_node_factory):
+    """Между t=0.1с и t=1.5с — никакие freeze/новые preset-команды не шлются.
+    Только один grab_hold на старте, потом ждём.
+    """
+    from pi_nodes.nodes.fsm_node import State
+
+    node = fsm_node_factory()
+    node._transition(State.GRABBING)
+    for _ in range(10):    # 1.0с
+        node._do_grab()
+
+    arm_pubs = [p for p in node._published
+                if p[0] == 'arm/command'
+                and isinstance(p[1], dict)]
+    # Один load_preset grab_hold и НИ ОДНОГО freeze
+    preset_pubs = [p for p in arm_pubs if p[1].get('command') == 'load_preset']
+    freeze_pubs = [p for p in arm_pubs if p[1].get('command') == 'freeze']
+    assert len(preset_pubs) == 1
+    assert len(freeze_pubs) == 0
+    assert node._state == State.GRABBING    # ещё не перешли
