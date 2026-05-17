@@ -300,19 +300,16 @@ def test_reach_tolerance_default_is_5mm():
 
 
 # was: phase='drive' override + |s−D|<ε; now: 4-coord check post t_end.
-def test_reach_at_98_percent_with_default_tolerance(mps_node):
-    """Граница reach: s=0.985 на D=1.0 → reached.
+def test_reach_within_eps_s_at_t_end(mps_node):
+    """Граница reach: |s−D|=3 мм на D=1.0 → reached.
 
-    Fixture использует реальный config.yaml где mps.scenario.reach_tolerance_m
-    задан в 0.02 м (на этом железе dead-reckoning шумнее 5 мм). Код-дефолт
-    модуля mps_node — 0.005 м (spec §4.1; см. test_reach_tolerance_default_is_5mm),
-    но config может перекрыть. Поэтому s=0.985 при D=1.0 → |Δ|=0.015 < 0.02
-    ⇒ reached."""
+    Config (config.yaml) задаёт mps.scenario.reach_tolerance_m=0.005 м
+    (spec §4.1). |Δ|=0.003 < 0.005 ⇒ reached (при v=ω=0 и t≥t_end)."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-edge',
         'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
     })
-    mps_node._x_meas = np.array([0.985, 0.0, 0.0, 0.0, 0.0])
+    mps_node._x_meas = np.array([0.997, 0.0, 0.0, 0.0, 0.0])
     mps_node._x_meas_ts = time.time()
     mps_node._run.t = mps_node._run.traj.t_end + 1e-3
     mps_node._tick()
@@ -322,26 +319,25 @@ def test_reach_at_98_percent_with_default_tolerance(mps_node):
 
 
 # was: phase='drive' override; now: 4-coord check post t_end.
-def test_no_reach_at_95_percent_with_default_tolerance(mps_node):
-    """Граница reach: s=0.95 на D=1.0 → НЕ reached (0.95 < 0.98).
+def test_no_reach_outside_eps_s_at_t_end(mps_node):
+    """Граница no-reach: |s−D|=15 мм на D=1.0 → НЕ reached.
 
-    Fixture видит ε_s=0.02 (из config.yaml — см. предыдущий тест).
-    После t_end |s−D|=0.05 > ε_s=0.02 ⇒ ждём settle_timeout и
-    закроемся как 'timeout_settle'. На один тик `finished` ещё не
+    ε_s=0.005 м из config — |Δ|=0.015 > 0.005 ⇒ ждём settle_timeout
+    и закроемся как 'timeout_settle'. На один тик `finished` ещё не
     публикуется — проверяем именно status≠'reached'.
     """
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-no-reach',
         'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
     })
-    mps_node._x_meas = np.array([0.95, 0.0, 0.0, 0.0, 0.0])
+    mps_node._x_meas = np.array([0.985, 0.0, 0.0, 0.0, 0.0])
     mps_node._x_meas_ts = time.time()
     mps_node._run.t = mps_node._run.traj.t_end + 1e-3
     mps_node._tick()
     finished = [p[1] for p in mps_node._published
                 if p[0] == 'mps/scenario/finished'
                 and p[1].get('status') == 'reached']
-    assert not finished, '0.95 м из 1.0 м (95%) не должно засчитываться как reached'
+    assert not finished, '|s−D|=0.015 > ε_s=0.005 не должно засчитываться как reached'
 
 
 # ── FSM state DRIVE_FORWARD_MPS is registered ─────────────────────────

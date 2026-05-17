@@ -455,18 +455,36 @@ mps:
     omega_max_in_forward: 0.5
     default_distance: 2.0
     default_v_target: 0.15
-    # ±1° (0.0175) на реальном роботе недостижимо из-за шума IMU/трения:
-    # робот колеблется вокруг target и никогда не выходит из TURN, поэтому
-    # _tick_drive не вызывается, s остаётся 0 и траектория «не двигается»
-    # на UI весь turn_timeout. Возврат к четверговым 0.05 (~3°) — TURN
-    # завершается мгновенно при target_heading=0 и за десятые секунды
-    # при ненулевом target.
-    turn_tolerance_rad: 0.05       # |θ−φ| < этого ⇒ фаза TURN завершена (~3°)
-    turn_timeout_s: 10.0           # TURN не сошёлся за это ⇒ timeout
-    omega_max_in_turn: 1.0         # кап ω в TURN (выше omega_max_in_forward)
+    omega_max_in_turn: 1.0         # cap ω в turn-сегменте (выше omega_max_in_forward)
     e_int_max: 0.5                 # рад·с — anti-windup на ∫θ_err
-    reach_tolerance_m: 0.02        # |s−D| < этого ⇒ status='reached' (старое 0.05 = D/2 на D=0.10)
     odom_max_age_s: 0.5            # max возраст последнего odom для старта сценария (Bug A)
+
+    # Tolerance «доехал по s» (см. spec §4.1).
+    # Был 0.02 м (роботу разрешалось стопить за 2 см до цели — без замедления
+    # это было необходимо). С feedforward-референсом (Task 4-5) MPC сам
+    # замедляется по трапец-профилю, поэтому ε ужат до 5 мм. Если на
+    # конкретном железе dead-reckoning шумнее — задрать обратно к 0.02.
+    reach_tolerance_m: 0.005
+
+    # Остальные ε (по v/θ/ω) + settle-timeout для pose-tracking финиша
+    # (см. spec §4.1-4.2). Финиш = AND по всем 4 координатам после t≥t_end.
+    reach:
+      epsilon_v: 0.02              # м/с
+      epsilon_theta: 0.05          # рад (~2.9°)
+      epsilon_omega: 0.05          # рад/с
+      settle_timeout_s: 1.5
+
+    # Параметры построения опорной траектории r(t) — шарятся между Pi
+    # (mps_node) и compute (mps_runner) через MQTT-payload (Task 6).
+    reference:
+      a_max: 0.20                  # м/с² — linear accel в drive-trapezoid
+      alpha_max: 1.0               # рад/с² — angular accel в turn-trapezoid
+
+    # ── DEPRECATED (с pose-tracking refactor 2026-05-17, Task 5) ──
+    # Игнорируются mps_node, фиксят deprecation-warning в логах.
+    # Удалить через релиз после того как все Pi обновятся.
+    # turn_tolerance_rad: 0.05
+    # turn_timeout_s: 10.0
 
     # ── Outer LQR-петля коррекции бокового сноса (Козлов ТАУ §3) ──────
     # Подсистема ξ=[e_y, θ_err] → δθ_ref; K_lat решается через DARE при
