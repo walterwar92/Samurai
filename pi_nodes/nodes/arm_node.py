@@ -29,6 +29,7 @@ Publishes:
 """
 
 import json
+import math
 import os
 import sys
 
@@ -71,7 +72,16 @@ class ArmNode(MqttNode):
         # Это не имеет эффекта при start_disabled=True (PWM не идёт), но при
         # последующем set_angle(force=True) важно правильно посчитать.
         self._servos: list[ServoDriver] = []
-        self._angles: list[float] = list(map(float, self._home_angles))
+        # Target — куда хотим. Current — где реально сервопривод сейчас.
+        # Интерполятор шагает current → target с max_speed_deg_per_sec.
+        # Все источники углов (joint+angle, joints[], load_preset, home)
+        # ставят только target; сглаживание сквозное.
+        self._target_angles: list[float] = list(map(float, self._home_angles))
+        self._current_angles: list[float] = list(map(float, self._home_angles))
+        # Максимальная угловая скорость для интерполяции (°/сек).
+        # Защита: max_speed=0 «зависил» бы руку — clamp до 1.0.
+        self._max_speed: float = max(
+            1.0, float(cfg('servos.arm.max_speed_deg_per_sec', 120.0)))
         for i in range(self._num_joints):
             init_phys = self._to_physical(i, float(self._home_angles[i]))
             s = ServoDriver(channel=self._channels[i],
@@ -91,6 +101,10 @@ class ArmNode(MqttNode):
         # MQTT
         self.subscribe('arm/command', self._cmd_cb)
         self.create_timer(0.1, self._publish_state)  # 10 Hz
+        # Интерполятор: шагаем _current → _target @ 50Гц.
+        # PCA9685 I²C-команды принимаются без проблем; ServoDriver.set_angle
+        # уже клампит 0..180 и обрабатывает frozen.
+        self.create_timer(0.02, self._interpolate_tick)
 
         sim = any(s.simulated for s in self._servos)
         if sim:
@@ -112,18 +126,46 @@ class ArmNode(MqttNode):
             for i in range(self._num_joints):
                 phys = self._to_physical(i, self._home_angles[i])
                 self._servos[i].set_angle(phys, force=True)
-                self._angles[i] = float(self._home_angles[i])
+                self._target_angles[i] = self._current_angles[i] = float(self._home_angles[i])
             self._servo_initialized = True
 
     def _set_joint(self, idx: int, angle: float):
-        """Set joint angle (логический) с лимитами. Инверсия применяется внутри."""
+        """Set joint TARGET angle (логический) с лимитами.
+
+        Реальный PWM шлёт _interpolate_tick @ 50Гц, плавно шагая current
+        к target с max_speed_deg_per_sec. Если сустав frozen — target всё
+        равно обновляется (чтобы после unfreeze сразу поехать к нему).
+        """
         if idx < 0 or idx >= self._num_joints:
             self.log_warn('Invalid joint index: %d', idx)
             return
         angle = max(self._min_angles[idx], min(self._max_angles[idx], angle))
-        self._servos[idx].set_angle(self._to_physical(idx, angle))
-        if not self._servos[idx].frozen:
-            self._angles[idx] = angle
+        self._target_angles[idx] = angle
+
+    def _interpolate_tick(self):
+        """Шаг интерполяции: current → target со скоростью _max_speed.
+
+        Вызывается таймером @ 50Гц. Для каждого сустава:
+        - если frozen → пропускаем (PWM-удержание уже у драйвера);
+        - если |delta| <= max_step → snap current к target (без overshoot);
+        - иначе current += sign(delta) * max_step.
+        Реальный PWM выставляется через ServoDriver.set_angle (с учётом
+        инверсии — _to_physical).
+        """
+        dt = 0.02
+        max_step = self._max_speed * dt
+        for i in range(self._num_joints):
+            if self._servos[i].frozen:
+                continue
+            delta = self._target_angles[i] - self._current_angles[i]
+            if delta == 0.0:
+                continue
+            if abs(delta) <= max_step:
+                self._current_angles[i] = self._target_angles[i]
+            else:
+                self._current_angles[i] += math.copysign(max_step, delta)
+            phys = self._to_physical(i, self._current_angles[i])
+            self._servos[i].set_angle(phys)
 
     def _cmd_cb(self, topic, data):
         if isinstance(data, str):
@@ -183,7 +225,7 @@ class ArmNode(MqttNode):
                 if 0 <= idx < self._num_joints:
                     self._servos[idx].freeze()
                     self.log_info('Arm joint %d FROZEN at %.1f°',
-                                  idx + 1, self._angles[idx])
+                                  idx + 1, self._target_angles[idx])
             else:
                 for s in self._servos:
                     s.freeze()
@@ -208,8 +250,8 @@ class ArmNode(MqttNode):
             if not name:
                 self.log_warn('save_preset: name required')
                 return
-            self._presets.save_preset('arm', name, list(self._angles))
-            self.log_info('Preset saved: arm/%s = %s', name, self._angles)
+            self._presets.save_preset('arm', name, list(self._current_angles))
+            self.log_info('Preset saved: arm/%s = %s', name, self._current_angles)
             return
 
         if cmd == 'load_preset':
@@ -224,7 +266,7 @@ class ArmNode(MqttNode):
             self._unlock_if_needed()
             for i, a in enumerate(angles[:self._num_joints]):
                 self._set_joint(i, float(a))
-            self.log_info('Preset loaded: arm/%s → %s', name, self._angles)
+            self.log_info('Preset loaded: arm/%s → %s', name, self._target_angles)
             return
 
         if cmd == 'delete_preset':
@@ -252,7 +294,7 @@ class ArmNode(MqttNode):
             idx = int(d['joint']) - 1
             angle = float(d['angle'])
             self._set_joint(idx, angle)
-            self.log_info('Arm joint %d → %.1f°', idx + 1, self._angles[idx])
+            self.log_info('Arm joint %d → %.1f°', idx + 1, self._target_angles[idx])
             return
 
         # All joints: {"joints": [90, 90, 90, 90]}
@@ -261,7 +303,7 @@ class ArmNode(MqttNode):
             angles = d['joints']
             for i, a in enumerate(angles[:self._num_joints]):
                 self._set_joint(i, float(a))
-            self.log_info('Arm all joints → %s', self._angles)
+            self.log_info('Arm all joints → %s', self._target_angles)
             return
 
         self.log_warn('Unknown arm command format: %s', d)
@@ -274,7 +316,7 @@ class ArmNode(MqttNode):
     def _publish_state(self):
         state = {}
         for i in range(self._num_joints):
-            state[f'j{i+1}'] = round(self._angles[i], 1)
+            state[f'j{i+1}'] = round(self._current_angles[i], 1)
         state['frozen'] = [s.frozen for s in self._servos]
         state['locked'] = self._locked
         self.publish('arm/state', json.dumps(state))

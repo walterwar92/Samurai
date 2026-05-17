@@ -1,0 +1,193 @@
+"""Tests for pi_nodes.nodes.arm_node — фокус на интерполяции углов
+и миграции дефолтных пресетов.
+
+Контекст: текущий ServoDriver выставляет PWM моментально — слайдеры
+и пресеты ощущаются «резко». Меняем подход: arm_node ведёт _target/
+_current модель, фоновый таймер 50Гц шагает current к target с
+max_speed_deg_per_sec. Все источники (single joint, joints[],
+load_preset, home, FSM-команды) ставят только target — сглаживание
+становится сквозным.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+@pytest.fixture
+def arm_node_factory(tmp_path):
+    """Фабрика ArmNode с замоканной MQTT-связью, ServoDriver и presets-файлом.
+
+    Возвращает функцию `_factory(max_speed=120, presets_seed=None)`.
+    Каждый тест может задать стартовый presets.json через `presets_seed`
+    (dict с ключом 'arm').
+    """
+    def _factory(max_speed: float = 120.0, presets_seed: dict | None = None):
+        from pi_nodes.nodes import arm_node as arm_node_module
+
+        # Засеваем presets-файл
+        presets_path = tmp_path / 'servo_presets.json'
+        if presets_seed is not None:
+            import json
+            presets_path.write_text(json.dumps(presets_seed), encoding='utf-8')
+
+        def fake_cfg(key, default=None):
+            return {
+                'servos.arm.channels': [0, 1, 2, 3],
+                'servos.arm.home_angles': [0, 120, 0, 0],
+                'servos.arm.min_angles': [0, 0, 0, 0],
+                'servos.arm.max_angles': [160, 145, 180, 180],
+                'servos.arm.invert_angles': [False, False, False, True],
+                'servos.arm.labels': ['Основание', 'Сустав 1', 'Сустав 2', 'Клешня'],
+                'servos.arm.locked': False,    # unlocked для удобства тестов
+                'servos.arm.max_speed_deg_per_sec': max_speed,
+            }.get(key, default)
+
+        with patch('pi_nodes.mqtt_node.mqtt.Client') as MockClient:
+            MockClient.return_value = MagicMock()
+            with patch.object(arm_node_module.ArmNode, 'create_timer',
+                              lambda self, period, cb: None):
+                with patch.object(arm_node_module.ArmNode, 'subscribe',
+                                  lambda *a, **kw: None):
+                    with patch('pi_nodes.nodes.arm_node.ServoDriver') as MockServo:
+                        # Каждый Servo — MagicMock с .frozen=False и .set_angle
+                        instances = [MagicMock(frozen=False, simulated=False)
+                                     for _ in range(4)]
+                        MockServo.side_effect = instances
+                        with patch.object(arm_node_module, 'cfg', fake_cfg):
+                            def _init_presets(self, path=None):
+                                import json
+                                import threading
+                                self._path = str(presets_path)
+                                self._lock = threading.Lock()
+                                try:
+                                    with open(self._path, 'r', encoding='utf-8') as f:
+                                        self._data = json.load(f)
+                                except (FileNotFoundError, json.JSONDecodeError):
+                                    self._data = {}
+                            with patch.object(
+                                arm_node_module.ServoPresets,
+                                '__init__', _init_presets):
+                                node = arm_node_module.ArmNode()
+
+        node._mock_servos = instances
+        node._published: list[tuple[str, object]] = []
+
+        def _capture(suffix, payload, qos=0, retain=False):
+            node._published.append((suffix, payload))
+
+        node.publish = _capture  # type: ignore[assignment]
+        # Сброс mock-счётчиков: _unlock() в __init__ уже вызвал set_angle
+        # для всех серво, тестам интереснее то, что произошло ПОСЛЕ старта.
+        for m in instances:
+            m.reset_mock()
+        return node
+
+    return _factory
+
+
+def test_factory_imports():
+    """Smoke: модуль импортируется и фабрика готова."""
+    from pi_nodes.nodes import arm_node as _  # noqa: F401
+
+
+def test_init_target_equals_current_equals_home(arm_node_factory):
+    """На старте _target_angles и _current_angles совпадают с home_angles.
+
+    Это гарантия что без команд интерполятор не двигает руку — она остаётся
+    в home (или в физическом положении, если locked=True).
+    """
+    node = arm_node_factory()
+    assert node._current_angles == [0.0, 120.0, 0.0, 0.0]
+    assert node._target_angles == [0.0, 120.0, 0.0, 0.0]
+
+
+def test_single_joint_sets_target_only_no_immediate_move(arm_node_factory):
+    """`{joint:1, angle:90}` → _target_angles[0]=90, но _current_angles[0]=0
+    (home). Сервопривод не дёрнется без вызова _interpolate_tick.
+    """
+    node = arm_node_factory()
+    node._cmd_cb('arm/command', {'joint': 1, 'angle': 90.0})
+
+    assert node._target_angles[0] == 90.0
+    assert node._current_angles[0] == 0.0    # home, не двигались
+    # ServoDriver.set_angle не вызывался для CH0
+    node._mock_servos[0].set_angle.assert_not_called()
+
+
+def test_interpolate_tick_steps_max_speed(arm_node_factory):
+    """Tick @ 50Гц с max_speed=120°/с даёт шаг 2.4° за вызов.
+
+    Цель — 90°, current=0°. После 1 тика current=2.4°.
+    """
+    node = arm_node_factory(max_speed=120.0)
+    node._target_angles[0] = 90.0
+
+    node._interpolate_tick()
+
+    assert node._current_angles[0] == pytest.approx(2.4, abs=1e-6)
+    # ServoDriver получил physical-угол (для CH0 invert=False → physical=logical)
+    node._mock_servos[0].set_angle.assert_called_once()
+    args, _ = node._mock_servos[0].set_angle.call_args
+    assert args[0] == pytest.approx(2.4, abs=1e-6)
+
+
+def test_interpolate_tick_snaps_when_delta_smaller_than_step(arm_node_factory):
+    """Если |target - current| < max_step, current = target (не overshoot)."""
+    node = arm_node_factory(max_speed=120.0)
+    node._current_angles[0] = 89.0
+    node._target_angles[0] = 90.0    # delta=1°, max_step=2.4° → snap
+
+    node._interpolate_tick()
+
+    assert node._current_angles[0] == 90.0
+
+
+def test_interpolate_tick_handles_negative_direction(arm_node_factory):
+    """Target меньше current — шагаем вниз."""
+    node = arm_node_factory(max_speed=120.0)
+    node._current_angles[0] = 50.0
+    node._target_angles[0] = 0.0
+
+    node._interpolate_tick()
+
+    assert node._current_angles[0] == pytest.approx(47.6, abs=1e-6)
+
+
+def test_interpolate_tick_skips_frozen_joints(arm_node_factory):
+    """Если servo.frozen=True — interpolate_tick НЕ двигает current и НЕ
+    шлёт set_angle. Это эквивалентно «freeze ставит current=target и стоп».
+    """
+    node = arm_node_factory(max_speed=120.0)
+    node._target_angles[0] = 90.0
+    node._mock_servos[0].frozen = True
+
+    node._interpolate_tick()
+
+    assert node._current_angles[0] == 0.0   # не двигались
+    node._mock_servos[0].set_angle.assert_not_called()
+
+
+def test_publish_state_uses_current(arm_node_factory):
+    """`arm/state` публикует _current_angles — то, где сервопривод РЕАЛЬНО
+    сейчас, а не target. Так UI видит плавное движение слайдеров, не скачки.
+    """
+    import json
+    node = arm_node_factory()
+    node._target_angles = [90.0, 60.0, 45.0, 180.0]
+    node._current_angles = [10.0, 110.0, 0.0, 0.0]    # ещё едем
+
+    node._publish_state()
+
+    pub = next(p for p in node._published if p[0] == 'arm/state')
+    payload = json.loads(pub[1])
+    assert payload['j1'] == 10.0
+    assert payload['j2'] == 110.0
+    assert payload['j3'] == 0.0
+    assert payload['j4'] == 0.0
