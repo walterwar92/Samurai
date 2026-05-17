@@ -10,7 +10,8 @@ interface MpsTargetPickerProps {
   distance: number
   /** Целевая скорость — показывается в подвале, в прогон уходит как есть. */
   vTarget: number
-  /** Подтверждение: пользователь нажал «Старт». Передаёт φ (рад). */
+  /** Подтверждение: пользователь нажал «Старт». Передаёт финальный курс φ (рад) —
+   *  куда робот будет смотреть ПОСЛЕ прибытия в (D, 0) локального фрейма старта. */
   onConfirm: (targetHeading: number) => void
   /** Отмена: ✕ или клик по backdrop. Прогон не запускается. */
   onCancel: () => void
@@ -58,7 +59,7 @@ export function MpsTargetPicker({
       >
         {/* Шапка */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-700 bg-zinc-900/80">
-          <span className="text-sm font-medium text-zinc-100">Куда ехать роботу</span>
+          <span className="text-sm font-medium text-zinc-100">Финальный курс после прибытия в (D, 0)</span>
           <button
             type="button"
             onClick={onCancel}
@@ -81,7 +82,7 @@ export function MpsTargetPicker({
         {/* Подвал: курс + дистанция + «Старт» */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-700 bg-zinc-900/80">
           <div className="text-xs font-mono text-zinc-300">
-            Курс: <span className="text-cyan-400">{headingLabel}</span>
+            Финальный курс φ: <span className="text-cyan-400">{headingLabel}</span>
             {' • '}
             Дистанция: <span className="text-zinc-100">{distance.toFixed(2)} м</span>
             {' • '}

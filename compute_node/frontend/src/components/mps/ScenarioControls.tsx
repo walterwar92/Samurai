@@ -35,7 +35,7 @@ export function ScenarioControls({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Сценарий «проехать D м вперёд»</CardTitle>
+        <CardTitle>Сценарий «доехать в (D, 0) и развернуться к φ»</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center gap-3 flex-wrap">

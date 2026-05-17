@@ -17,7 +17,7 @@ describe('MpsTargetPicker', () => {
     render(
       <MpsTargetPicker distance={2} vTarget={0.15} onConfirm={vi.fn()} onCancel={vi.fn()} />,
     )
-    expect(screen.getByText(/Куда ехать роботу/i)).toBeInTheDocument()
+    expect(screen.getByText(/Финальный курс после прибытия/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Старт/i })).toBeInTheDocument()
   })
 
