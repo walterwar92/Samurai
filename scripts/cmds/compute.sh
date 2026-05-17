@@ -54,12 +54,27 @@ build_frontend() {
         }
     fi
 
-    rm -rf "$SAMURAI_ROOT/compute_node/static/assets" 2>/dev/null || true
+    # vite сам очищает outDir (emptyOutDir: true), поэтому свой rm не нужен.
+    # Но если vite упадёт ПОСЛЕ очистки — потеряем UI. Делаем бекап для отката.
+    local static_dir="$SAMURAI_ROOT/compute_node/static"
+    local backup_dir="${static_dir}.prev"
+    rm -rf "$backup_dir" 2>/dev/null || true
+    if [[ -d "$static_dir/assets" ]]; then
+        cp -r "$static_dir" "$backup_dir"
+    fi
 
     if (cd "$fe_dir" && npm run build 2>&1 | tail -5); then
         log_ok "Фронт собран → compute_node/static/"
+        rm -rf "$backup_dir" 2>/dev/null || true
     else
-        log_warn "Сборка не удалась — будет использован старый билд"
+        log_warn "Сборка не удалась"
+        if [[ -d "$backup_dir/assets" ]]; then
+            log_info "Откат к предыдущему билду из $backup_dir"
+            rm -rf "$static_dir"
+            mv "$backup_dir" "$static_dir"
+        else
+            log_err "Бекапа нет — UI работать не будет (белый экран)"
+        fi
     fi
 }
 
@@ -113,6 +128,22 @@ stop_samcan_bridge() {
         wait "$SAMCAN_PID" 2>/dev/null || true
     fi
     pkill -f "samcan_bridge.py" 2>/dev/null || true
+}
+
+# Единый cleanup: сначала Docker (иначе ros2 launch виснет 20-60 сек на Ctrl+C
+# из-за плохого проброса SIGINT через MSYS/Docker Desktop), потом Samcan.
+# Идемпотентно — может вызываться из INT/TERM trap и затем EXIT trap.
+_CLEANUP_DONE=false
+cleanup_all() {
+    [[ "$_CLEANUP_DONE" == "true" ]] && return 0
+    _CLEANUP_DONE=true
+    log_info "Останавливаю compute-стек..."
+    if docker ps -q --filter "name=$CONTAINER_NAME" | grep -q .; then
+        log_info "docker stop $CONTAINER_NAME (timeout 5s)..."
+        docker stop -t 5 "$CONTAINER_NAME" &>/dev/null || \
+            docker kill "$CONTAINER_NAME" &>/dev/null || true
+    fi
+    stop_samcan_bridge
 }
 
 # ── Docker образ ────────────────────────────────────────────────────────────
@@ -399,9 +430,12 @@ EOF
         build_frontend "false"
     fi
 
+    # cleanup при выходе и сигналах. ВАЖНО: ставим trap ДО docker run,
+    # независимо от --no-samcan, чтобы Ctrl+C гасил и контейнер.
+    trap cleanup_all EXIT
+    trap 'cleanup_all; exit 130' INT TERM
+
     if ! $no_samcan; then
-        # cleanup при выходе
-        trap stop_samcan_bridge EXIT INT TERM
         start_samcan_bridge "$samcan_port"
     fi
 
