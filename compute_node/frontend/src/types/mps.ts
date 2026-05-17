@@ -7,7 +7,10 @@
 
 // 1.1: добавлены опциональные e_y/theta_err/delta_theta в MpsTelemetryPoint
 // (outer LQR-петля коррекции бокового сноса). Backwards-compatible.
-export const MPS_SCHEMA_VERSION = '1.1' as const
+// 1.2: добавлены опциональные r/x_local/y_local в MpsTelemetryPoint;
+// статус 'timeout_settle'; семантика target_heading = final heading
+// (pose-tracking refactor 2026-05-17).
+export const MPS_SCHEMA_VERSION = '1.2' as const
 
 export const N_STATES = 5
 export const N_CONTROLS = 2
@@ -47,8 +50,9 @@ export interface MpsScenarioRequest {
   /** Целевая продольная скорость (0 < v ≤ 0.30) */
   v_target: number
   source: ScenarioSource
-  /** Относительный целевой курс (рад, −π…π) от курса на старте сценария.
-   *  0 = ехать прямо. Используется только при source='robot'. */
+  /** Финальный курс φ (рад, −π…π) после прибытия в (D, 0) локального
+   *  фрейма старта. 0.0 = не разворачивается; π = разворот на 180°
+   *  после доезда. Используется только при source='robot'. */
   target_heading?: number
   schema_version?: string
 }
@@ -73,6 +77,18 @@ export interface MpsTelemetryPoint {
   /** Коррекция курсовой ссылки δθ_ref = -K_lat·[e_y,θ_err], клипнута до
    *  ±delta_theta_max (рад). Тот же контекст, что и e_y. */
   delta_theta?: number
+  /** Опорный 5-вектор r(t) = [s_ref, v_ref, θ_ref, ω_ref, e_int_ref] на
+   *  этом тике (pose-tracking, schema 1.2). null/undefined для старой
+   *  телеметрии (pre-2026-05-17). */
+  r?: number[]
+  /** Позиция робота (м) в локальном фрейме старта; X-ось локального
+   *  фрейма направлена вдоль курса робота на момент _on_scenario_run.
+   *  null/undefined для старой телеметрии. */
+  x_local?: number
+  /** Позиция робота (м) в локальном фрейме старта; Y-ось локального
+   *  фрейма — налево от X (правая система координат). null/undefined
+   *  для старой телеметрии. */
+  y_local?: number
 }
 
 export interface MpsMetrics {
@@ -90,7 +106,7 @@ export interface MpsMetrics {
   peak_omega: number
 }
 
-export type ScenarioStatus = 'running' | 'reached' | 'timeout' | 'aborted' | 'error'
+export type ScenarioStatus = 'running' | 'reached' | 'timeout' | 'timeout_settle' | 'aborted' | 'error'
 
 export interface MpsScenarioResult {
   run_id: string
