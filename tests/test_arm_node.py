@@ -191,3 +191,45 @@ def test_publish_state_uses_current(arm_node_factory):
     assert payload['j2'] == 110.0
     assert payload['j3'] == 0.0
     assert payload['j4'] == 0.0
+
+
+def test_interpolate_tick_converges_after_n_ticks(arm_node_factory):
+    """После ceil(delta / max_step) тиков current точно равно target.
+
+    Защита от регрессии "одна команда поставила target, рука «зависла»
+    на полпути". Тест прогоняет интерполятор до сходимости и
+    проверяет финальное равенство.
+    """
+    import math as _math
+    node = arm_node_factory(max_speed=120.0)
+    node._target_angles[0] = 100.0   # delta=100°, max_step=2.4° → ~42 тика
+
+    expected_ticks = int(_math.ceil(100.0 / 2.4))
+    for _ in range(expected_ticks + 2):    # +2 для запаса
+        node._interpolate_tick()
+
+    assert node._current_angles[0] == 100.0
+    # Последний шаг — snap. Все промежуточные были по max_step.
+
+
+def test_interpolate_tick_inverted_joint_sends_physical_angle(arm_node_factory):
+    """CH3 (клешня) имеет invert=True в фикстуре (max=180, min=0).
+    Логическое target=180 (закрыто) → physical = 180 - 180 + 0 = 0.
+    Логическое target=0 (открыто) → physical = 180 - 0 + 0 = 180.
+
+    Фиксирует контракт _to_physical: интерполятор работает в логических
+    координатах, физическая инверсия применяется ТОЛЬКО на границе
+    set_angle. Регресс здесь = клешня будет открываться когда
+    логически закрывается.
+    """
+    node = arm_node_factory(max_speed=120.0)
+    # Логически "закрыть клешню" — target=180
+    node._target_angles[3] = 180.0
+    node._current_angles[3] = 178.0   # уже почти доехали → snap
+
+    node._interpolate_tick()
+
+    # Logical current=180, but ServoDriver получает physical=0
+    assert node._current_angles[3] == 180.0
+    args, _ = node._mock_servos[3].set_angle.call_args
+    assert args[0] == pytest.approx(0.0, abs=1e-6)
