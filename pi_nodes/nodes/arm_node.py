@@ -111,6 +111,21 @@ class ArmNode(MqttNode):
         # Preset manager
         self._presets = ServoPresets()
 
+        # Авто-миграция дефолтных поз. Если пользователь уже сохранил свой
+        # вариант пресета — НЕ перетираем (load_preset вернёт его).
+        # Цель: FSM хант мяча (см. docs/superpowers/specs/2026-05-17-arm-grab-
+        # sequence-design.md) получает готовые grab_ready и grab_hold без
+        # ручных кликов в UI.
+        _DEFAULT_ARM_PRESETS = {
+            'grab_ready': [160.0, 100.0, 180.0, 0.0],
+            'grab_hold':  [10.0,  30.0,  180.0, 180.0],
+        }
+        for _name, _angles in _DEFAULT_ARM_PRESETS.items():
+            if self._presets.load_preset('arm', _name) is None:
+                self._presets.save_preset('arm', _name, _angles)
+                self.log_info('Migration: created arm preset "%s"=%s',
+                              _name, _angles)
+
         # MQTT
         self.subscribe('arm/command', self._cmd_cb)
         self.create_timer(0.1, self._publish_state)  # 10 Hz

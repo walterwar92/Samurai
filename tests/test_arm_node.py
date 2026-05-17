@@ -233,3 +233,35 @@ def test_interpolate_tick_inverted_joint_sends_physical_angle(arm_node_factory):
     assert node._current_angles[3] == 180.0
     args, _ = node._mock_servos[3].set_angle.call_args
     assert args[0] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_init_migrates_default_presets_when_empty(arm_node_factory):
+    """При первом запуске (presets.json не существует или пуст) arm_node
+    создаёт два дефолтных пресета — grab_ready и grab_hold. Это даёт FSM
+    готовые позы без ручной настройки пользователем.
+    """
+    node = arm_node_factory(presets_seed=None)
+
+    assert node._presets.load_preset('arm', 'grab_ready') == [160.0, 100.0, 180.0, 0.0]
+    assert node._presets.load_preset('arm', 'grab_hold') == [10.0, 30.0, 180.0, 180.0]
+
+
+def test_init_does_not_overwrite_user_presets(arm_node_factory):
+    """Если пользователь сохранил свой grab_ready — миграция НЕ перетирает.
+
+    Сценарий: пользователь скорректировал углы под живое железо и сохранил.
+    После рестарта Pi (или service restart) — должны остаться пользовательские
+    значения, не сброситься в дефолт.
+    """
+    custom = {
+        'arm': {
+            'grab_ready': [150.0, 95.0, 175.0, 5.0],   # пользовательские
+            # grab_hold пользователь НЕ сохранял — должен создаться дефолт
+        }
+    }
+    node = arm_node_factory(presets_seed=custom)
+
+    # Пользовательский сохраняется
+    assert node._presets.load_preset('arm', 'grab_ready') == [150.0, 95.0, 175.0, 5.0]
+    # Отсутствующий — создаётся из дефолта
+    assert node._presets.load_preset('arm', 'grab_hold') == [10.0, 30.0, 180.0, 180.0]
