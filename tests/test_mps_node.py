@@ -263,22 +263,51 @@ def test_tick_reaches_goal(mps_node):
     assert finished[0]['status'] == 'reached'
 
 
-# ── Bug C: reach_tolerance default 0.02 м (был 0.05 м = D/2 на D=0.10) ──
-def test_reach_tolerance_default_is_2cm(mps_node):
-    """Дефолт mps.scenario.reach_tolerance_m = 0.02 м.
+# ── Bug C: reach_tolerance default 0.005 м (spec §4.1) ─────────────────
+def test_reach_tolerance_default_is_5mm():
+    """Дефолт ε_s (когда config не задаёт mps.scenario.reach_tolerance_m)
+    должен быть 5 мм per spec §4.1. Был 0.02 м в pre-pose-tracking эпохе;
+    с feedforward decel ε можно ужать. Конфиг может перекрыть на железе.
 
-    Reason (Bug C, diagnostics 2026-05-15): run #1 status='reached' при
-    s_end=0.251 на D=0.30 — 84% дистанции засчитывалось как «достиг»
-    из-за tolerance 0.05 м. Для D=0.10 это была tolerance D/2 — любой
-    short hop проходил. 0.02 м сопоставимо с разрешением dead-reckoning
-    одометрии.
-    """
-    assert mps_node._reach_eps == pytest.approx(0.02)
+    Проверяем именно код-дефолт (через монки-патч _cfg), а не значение из
+    config.yaml — оно может отличаться на конкретном железе, но если ключ
+    отсутствует, должны получить 5 мм. Это гарантирует sim/Pi parity:
+    compute mps_runner.py:263 тоже использует 0.005."""
+    from pi_nodes.nodes.mps_node import MpsNode, _REACH_EPS_DEFAULT
+
+    # Сначала проверяем сам модульный констант — единственный источник истины.
+    assert _REACH_EPS_DEFAULT == pytest.approx(0.005)
+
+    # Затем — что MpsNode действительно подхватывает дефолт, когда config
+    # не задаёт ключ (имитируем чистый запуск без config.yaml).
+    def fake_cfg(key, default):
+        if key == 'mps.scenario.reach_tolerance_m':
+            return default
+        # Прочие ключи читаем из реального config_loader.
+        try:
+            from config_loader import cfg as real_cfg
+            return real_cfg(key, default)
+        except ImportError:
+            return default
+
+    with patch('pi_nodes.mqtt_node.mqtt.Client') as MockClient:
+        MockClient.return_value = MagicMock()
+        with patch.object(MpsNode, 'create_timer', lambda self, period, cb: None):
+            with patch.object(MpsNode, 'subscribe', lambda *a, **kw: None):
+                with patch.object(MpsNode, '_cfg', staticmethod(fake_cfg)):
+                    node = MpsNode()
+    assert node._reach_eps == pytest.approx(0.005)
 
 
 # was: phase='drive' override + |s−D|<ε; now: 4-coord check post t_end.
 def test_reach_at_98_percent_with_default_tolerance(mps_node):
-    """Граница reach: s=0.985 на D=1.0 → reached (1 - 0.02 = 0.98)."""
+    """Граница reach: s=0.985 на D=1.0 → reached.
+
+    Fixture использует реальный config.yaml где mps.scenario.reach_tolerance_m
+    задан в 0.02 м (на этом железе dead-reckoning шумнее 5 мм). Код-дефолт
+    модуля mps_node — 0.005 м (spec §4.1; см. test_reach_tolerance_default_is_5mm),
+    но config может перекрыть. Поэтому s=0.985 при D=1.0 → |Δ|=0.015 < 0.02
+    ⇒ reached."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-edge',
         'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
@@ -296,6 +325,7 @@ def test_reach_at_98_percent_with_default_tolerance(mps_node):
 def test_no_reach_at_95_percent_with_default_tolerance(mps_node):
     """Граница reach: s=0.95 на D=1.0 → НЕ reached (0.95 < 0.98).
 
+    Fixture видит ε_s=0.02 (из config.yaml — см. предыдущий тест).
     После t_end |s−D|=0.05 > ε_s=0.02 ⇒ ждём settle_timeout и
     закроемся как 'timeout_settle'. На один тик `finished` ещё не
     публикуется — проверяем именно status≠'reached'.
@@ -517,16 +547,56 @@ def test_mps_node_loads_settle_tolerances(mps_node):
     assert isinstance(mps_node._settle_timeout, float) and mps_node._settle_timeout > 0
 
 
-def test_mps_node_warns_on_deprecated_turn_config(mps_node, caplog):
-    """Старые ключи turn_tolerance_rad / turn_timeout_s в config.yaml
-    дают deprecation warning при старте mps_node (см. _build_from_config).
-    Сам fixture mps_node уже инициализирован — warnings залогированы
-    на этапе __init__; проверяем что флаги были на месте."""
-    # Сам caplog уже выглядит на reasonable strings, но fixture сложна;
-    # достаточно проверить что атрибуты явно не существуют (refactor
-    # их убрал) и omega_max_turn пережил.
-    assert not hasattr(mps_node, '_turn_tol')
-    assert not hasattr(mps_node, '_turn_timeout')
+def test_mps_node_warns_on_deprecated_turn_config():
+    """log_warn должен фиритьcя при наличии deprecated config-ключей.
+    Проверяем оба: turn_tolerance_rad и turn_timeout_s. Раньше тест только
+    смотрел, что атрибутов нет (что ничего не проверяло про сам warning) —
+    refactor, удаливший log_warn-call'ы в _build_from_config, прошёл бы
+    незаметно. Здесь мокаем log_warn и проверяем что он был позван для
+    обоих deprecated ключей."""
+    from pi_nodes.nodes.mps_node import MpsNode
+
+    # _cfg должен возвращать non-None для обоих deprecated ключей, чтобы
+    # сработали обе ветки `if self._cfg(...) is not None` в __init__.
+    def fake_cfg(key, default):
+        if key == 'mps.scenario.turn_tolerance_rad':
+            return 0.05
+        if key == 'mps.scenario.turn_timeout_s':
+            return 10.0
+        try:
+            from config_loader import cfg as real_cfg
+            return real_cfg(key, default)
+        except ImportError:
+            return default
+
+    with patch('pi_nodes.mqtt_node.mqtt.Client') as MockClient:
+        MockClient.return_value = MagicMock()
+        with patch.object(MpsNode, 'create_timer', lambda self, period, cb: None):
+            with patch.object(MpsNode, 'subscribe', lambda *a, **kw: None):
+                with patch.object(MpsNode, '_cfg', staticmethod(fake_cfg)):
+                    with patch.object(MpsNode, 'log_warn') as mock_warn:
+                        MpsNode()
+
+    # Должны быть как минимум 2 warning-вызова — по одному на каждый ключ.
+    warn_messages = [
+        (call.args[0] % call.args[1:]) if len(call.args) > 1 else call.args[0]
+        for call in mock_warn.call_args_list
+    ]
+    turn_tol_warns = [m for m in warn_messages if 'turn_tolerance_rad' in m]
+    turn_timeout_warns = [m for m in warn_messages if 'turn_timeout_s' in m]
+    assert turn_tol_warns, (
+        f'expected warning mentioning turn_tolerance_rad, got: {warn_messages}'
+    )
+    assert turn_timeout_warns, (
+        f'expected warning mentioning turn_timeout_s, got: {warn_messages}'
+    )
+    # И сам текст должен называть это deprecation.
+    assert any('deprecated' in m.lower() for m in turn_tol_warns), (
+        f'expected "deprecated" in turn_tolerance_rad warning, got: {turn_tol_warns}'
+    )
+    assert any('deprecated' in m.lower() for m in turn_timeout_warns), (
+        f'expected "deprecated" in turn_timeout_s warning, got: {turn_timeout_warns}'
+    )
 
 
 # ── Outer LQR-loop (lateral drift correction) ─────────────────────────

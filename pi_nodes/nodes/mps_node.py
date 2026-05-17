@@ -51,11 +51,13 @@ from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 from pi_nodes.mqtt_node import MqttNode
 
 # Default tolerance: «достиг цели» если осталось ≤ этого (метры).
-# Перетирается через mps.scenario.reach_tolerance_m в config.yaml. Старое
-# дефолтное значение 0.05 м засчитывало 84% дистанции на D=0.30 как «reached»
-# и было ровно D/2 на D=0.10 — слишком грубо. Новый дефолт 0.02 м (2 см) —
-# сопоставимо с разрешением dead-reckoning одометрии, не зашумит status.
-_REACH_EPS_DEFAULT = 0.02
+# Спека §4.1 / §7.1: дефолт 0.005 м (5 мм). Старое значение 0.02 м было
+# выбрано в pre-pose-tracking эпохе для компенсации отсутствия decel —
+# теперь референс с трапец-профилем сам сводит v к нулю, поэтому ε
+# можно ужать до сопоставимого с одометрической дискретностью. Конфиг
+# на конкретном железе может перекрыть через mps.scenario.reach_tolerance_m
+# если dead-reckoning шумнее 5 мм (тогда задрать обратно к 0.02).
+_REACH_EPS_DEFAULT = 0.005
 
 # Состояние x = [s, v, θ, ω, e_int]
 _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
