@@ -102,6 +102,12 @@ class FSMNode(MqttNode):
         self._cmd_msg = {'linear_x': 0.0, 'angular_z': 0.0}
         self._cmd_manual_msg = {'linear_x': 0.0, 'angular_z': 0.0}
 
+        # Флаг «послали grab_ready при входе в APPROACHING» (см. _do_approach).
+        # Сбрасывается в _transition при любом изменении state.
+        self._approach_arm_sent = False
+        # Локальный таймер фазы GRABBING (см. _do_grab).
+        self._grab_t = 0.0
+
         # Subscribers
         self.subscribe('voice_command', self._voice_cb, qos=1)
         # voice/intent — структурированный intent от compute_node/llm_voice
@@ -337,6 +343,8 @@ class FSMNode(MqttNode):
         self._state = new_state
         self._approach_timeout = 0.0
         self._lost_frames = 0
+        self._approach_arm_sent = False
+        self._grab_t = 0.0
         self.log_info('FSM: %s → %s', old, new_state)
 
         # Exit actions
@@ -431,6 +439,13 @@ class FSMNode(MqttNode):
         self._pub_cmd_vel(0.0, angular)
 
     def _do_approach(self, det, range_m):
+        if not self._approach_arm_sent:
+            self.publish('arm/command',
+                         {'command': 'load_preset', 'name': 'grab_ready'},
+                         qos=1)
+            self._approach_arm_sent = True
+            self.log_info('Arm → grab_ready (approach start)')
+
         self._approach_timeout += 0.1
 
         if self._approach_timeout > 30.0:
