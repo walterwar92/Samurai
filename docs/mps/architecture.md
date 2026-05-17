@@ -2,7 +2,8 @@
 
 > Карта компонентов и потоков данных для модуля «Модель Пространства
 > Состояний». Контракт payload-ов — [`api.md`](./api.md). Сценарий —
-> [`scenario_forward.md`](./scenario_forward.md).
+> [`scenario_pose.md`](./scenario_pose.md) (был `scenario_forward.md`
+> до pose-tracking рефакторинга 2026-05-17).
 
 ## 1. Что входит в модуль
 
