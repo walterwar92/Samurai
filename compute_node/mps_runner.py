@@ -35,6 +35,7 @@ from compute_node.dashboard.schemas.mps import (
     MpsTelemetryPoint,
 )
 from pi_nodes.control.mpc_controller import MPCController
+from pi_nodes.control.mps_reference import build_reference
 from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 
 try:
@@ -231,27 +232,54 @@ def run_scenario_idealized(
         )
 
     R_diag = np.asarray(matrices.R_diag, dtype=float)
-    timeout_t = max(1.0, 3.0 * distance / max(v_target, 1e-6))
-    bound = max(50.0, 5.0 * distance)  # |x| > bound ⇒ blow-up
-    epsilon_reach = 0.05               # «достиг цели» если осталось ≤5 см
+
+    # Параметры референса (хардкод дефолтов — на compute их обычно нет в
+    # config; Pi передаёт свои значения через MQTT-payload для синхронизации).
+    a_max_ref = 0.20
+    alpha_max_ref = 1.0
+    omega_max_ref = 1.0
+
+    try:
+        traj = build_reference(
+            distance=distance, v_target=v_target,
+            target_heading=float(request.target_heading),
+            a_max=a_max_ref, alpha_max=alpha_max_ref, omega_max=omega_max_ref,
+        )
+    except ValueError as exc:
+        return MpsScenarioResult(
+            run_id=rid, started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            status='error', request=request, matrices_snapshot=matrices,
+            telemetry=[], metrics=None,
+            error_message=f'reference build failed: {exc}',
+        )
+
+    settle_timeout = 1.5
+    eps_s, eps_v, eps_theta, eps_omega = 0.005, 0.02, 0.05, 0.05
+    bound = max(50.0, 5.0 * distance)
+    # Anti-windup на интеграле курсовой ошибки — те же дефолты, что
+    # mps_node на Pi (`mps.scenario.e_int_max`, 0.5 рад·с). Симулятор
+    # должен по поведению совпадать с роботом, поэтому e_int здесь
+    # тоже накапливаем извне, как ∫(−θ_err) dt, и переписываем x[4]
+    # после plant.step — иначе модель `ė_int = −θ` гонит интегратор
+    # к θ=0 вместо θ=θ_target (см. spec §3.3 _accumulate_eint и
+    # pi_nodes/nodes/mps_node.py ~L630).
+    e_int_max = 0.5
 
     telemetry: list[MpsTelemetryPoint] = []
     status = 'timeout'
     error_message: Optional[str] = None
-
     t = 0.0
-    for step in range(max_steps):
-        # Reference: ramp s_ref to D, hold v_target, others zero.
-        s_ref = min(distance, t * v_target)
-        x_ref = np.array([s_ref, v_target, 0.0, 0.0, 0.0])
+    theta_target = traj.theta_start + traj.phi_signed
 
+    for step in range(max_steps):
+        r_ref = traj.r(t)
         try:
-            u = mpc.step(x, x_ref=x_ref)
+            u = mpc.step(x, x_ref=r_ref)
         except Exception as exc:
             status = 'error'
             error_message = f'mpc.step failed at t={t:.3f}: {exc}'
             break
-
         if not _isfinite_all(u, x):
             status = 'error'
             error_message = f'NaN/Inf at t={t:.3f} (u={u.tolist()}, x={x.tolist()})'
@@ -261,7 +289,6 @@ def run_scenario_idealized(
             error_message = f'|x| > {bound} at t={t:.3f} — instability'
             break
 
-        # Output for UI
         try:
             y = plant.output(x, u)
         except Exception:
@@ -275,21 +302,46 @@ def run_scenario_idealized(
                 u=[float(v) for v in u],
                 y=[float(v) for v in y],
                 s_remaining=float(s_remaining),
+                r=[float(v) for v in r_ref],
+                x_local=float(x[_S_IDX]),  # sim — straight-line: x_local = s
+                y_local=0.0,
             )
         )
 
-        # Reached?
-        if x[_S_IDX] >= distance - epsilon_reach:
-            status = 'reached'
-            break
+        if t >= traj.t_end:
+            theta_err = (x[2] - theta_target + math.pi) % (2 * math.pi) - math.pi
+            if (abs(x[_S_IDX] - distance) < eps_s
+                    and abs(x[1]) < eps_v
+                    and abs(theta_err) < eps_theta
+                    and abs(x[3]) < eps_omega):
+                status = 'reached'
+                break
+            if t > traj.t_end + settle_timeout:
+                status = 'timeout_settle'
+                error_message = (f'settle timeout: |s−D|={abs(x[_S_IDX]-distance):.4f}, '
+                                 f'|v|={abs(x[1]):.4f}, |θ_err|={abs(theta_err):.4f}, '
+                                 f'|ω|={abs(x[3]):.4f}')
+                break
 
-        # Timeout?
-        if t > timeout_t:
+        if t > max(1.0, 1.5 * traj.t_end + 2.0):
             status = 'timeout'
+            error_message = f'run timeout: t={t:.3f} > 1.5·t_end={1.5*traj.t_end:.3f}'
             break
 
-        # Propagate (ideal: no noise, no slip, no motor lag)
+        # Override e_int: mirror Pi (mps_node._accumulate_eint).
+        # Канонический plant имеет `ė_int = -θ` в Ad[4,2], что после
+        # plant.step добавляет `-θ·dt` к x[4]. Это работает только при
+        # r[θ]=0; при non-zero θ-референсе интегратор гонит θ → 0
+        # вместо θ_target. На Pi эта же проблема решена тем, что
+        # mps_node ПОЛНОСТЬЮ переписывает x_meas[EINT] значением
+        # `∫(-θ_err) dt` с anti-windup (spec §3.3, mps_node.py ~L630).
+        # Здесь делаем то же самое: запоминаем prev_eint ДО plant.step,
+        # пускаем шаг, затем override x[4] на интеграл от θ_err.
+        prev_eint = float(x[4])
         x = plant.step(x, u)
+        theta_err_acc = (x[2] - r_ref[2] + math.pi) % (2 * math.pi) - math.pi
+        new_eint = prev_eint + (-theta_err_acc) * dt
+        x[4] = max(-e_int_max, min(e_int_max, new_eint))
         t += dt
 
     metrics = _compute_metrics(telemetry, distance, R_diag, dt)

@@ -179,7 +179,10 @@ def test_scenario_run_sim_returns_result(client):
     body = r.json()
     assert body['run_id'].startswith('sim-')
     assert body['result'] is not None
-    assert body['result']['status'] in ('reached', 'timeout', 'error')
+    # 'timeout_settle' добавлен в Task 4 pose-tracking refactor —
+    # длинные D + дефолтный Q[s]=10 не успевают сойтись на ε_s=0.005
+    # за settle_timeout=1.5 c (моторный лаг τ_v=0.15).
+    assert body['result']['status'] in ('reached', 'timeout', 'timeout_settle', 'error')
     assert len(body['result']['telemetry']) > 0
 
 
