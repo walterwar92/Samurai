@@ -240,6 +240,22 @@ def test_scenario_run_robot_includes_target_heading_in_mqtt(client, fake_mqtt):
     assert payload['request']['target_heading'] == pytest.approx(0.6)
 
 
+def test_scenario_run_includes_reference_in_mqtt_payload(client, fake_mqtt):
+    """POST /api/v1/mps/scenario/run с source=robot публикует payload с reference."""
+    fake_mqtt.connected = True
+    resp = client.post('/api/v1/mps/scenario/run', json={
+        'distance': 0.30, 'v_target': 0.15, 'target_heading': 0.0,
+        'source': 'robot',
+    })
+    assert resp.status_code == 200
+    run_call = next(c for c in fake_mqtt.publish.call_args_list
+                    if c.args[0] == 'mps/scenario/run')
+    payload = run_call.args[1]
+    assert 'reference' in payload
+    assert payload['reference']['a_max'] > 0
+    assert payload['reference']['alpha_max'] > 0
+
+
 def test_scenario_run_target_heading_defaults_to_zero(client):
     """Без target_heading в запросе — Pydantic дефолтит в 0.0
     (обратная совместимость, поведение «вперёд»)."""

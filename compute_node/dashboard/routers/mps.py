@@ -301,6 +301,12 @@ async def scenario_run(
         'run_id': run_id,
         'request': request.model_dump(),
         'schema_version': matrices.schema_version,
+        'reference': {
+            # Compute-side defaults для эталонной траектории; Pi может
+            # перекрыть собственным mps_node config'ом (Task 4 значения).
+            'a_max': 0.20,
+            'alpha_max': 1.0,
+        },
     }
     if not mqtt.publish('mps/scenario/run', payload, qos=1):
         raise HTTPException(503, 'robot offline — MQTT publish failed')
