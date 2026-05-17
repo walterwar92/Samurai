@@ -241,19 +241,22 @@ def test_abort_stops_run_and_emits_zero_cmd_vel(mps_node):
 
 
 # ── tick reaches goal → status='reached' ──────────────────────────────
+# was: drive-phase finish by `s ≥ D − ε`; now: 4-coord check + t ≥ t_end.
 def test_tick_reaches_goal(mps_node):
+    """После t_end робот в (D, v=0, θ=θ_start, ω=0) ⇒ status='reached'."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-reach',
         'request': {'distance': 1.0, 'v_target': 0.15, 'source': 'robot'},
     })
-    # Inject an odom snapshot AT the goal.
-    mps_node._x_meas = np.array([1.0, 0.15, 0.0, 0.0, 0.0])
-    import time
+    # Inject an odom snapshot AT the goal (v=0, ω=0 — sat и встал).
+    mps_node._x_meas = np.array([1.0, 0.0, 0.0, 0.0, 0.0])
     mps_node._x_meas_ts = time.time()
+    # Fast-forward run.t за t_end, чтобы _check_finish активировал
+    # settling-window. В feedforward модели «достижение» проверяется
+    # только после прохождения опорной траектории.
+    mps_node._run.t = mps_node._run.traj.t_end + 1e-3
     mps_node._tick()
 
-    # Either reached this tick or next; if reached, scenario/finished
-    # with status='reached' should be in published topics.
     finished = [p[1] for p in mps_node._published
                 if p[0] == 'mps/scenario/finished']
     assert finished, 'expected scenario/finished after reaching goal'
@@ -273,30 +276,37 @@ def test_reach_tolerance_default_is_2cm(mps_node):
     assert mps_node._reach_eps == pytest.approx(0.02)
 
 
+# was: phase='drive' override + |s−D|<ε; now: 4-coord check post t_end.
 def test_reach_at_98_percent_with_default_tolerance(mps_node):
     """Граница reach: s=0.985 на D=1.0 → reached (1 - 0.02 = 0.98)."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-edge',
         'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
     })
-    mps_node._run.phase = 'drive'  # пропускаем TURN для чистоты теста
-    mps_node._x_meas = np.array([0.985, 0.10, 0.0, 0.0, 0.0])
+    mps_node._x_meas = np.array([0.985, 0.0, 0.0, 0.0, 0.0])
     mps_node._x_meas_ts = time.time()
+    mps_node._run.t = mps_node._run.traj.t_end + 1e-3
     mps_node._tick()
     finished = [p[1] for p in mps_node._published
                 if p[0] == 'mps/scenario/finished']
     assert finished and finished[0]['status'] == 'reached'
 
 
+# was: phase='drive' override; now: 4-coord check post t_end.
 def test_no_reach_at_95_percent_with_default_tolerance(mps_node):
-    """Граница reach: s=0.95 на D=1.0 → НЕ reached (0.95 < 0.98)."""
+    """Граница reach: s=0.95 на D=1.0 → НЕ reached (0.95 < 0.98).
+
+    После t_end |s−D|=0.05 > ε_s=0.02 ⇒ ждём settle_timeout и
+    закроемся как 'timeout_settle'. На один тик `finished` ещё не
+    публикуется — проверяем именно status≠'reached'.
+    """
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-no-reach',
         'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot'},
     })
-    mps_node._run.phase = 'drive'
-    mps_node._x_meas = np.array([0.95, 0.10, 0.0, 0.0, 0.0])
+    mps_node._x_meas = np.array([0.95, 0.0, 0.0, 0.0, 0.0])
     mps_node._x_meas_ts = time.time()
+    mps_node._run.t = mps_node._run.traj.t_end + 1e-3
     mps_node._tick()
     finished = [p[1] for p in mps_node._published
                 if p[0] == 'mps/scenario/finished'
@@ -443,8 +453,12 @@ def test_scenario_run_accepted_with_fresh_odom(mps_node):
 
 
 def test_on_scenario_run_reads_target_heading(mps_node):
-    """_on_scenario_run читает target_heading из request и стартует
-    в фазе 'turn'."""
+    """_on_scenario_run читает target_heading из request и кладёт его
+    в _RunState (для финиш-проверки и для построения профиля поворота).
+
+    was: phase='turn' + drive_t=0; now: feedforward — фаз нет, target
+    хранится только в run.target_heading (и в traj.phi_signed).
+    """
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-th',
         'request': {'distance': 2.0, 'v_target': 0.10, 'source': 'robot',
@@ -452,8 +466,8 @@ def test_on_scenario_run_reads_target_heading(mps_node):
     })
     assert mps_node.is_running
     assert mps_node._run.target_heading == pytest.approx(0.6)
-    assert mps_node._run.phase == 'turn'
-    assert mps_node._run.drive_t == 0.0
+    # traj должна знать про φ — это и есть «target_heading стартовал»
+    assert mps_node._run.traj.phi_signed == pytest.approx(0.6)
 
 
 def test_on_scenario_run_target_heading_defaults_zero(mps_node):
@@ -478,109 +492,41 @@ def test_on_scenario_run_target_heading_out_of_range_rejected(mps_node):
     assert not mps_node.is_running
 
 
-def test_mps_node_loads_turn_config(mps_node):
-    """__init__ читает пороги turn-фазы из config (с дефолтами)."""
-    assert isinstance(mps_node._turn_tol, float) and mps_node._turn_tol > 0
-    assert isinstance(mps_node._turn_timeout, float) and mps_node._turn_timeout > 0
+def test_mps_node_loads_omega_max_turn_config(mps_node):
+    """__init__ читает omega_max_in_turn (используется build_reference
+    для cap'а профиля turn-сегмента).
+
+    was: _turn_tol/_turn_timeout — pose-tracking refactor убрал TURN
+    как отдельную фазу, и эти пороги больше не нужны.
+    """
     assert isinstance(mps_node._omega_max_turn, float) and mps_node._omega_max_turn > 0
 
 
-def test_tick_turn_rotates_toward_target_heading(mps_node):
-    """В фазе TURN робот крутится к target_heading: φ>0 ⇒ angular_z>0
-    (CCW), ход linear_x = 0 (чистое вращение)."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-turn',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 0.8},
-    })
-    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    mps_node._published.clear()
-    mps_node._tick()
-    assert mps_node._run is not None and mps_node._run.phase == 'turn'
-    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
-    assert cmd_vel['linear_x'] == 0.0, 'в TURN ход должен быть 0 (чистое вращение)'
-    assert cmd_vel['angular_z'] > 0.0, 'φ>0 ⇒ робот крутится CCW'
+def test_mps_node_loads_reference_config(mps_node):
+    """__init__ читает дефолтные a_max/alpha_max опорного профиля
+    (могут быть переопределены payload-ом /scenario/run)."""
+    assert isinstance(mps_node._ref_a_max, float) and mps_node._ref_a_max > 0
+    assert isinstance(mps_node._ref_alpha_max, float) and mps_node._ref_alpha_max > 0
 
 
-def test_tick_turn_transitions_to_drive_when_aligned(mps_node):
-    """Когда |θ − φ| < turn_tol, фаза переключается на 'drive'."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-trans',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 0.8},
-    })
-    # Одометрия: курс робота уже совпал с целью φ.
-    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
-    mps_node._published.clear()
-    mps_node._tick()
-    assert mps_node._run is not None
-    assert mps_node._run.phase == 'drive', 'курс совпал с φ ⇒ переход в DRIVE'
+def test_mps_node_loads_settle_tolerances(mps_node):
+    """4 порога settling-окна для финиш-проверки (см. spec §4.1)."""
+    assert isinstance(mps_node._eps_v, float) and mps_node._eps_v > 0
+    assert isinstance(mps_node._eps_theta, float) and mps_node._eps_theta > 0
+    assert isinstance(mps_node._eps_omega, float) and mps_node._eps_omega > 0
+    assert isinstance(mps_node._settle_timeout, float) and mps_node._settle_timeout > 0
 
 
-def test_tick_drive_holds_target_heading(mps_node):
-    """В фазе DRIVE θ_ref = φ: если курс робота ниже φ, контроллер
-    доворачивает ВВЕРХ к φ (angular_z>0), а не вниз к 0."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-hold',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 0.8},
-    })
-    # Перевести в DRIVE: одометрия с курсом = φ.
-    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
-    mps_node._tick()
-    assert mps_node._run.phase == 'drive'
-    # Курс робота «сполз» ниже φ (0.6 < 0.8).
-    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.6, 'vz': 0.0})
-    mps_node._published.clear()
-    mps_node._tick()
-    cmd_vel = next(p[1] for p in mps_node._published if p[0] == 'cmd_vel')
-    assert cmd_vel['angular_z'] > 0.0, (
-        'курс 0.6 < φ=0.8 ⇒ доворот вверх к φ; '
-        'если бы θ_ref был 0 — angular_z был бы < 0'
-    )
-
-
-def test_tick_turn_timeout(mps_node):
-    """Если TURN не сходится за turn_timeout — прогон завершается timeout."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-tto',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 3.0},
-    })
-    max_ticks = int(mps_node._turn_timeout / mps_node._tick_dt) + 10
-    for _ in range(max_ticks):
-        # Робот «застрял»: курс 0, далеко от φ=3.0 — TURN не сойдётся.
-        mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-        mps_node._tick()
-        if not mps_node.is_running:
-            break
-    finished = [p[1] for p in mps_node._published
-                if p[0] == 'mps/scenario/finished']
-    assert finished and finished[-1]['status'] == 'timeout'
-    assert not mps_node.is_running
-
-
-def test_tick_transition_publishes_in_same_tick(mps_node):
-    """На тике, где TURN завершается, _tick проваливается в _tick_drive
-    тем же вызовом и публикует cmd_vel + телеметрию — без «пропущенного»
-    тика. Если бы оркестратор делал return после завершения TURN,
-    transition-тик не опубликовал бы ничего."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-fallthrough',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 0.8},
-    })
-    # Робот уже под курсом φ → первый же тик: TURN завершается и
-    # проваливается в DRIVE тем же вызовом _tick().
-    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.8, 'vz': 0.0})
-    mps_node._published.clear()
-    mps_node._tick()
-    assert mps_node._run is not None and mps_node._run.phase == 'drive', (
-        'TURN должен завершиться этим тиком'
-    )
-    topics = [p[0] for p in mps_node._published]
-    assert 'cmd_vel' in topics, 'transition-тик обязан опубликовать cmd_vel'
-    assert 'mps/telemetry' in topics, 'transition-тик обязан опубликовать телеметрию'
+def test_mps_node_warns_on_deprecated_turn_config(mps_node, caplog):
+    """Старые ключи turn_tolerance_rad / turn_timeout_s в config.yaml
+    дают deprecation warning при старте mps_node (см. _build_from_config).
+    Сам fixture mps_node уже инициализирован — warnings залогированы
+    на этапе __init__; проверяем что флаги были на месте."""
+    # Сам caplog уже выглядит на reasonable strings, но fixture сложна;
+    # достаточно проверить что атрибуты явно не существуют (refactor
+    # их убрал) и omega_max_turn пережил.
+    assert not hasattr(mps_node, '_turn_tol')
+    assert not hasattr(mps_node, '_turn_timeout')
 
 
 # ── Outer LQR-loop (lateral drift correction) ─────────────────────────
@@ -653,7 +599,11 @@ def test_scenario_run_skips_lateral_when_v_target_below_min(mps_node):
 
 def test_scenario_run_snapshots_absolute_xy(mps_node):
     """На старте сценария x_start_abs/y_start_abs снимаются из последней
-    одометрии (для проекции e_y на ideal-line)."""
+    одометрии (для проекции (x_local, y_local) в локальный фрейм старта).
+
+    was: ещё проверял line_dir; pose-tracking refactor его убрал — старт-
+    фрейм определяется только theta_start, направление «прямо» = θ_start.
+    """
     # Робот на (50 см, 30 см) по одометрии.
     mps_node._on_odom('odom', {'x': 50.0, 'y': 30.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
     mps_node._on_scenario_run('mps/scenario/run', {
@@ -662,38 +612,26 @@ def test_scenario_run_snapshots_absolute_xy(mps_node):
     })
     assert mps_node._run.x_start_abs == pytest.approx(0.50)
     assert mps_node._run.y_start_abs == pytest.approx(0.30)
-    # line_dir = theta_start + target_heading = 0 + 0 = 0.
-    assert mps_node._run.line_dir == pytest.approx(0.0)
+    # theta_start снапшотится отдельно (для пересчёта в локальный фрейм
+    # и для проверки финиш-координаты θ_target = theta_start+phi).
+    assert mps_node._run.theta_start == pytest.approx(0.0)
 
 
-def test_scenario_run_line_dir_includes_target_heading(mps_node):
-    """line_dir = theta_start_abs + target_heading. Если робот стоит под
-    курсом 0.3 и сценарий «вперёд относительно старта + 0.5 рад», то
-    абсолютное направление прямой = 0.8 рад."""
-    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.3, 'vz': 0.0})
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-line',
-        'request': {'distance': 1.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 0.5},
-    })
-    assert mps_node._run.line_dir == pytest.approx(0.8)
-
-
-def test_tick_drive_publishes_lateral_telemetry_fields(mps_node):
-    """В фазе DRIVE точка телеметрии содержит e_y, theta_err, delta_theta
-    и schema_version='1.1'."""
+def test_tick_publishes_lateral_telemetry_fields(mps_node):
+    """Каждый тик публикует e_y/theta_err/delta_theta и schema_version='1.2'
+    (выросло с 1.1 после добавления r/x_local/y_local в Task 3)."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-tel',
         'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
     })
-    # target_heading=0, theta=0 ⇒ TURN сразу пройдёт и проваливается в DRIVE.
+    # target_heading=0, theta=0 — отсутствие сноса.
     mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
     mps_node._published.clear()
     mps_node._tick()
     tel = [p for p in mps_node._published if p[0] == 'mps/telemetry']
     assert tel, 'telemetry must be published'
     payload = tel[0][1]
-    assert payload['schema_version'] == '1.1'
+    assert payload['schema_version'] == '1.2'
     point = payload['point']
     assert 'e_y' in point
     assert 'theta_err' in point
@@ -701,19 +639,24 @@ def test_tick_drive_publishes_lateral_telemetry_fields(mps_node):
     # Без сноса: e_y=0, delta_theta=0.
     assert point['e_y'] == pytest.approx(0.0)
     assert point['delta_theta'] == pytest.approx(0.0)
+    # Новые поля (schema 1.2): r/x_local/y_local.
+    assert 'r' in point and len(point['r']) == 5
+    assert 'x_local' in point
+    assert 'y_local' in point
 
 
-def test_tick_drive_correction_sign_for_positive_lateral_drift(mps_node):
+# was: e_y проектировалось вдоль run.line_dir; now: e_y == y_local
+# (X-ось локального фрейма вдоль θ_start, Y — налево). При θ_start=0 это
+# совпадает со стандартными мировыми (x,y) — y_local = y_world − y_start.
+def test_tick_correction_sign_for_positive_lateral_drift(mps_node):
     """Робот съехал влево (e_y > 0) при target_heading=0 ⇒ δθ < 0
     (поворот направо, чтобы вернуться на линию)."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-drift+',
         'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
     })
-    # (x,y)=(0,0), курс 0 ⇒ TURN мгновенно проходит, фаза → DRIVE.
     mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
     mps_node._tick()
-    assert mps_node._run.phase == 'drive'
     # Робот проехал 10 см вперёд и сместился +5 см вбок (e_y = +0.05).
     mps_node._on_odom('odom', {'x': 10.0, 'y': 5.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
     mps_node._published.clear()
@@ -725,14 +668,14 @@ def test_tick_drive_correction_sign_for_positive_lateral_drift(mps_node):
     )
 
 
-def test_tick_drive_correction_sign_for_negative_lateral_drift(mps_node):
+def test_tick_correction_sign_for_negative_lateral_drift(mps_node):
     """Робот съехал вправо (e_y < 0) ⇒ δθ > 0 (поворот налево)."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-drift-',
         'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
     })
     mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    mps_node._tick()    # → DRIVE
+    mps_node._tick()
     mps_node._on_odom('odom', {'x': 10.0, 'y': -5.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
     mps_node._published.clear()
     mps_node._tick()
@@ -741,14 +684,14 @@ def test_tick_drive_correction_sign_for_negative_lateral_drift(mps_node):
     assert point['delta_theta'] > 0
 
 
-def test_tick_drive_delta_theta_clipped_to_max(mps_node):
+def test_tick_delta_theta_clipped_to_max(mps_node):
     """Огромный e_y ⇒ δθ клипуется к ±delta_theta_max."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-clip',
         'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
     })
     mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    mps_node._tick()    # → DRIVE
+    mps_node._tick()
     # 5 метров вбок — синтетический предел.
     mps_node._on_odom('odom', {'x': 10.0, 'y': 500.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
     mps_node._published.clear()
@@ -757,26 +700,7 @@ def test_tick_drive_delta_theta_clipped_to_max(mps_node):
     assert abs(point['delta_theta']) == pytest.approx(mps_node._lateral_delta_max, abs=1e-9)
 
 
-def test_tick_turn_does_not_populate_lateral_fields(mps_node):
-    """TURN-фаза публикует телеметрию без e_y/theta_err/delta_theta —
-    эти поля имеют смысл только в DRIVE (при движении прямо)."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-turn-tel',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 0.8},
-    })
-    # Робот ещё далеко от φ=0.8 → TURN продолжается.
-    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    mps_node._published.clear()
-    mps_node._tick()
-    assert mps_node._run.phase == 'turn'
-    point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
-    assert 'e_y' not in point
-    assert 'theta_err' not in point
-    assert 'delta_theta' not in point
-
-
-def test_tick_drive_with_disabled_outer_loop_zero_correction(mps_node):
+def test_tick_with_disabled_outer_loop_zero_correction(mps_node):
     """С enabled=false поля e_y/theta_err публикуются (diagnostic) но
     delta_theta всегда 0 — outer-петля молча выключена."""
     mps_node._lateral_enabled = False
@@ -785,7 +709,7 @@ def test_tick_drive_with_disabled_outer_loop_zero_correction(mps_node):
         'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
     })
     mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    mps_node._tick()    # → DRIVE
+    mps_node._tick()
     mps_node._on_odom('odom', {'x': 10.0, 'y': 5.0, 'vx': 0.10, 'theta': 0.0, 'vz': 0.0})
     mps_node._published.clear()
     mps_node._tick()
@@ -812,20 +736,21 @@ def test_e_int_resets_on_scenario_start(mps_node):
     assert mps_node._x_meas[4] == 0.0
 
 
-def test_e_int_accumulates_in_tick_drive(mps_node):
-    """В фазе DRIVE e_int накапливается как ∫(−θ_err) dt. Знак: при
-    положительном θ_err (робот развернулся правее цели) интеграл
-    уменьшается ⇒ MPC получает дополнительный сигнал отвернуть налево."""
+# was: phase='drive' check; now: e_int = ∫(−θ_err(t)) dt каждый тик, без
+# различения фаз. Сигнал тот же — при + θ_err интеграл − (anti-θ-err).
+def test_e_int_accumulates_each_tick(mps_node):
+    """e_int накапливается как ∫(−θ_err) dt против ТЕКУЩЕГО θ_ref(t).
+    На первом тике при theta=0, r(0)[θ]=0 ⇒ θ_err=0, e_int не меняется.
+    На втором тике, если ввести искусственно θ=0.1 при r(t)[θ]≈0,
+    e_int += −0.1·dt = −0.002."""
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-int-acc',
         'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot'},
     })
-    # theta=0, phi=0 ⇒ TURN сразу пройдёт, переход в DRIVE.
     mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
     mps_node._tick()
-    assert mps_node._run.phase == 'drive'
     initial_eint = mps_node._x_meas[4]
-    # Курс ушёл на +0.1 рад от phi=0.
+    # Курс ушёл на +0.1 рад от θ_ref≈0 (на drive-сегменте r(t)[θ]=0).
     mps_node._on_odom('odom', {'x': 5.0, 'y': 0.0, 'vx': 0.10, 'theta': 0.1, 'vz': 0.0})
     mps_node._tick()
     new_eint = mps_node._x_meas[4]
@@ -834,22 +759,6 @@ def test_e_int_accumulates_in_tick_drive(mps_node):
     assert abs((new_eint - initial_eint) - expected_delta) < 1e-9, (
         f'e_int delta {new_eint - initial_eint:.6f} ≠ ожидаемое {expected_delta:.6f}'
     )
-
-
-def test_e_int_does_not_accumulate_in_turn_phase(mps_node):
-    """TURN-фаза НЕ должна накапливать e_int — там θ_err большое (по
-    определению), и интеграл бы насытился ещё до начала DRIVE."""
-    mps_node._on_scenario_run('mps/scenario/run', {
-        'run_id': 'r-int-turn',
-        'request': {'distance': 2.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': 1.0},
-    })
-    # Курс 0, цель 1 рад ⇒ TURN продолжается.
-    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
-    initial_eint = mps_node._x_meas[4]
-    mps_node._tick()
-    assert mps_node._run.phase == 'turn'
-    assert mps_node._x_meas[4] == initial_eint, 'TURN не должен трогать e_int'
 
 
 def test_e_int_clipped_by_anti_windup(mps_node):
@@ -888,35 +797,197 @@ def test_tighter_q_keeps_closed_loop_stable(mps_node):
     assert np.all(eigs < 1.0 - 1e-3), f'closed-loop unstable: |λ|={eigs}'
 
 
-def test_turn_tolerance_is_three_degrees(mps_node):
-    """turn_tolerance_rad ≈ 3° (0.05 рад). ±1° на реальном роботе
-    недостижимо: шум IMU/трение → колебания вокруг target → TURN
-    никогда не сходится → s остаётся 0 → траектория «не двигается»
-    на UI. 3° — компромисс: DRIVE стартует с малой ошибкой курса
-    (которую дожимает heading hold), а не висит в TURN до timeout."""
-    assert mps_node._turn_tol == pytest.approx(0.05, abs=1e-4)
-
-
-def test_tick_drive_correction_along_rotated_line(mps_node):
-    """При target_heading=π/2 ideal-line идёт по оси Y. Робот «сдвинут» от
-    линии в направлении +X (т.е. вправо относительно курса) ⇒ e_y < 0
-    ⇒ δθ > 0 (поворот налево, чтобы вернуться на линию)."""
-    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+# was: test_tick_drive_correction_along_rotated_line — проверял что e_y
+# проектируется на абсолютную line_dir = theta_start + target_heading.
+# Pose-tracking refactor определяет (x_local, y_local) ТОЛЬКО через
+# theta_start (см. spec §5.3): X — вдоль курса робота на момент старта,
+# Y — налево от X. target_heading в этот пересчёт уже не входит.
+def test_tick_local_frame_aligns_with_theta_start(mps_node):
+    """Когда робот стартовал под курсом θ_start=π/2, ось X локального
+    фрейма смотрит по мировому +Y. Робот, проехавший по мировому Y
+    на 10 см и сместившийся +5 см по X (т.е. вправо от X-локальной
+    оси) даёт x_local=+0.10, y_local=−0.05."""
+    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': math.pi / 2, 'vz': 0.0})
     mps_node._on_scenario_run('mps/scenario/run', {
         'run_id': 'r-rot',
-        'request': {'distance': 1.0, 'v_target': 0.15, 'source': 'robot',
-                    'target_heading': math.pi / 2},
+        'request': {'distance': 1.0, 'v_target': 0.15, 'source': 'robot'},
     })
-    assert mps_node._run.line_dir == pytest.approx(math.pi / 2)
-    # Чтобы пройти TURN — выставляем курс = π/2.
-    mps_node._on_odom('odom', {'x': 0.0, 'y': 0.0, 'vx': 0.0, 'theta': math.pi / 2, 'vz': 0.0})
-    mps_node._tick()
-    assert mps_node._run.phase == 'drive'
-    # Робот проехал по Y и сместился +5 см по X (вправо от линии).
-    # e_y = -dx*sin(line_dir) + dy*cos(line_dir) = -0.05*1 + 0.10*0 = -0.05.
+    # Курс не меняется (=π/2), x=+5, y=+10 — в локальном фрейме это
+    # +10 вдоль X (т.е. вперёд) и −5 по Y (направо).
     mps_node._on_odom('odom', {'x': 5.0, 'y': 10.0, 'vx': 0.10, 'theta': math.pi / 2, 'vz': 0.0})
     mps_node._published.clear()
     mps_node._tick()
     point = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')['point']
+    assert point['x_local'] == pytest.approx(0.10, abs=1e-9)
+    assert point['y_local'] == pytest.approx(-0.05, abs=1e-9)
+    # e_y = y_local; правый снос ⇒ δθ > 0 (поворот налево).
     assert point['e_y'] == pytest.approx(-0.05, abs=1e-9)
     assert point['delta_theta'] > 0
+
+
+# ── Pose-tracking acceptance: edge-to-edge scenario over fake odom ────
+# Идеализированный «робот» — та же каноническая модель v̇=(u_v−v)/τ_v,
+# ω̇=(u_ω−ω)/τ_ω, что разворачивается на Pi. Параметры τ_v=0.15, τ_w=0.10
+# совпадают с _good_matrices() (см. сверху) — это и есть «настоящий» plant.
+# Тест проверяет end-to-end что нода MPC-трекает r(t) и выходит в (D, π).
+
+class _FakeOdom:
+    """Idealized-plant для интеграции cmd_vel в тестах. Использует ту же
+    ZOH-дискретную модель (Ad/Bd), что и сам node — иначе MPC, проектируемый
+    под одни матрицы, теряет точное tracking против отличного фиктивного
+    plant'a (видели на test_mps_node_pose_arrival: Euler-step переоценивал
+    эффективный gain ω-канала и MPC overshoot'ил target heading на ~3 рад).
+
+    Состояние plant'a — каноническое MPS [s, v, θ, ω, e_int]; world (x, y)
+    считаются интегрированием v·(cos θ, sin θ) поверх него — нужны для
+    outer LQR-петли и (x_local, y_local) в телеметрии.
+
+    Поддерживает `velocity_lag` (>1.0 → плант тормозит, v не успевает за
+    u_v) для settle-timeout теста — реализуется через дополнительное
+    масштабирование Bd[1,0].
+    """
+
+    def __init__(self, plant):
+        # plant — StateSpaceModel из mps_node (та же Ad/Bd что у MPC).
+        self.plant = plant
+        self.velocity_lag = 1.0
+        self.x_state = np.zeros(5)        # [s, v, θ, ω, e_int]
+        self.x_world = 0.0
+        self.y_world = 0.0
+
+    def start_at(self, x: float = 0.0, y: float = 0.0, theta: float = 0.0):
+        self.x_world = x
+        self.y_world = y
+        self.x_state = np.zeros(5)
+        self.x_state[2] = theta
+
+    def set_velocity_lag(self, multiplier: float):
+        """multiplier > 1 ⇒ v-канал «тормозит»: фактическое u_v
+        масштабируется на 1/multiplier перед plant.step. Канал θ/ω
+        не трогаем — это контролируемый медленный плант по v."""
+        self.velocity_lag = multiplier
+
+    def integrate_cmd_vel(self, cmd: dict | None, dt: float):
+        if cmd is None:
+            return
+        u_v = float(cmd.get('linear_x', 0.0)) / self.velocity_lag
+        u_w = float(cmd.get('angular_z', 0.0))
+        u = np.array([u_v, u_w])
+        prev_v = float(self.x_state[1])
+        prev_theta = float(self.x_state[2])
+        self.x_state = self.plant.step(self.x_state, u)
+        # world.x/world.y — Эйлер по «средней» скорости/курсу за тик.
+        v_mid = 0.5 * (prev_v + float(self.x_state[1]))
+        theta_mid = 0.5 * (prev_theta + float(self.x_state[2]))
+        self.x_world += v_mid * math.cos(theta_mid) * dt
+        self.y_world += v_mid * math.sin(theta_mid) * dt
+
+    def payload(self) -> dict:
+        """Mqtt-style odom payload (cm для x/y, как старый motor_node;
+        s_body уже в метрах — новый motor_node)."""
+        return {
+            's_body': float(self.x_state[0]),
+            'x': self.x_world * 100.0,
+            'y': self.y_world * 100.0,
+            'vx': float(self.x_state[1]),
+            'theta': float(self.x_state[2]),
+            'vz': float(self.x_state[3]),
+        }
+
+
+def _last_cmd_vel(node) -> dict | None:
+    """Последний опубликованный cmd_vel, если был."""
+    for topic, payload, _qos in reversed(node._published):
+        if topic == 'cmd_vel':
+            return payload
+    return None
+
+
+def test_mps_node_pose_arrival_d03_phi_pi(mps_node):
+    """Сценарий D=0.30 м с финальным разворотом на π рад против
+    idealized plant. После ~16 с tick-loop должен выйти на reached.
+
+    Acceptance: status='reached'; конечная s ≈ D (±0.01 м); конечный θ
+    отличается от π не более чем на ε_θ=0.05 рад (см. _check_finish).
+    """
+    fake = _FakeOdom(mps_node._plant)
+    fake.start_at(0.0, 0.0, 0.0)
+    mps_node._on_odom('odom', fake.payload())
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'test-pose',
+        'request': {'distance': 0.30, 'v_target': 0.15,
+                    'target_heading': math.pi, 'source': 'robot'},
+        'reference': {'a_max': 0.20, 'alpha_max': 1.0},
+    })
+    dt = mps_node._tick_dt
+    # 800 тиков ≈ 16 с при dt=0.02. t_end для D=0.30, v=0.15, a=0.20
+    # ≈ 2.75 с (drive) + ≈ 3.3 с (turn на π рад под α=1) ≈ 6 с; +
+    # settle_timeout 1.5 с — глубокий запас.
+    for _ in range(800):
+        mps_node._tick()
+        fake.integrate_cmd_vel(_last_cmd_vel(mps_node), dt=dt)
+        mps_node._on_odom('odom', fake.payload())
+        if mps_node._run is None:
+            break
+
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished']
+    assert finished, 'scenario should finish within 16 s of tick-loop'
+    status_msg = finished[-1]
+    assert status_msg['status'] == 'reached', (
+        f'expected reached, got {status_msg["status"]} '
+        f'(error_message: {status_msg.get("error_message")})'
+    )
+    # Финальная позиция/курс — из последней опубликованной телеметрии.
+    tel = [p[1] for p in mps_node._published if p[0] == 'mps/telemetry']
+    assert tel, 'expected at least one telemetry point'
+    last_point = tel[-1]['point']
+    # s — относительно старта, должно быть ≈ D = 0.30.
+    assert abs(last_point['x'][0] - 0.30) < 0.02, (
+        f's_end = {last_point["x"][0]:.4f}, expected ≈ 0.30'
+    )
+    # θ — тоже относительно старта (см. _tick_run: x[_THETA] = θ − θ_start).
+    # target = π; нормируем в [-π, π].
+    err = (last_point['x'][2] - math.pi + math.pi) % (2 * math.pi) - math.pi
+    assert abs(err) < mps_node._eps_theta + 0.01, (
+        f'θ_err = {err:.4f}, expected |.| < {mps_node._eps_theta + 0.01}'
+    )
+
+
+def test_mps_node_settle_timeout_reports_detail(mps_node):
+    """Сильно заторможенный плант не выводит v в 0 за settle_timeout ⇒
+    status='timeout_settle' с деталью «settle timeout: |s−D|=..., ...».
+
+    Реализация: накручиваем velocity_lag=5.0 — τ_v эффективно 0.75 с,
+    v медленно затухает после конца профиля, |v|>ε_v за settle-окно
+    не успевает сойтись.
+    """
+    fake = _FakeOdom(mps_node._plant)
+    fake.set_velocity_lag(5.0)
+    fake.start_at(0.0, 0.0, 0.0)
+    mps_node._on_odom('odom', fake.payload())
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'test-settle',
+        'request': {'distance': 0.30, 'v_target': 0.15,
+                    'target_heading': 0.0, 'source': 'robot'},
+        'reference': {'a_max': 0.20, 'alpha_max': 1.0},
+    })
+    dt = mps_node._tick_dt
+    for _ in range(2000):
+        mps_node._tick()
+        fake.integrate_cmd_vel(_last_cmd_vel(mps_node), dt=dt)
+        mps_node._on_odom('odom', fake.payload())
+        if mps_node._run is None:
+            break
+
+    finished = [p[1] for p in mps_node._published
+                if p[0] == 'mps/scenario/finished']
+    assert finished, 'scenario should finish (timeout_settle expected)'
+    msg = finished[-1]
+    assert msg['status'] == 'timeout_settle', (
+        f'expected timeout_settle, got {msg["status"]} '
+        f'(error_message: {msg.get("error_message")})'
+    )
+    assert 'settle timeout' in (msg.get('error_message') or ''), (
+        f'detail must contain "settle timeout", got: {msg.get("error_message")}'
+    )

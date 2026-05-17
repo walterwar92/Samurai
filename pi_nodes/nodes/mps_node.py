@@ -46,6 +46,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from pi_nodes.control.lateral_lqr import LateralLqrController
 from pi_nodes.control.mpc_controller import MPCController
+from pi_nodes.control.mps_reference import ReferenceTrajectory, build_reference
 from pi_nodes.control.state_space_model import StateSpaceModel, zoh_discretize
 from pi_nodes.mqtt_node import MqttNode
 
@@ -72,58 +73,54 @@ class _RunState:
     """Локальное состояние active run (только внутри mps_node).
 
     Не путать с DashboardState на ноуте — это совсем разное. Здесь только
-    то, что нужно tick-loop'у.
+    то, что нужно tick-loop'у feedforward-трекинга r(t) (см.
+    docs/superpowers/specs/2026-05-17-mps-pose-tracking-design.md §3.2).
     """
     __slots__ = (
-        'run_id', 'distance', 'v_target', 'started_at',
+        'run_id', 'distance', 'v_target', 'target_heading',
+        'started_at',
         'telemetry', 't',
         'no_odom_ticks', 's_start', 'theta_start',
-        'target_heading', 'phase', 'drive_t',
         # Outer-loop LQR коррекции бокового сноса (см. lateral_lqr.py).
-        'x_start_abs', 'y_start_abs', 'line_dir', 'lateral_lqr',
+        'x_start_abs', 'y_start_abs', 'lateral_lqr',
+        # Опорная траектория r(t) = [s_ref, v_ref, θ_ref, ω_ref, e_int_ref].
+        'traj',
     )
 
     def __init__(self, run_id: str, distance: float, v_target: float,
+                 target_heading: float,
+                 traj: ReferenceTrajectory,
                  s_start: float = 0.0, theta_start: float = 0.0,
-                 target_heading: float = 0.0,
                  x_start_abs: float = 0.0, y_start_abs: float = 0.0,
                  lateral_lqr: Optional[LateralLqrController] = None):
         self.run_id = run_id
         self.distance = distance
         self.v_target = v_target
+        # Относительный целевой курс φ (рад) — final heading после прибытия
+        # в (D, 0). 0.0 = курс не меняется (ехать прямо вперёд).
+        self.target_heading = target_heading
         self.started_at = datetime.now(timezone.utc)
         self.telemetry: list[dict] = []
+        # Монотонное время прогона — координата на референсной траектории.
         self.t = 0.0
         self.no_odom_ticks = 0
         # Абсолютная позиция одометрии на момент старта сценария.
         # `s_ref` стартует с 0, поэтому позицию считаем относительно неё.
         self.s_start = s_start
-        # Абсолютный курс одометрии на момент старта. Сценарий «вперёд D
-        # метров» — это вперёд ОТНОСИТЕЛЬНО старта, поэтому θ считаем
+        # Абсолютный курс одометрии на момент старта. Сценарий считает θ
         # относительно θ_start (как и s). Иначе MPC трактует x_ref[θ]=0 как
         # абсолютный 0 одометрии и доворачивает робота в одну и ту же
         # сторону вместо «ехать прямо куда смотрит».
         self.theta_start = theta_start
-        # Относительный целевой курс φ (рад) — куда развернуться перед
-        # движением. 0.0 = ехать прямо вперёд (сегодняшнее поведение).
-        self.target_heading = target_heading
-        # Фаза двухфазного сценария: 'turn' (разворот к φ на месте) →
-        # 'drive' (движение N метров с удержанием курса φ).
-        self.phase = 'turn'
-        # Часы фазы DRIVE — начинаются с 0 при переходе TURN→DRIVE.
-        # Используются для ramp s_ref и drive-timeout (тайминг движения
-        # считается от начала езды, а не от старта сценария). `t` при этом
-        # остаётся монотонным суммарным временем (turn + drive).
-        self.drive_t = 0.0
         # ── Outer LQR-петля (lateral): абсолютные (x, y) одометрии на
-        # момент старта и абсолютное направление идеальной прямой =
-        # theta_start + target_heading. e_y = перпендикулярное расстояние
-        # от этой прямой; обновляется в _tick_drive. lateral_lqr=None
-        # если outer-петля выключена в config или v_target<v_min.
+        # момент старта. e_y = перпендикулярное расстояние от ideal-line,
+        # обновляется в _tick_run. lateral_lqr=None если outer-петля
+        # выключена в config или v_target<v_min.
         self.x_start_abs = x_start_abs
         self.y_start_abs = y_start_abs
-        self.line_dir = theta_start + target_heading
         self.lateral_lqr = lateral_lqr
+        # Pre-built reference trajectory (drive + turn-after-arrival profile).
+        self.traj = traj
 
 
 class MpsNode(MqttNode):
@@ -158,8 +155,6 @@ class MpsNode(MqttNode):
         self._distance_max = float(self._cfg('mps.scenario.distance_max', 5.0))
         self._v_target_max = float(self._cfg('mps.scenario.v_target_max', 0.30))
         self._omega_max_fwd = float(self._cfg('mps.scenario.omega_max_in_forward', 0.5))
-        self._turn_tol = float(self._cfg('mps.scenario.turn_tolerance_rad', 0.05))
-        self._turn_timeout = float(self._cfg('mps.scenario.turn_timeout_s', 10.0))
         self._omega_max_turn = float(self._cfg('mps.scenario.omega_max_in_turn', 1.0))
         # Максимальный возраст последнего odom (с) для старта сценария.
         # Если odom не пришёл вовсе или старее этого порога — _on_scenario_run
@@ -169,6 +164,27 @@ class MpsNode(MqttNode):
         self._odom_max_age = float(self._cfg('mps.scenario.odom_max_age_s', 0.5))
         self._reach_eps = float(self._cfg('mps.scenario.reach_tolerance_m',
                                            _REACH_EPS_DEFAULT))
+        # Тонкие допуски выхода в settling-окно по 4 координатам
+        # (см. spec §4.1; зеркалит compute mps_runner._SETTLE_TOL/ε_*).
+        self._eps_v = float(self._cfg('mps.scenario.reach.epsilon_v', 0.02))
+        self._eps_theta = float(self._cfg('mps.scenario.reach.epsilon_theta', 0.05))
+        self._eps_omega = float(self._cfg('mps.scenario.reach.epsilon_omega', 0.05))
+        self._settle_timeout = float(self._cfg('mps.scenario.reach.settle_timeout_s', 1.5))
+        # Параметры профиля r(t) — дефолты совпадают с compute mps_runner.
+        # Payload `reference: {a_max, alpha_max}` в /scenario/run может
+        # переопределять их per-run для синхронизации с sim'ом.
+        self._ref_a_max = float(self._cfg('mps.scenario.reference.a_max', 0.20))
+        self._ref_alpha_max = float(self._cfg('mps.scenario.reference.alpha_max', 1.0))
+        # Старые ключи 2-фазного сценария (TURN→DRIVE) больше не читаются —
+        # pose-tracking refactor (2026-05-17) убрал и саму фазу TURN, и
+        # её таймауты/тол. Логируем явное предупреждение, чтобы старые
+        # config.yaml не делали тихих сюрпризов.
+        if self._cfg('mps.scenario.turn_tolerance_rad', None) is not None:
+            self.log_warn('mps: config key turn_tolerance_rad is deprecated '
+                          '(unused since pose-tracking refactor)')
+        if self._cfg('mps.scenario.turn_timeout_s', None) is not None:
+            self.log_warn('mps: config key turn_timeout_s is deprecated '
+                          '(unused since pose-tracking refactor)')
 
         # ── Outer LQR-петля коррекции бокового сноса (см. lateral_lqr.py) ─
         # Параметры читаются один раз; контроллер строится per-scenario
@@ -184,8 +200,8 @@ class MpsNode(MqttNode):
 
         # Anti-windup на интегральном члене e_int = ∫(−θ_err) dt. Модель
         # включает интегратор курсовой ошибки (A[4,2]=−1 в канонической MPS),
-        # но без накопления он стоит в нуле и интегральная часть LQR-закона
-        # не работает. mps_node накапливает его в _tick_drive (см. ниже).
+        # но «гонит θ к 0», что неправильно при non-zero θ_ref. mps_node
+        # переписывает x_meas[EINT] руками в _tick_run (см. ниже).
         self._e_int_max = float(self._cfg('mps.scenario.e_int_max', 0.5))
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
@@ -408,6 +424,10 @@ class MpsNode(MqttNode):
                 self.log_warn('mps: lateral LQR build failed (%s) — outer loop disabled', exc)
                 lateral_lqr = None
 
+        # Снапшот позиции/курса одометрии и сборка опорной траектории
+        # делаются под lock'ом ниже (snapshot должен быть атомарным с
+        # переходом FSM в DRIVE_FORWARD_MPS, чтобы первый _tick видел
+        # уже консистентное (run, _x_meas)).
         with self._lock:
             if self.is_running:
                 self._publish_error('precondition',
@@ -426,17 +446,57 @@ class MpsNode(MqttNode):
             # предыдущего прогона e_int даёт фантомную ошибку и MPC
             # «доворачивает» с первого тика.
             self._x_meas[_EINT] = 0.0
+
+            # Build feedforward reference trajectory r(t). Параметры
+            # reference.{a_max, alpha_max} можно переопределить per-run
+            # через payload (для синхронизации Pi с compute sim'ом —
+            # один и тот же профиль ⇒ один и тот же результат).
+            ref_payload = payload.get('reference') or {}
+            a_max = float(ref_payload.get('a_max', self._ref_a_max))
+            alpha_max = float(ref_payload.get('alpha_max', self._ref_alpha_max))
+            try:
+                # ВАЖНО: theta_start=0.0 в build_reference — на Pi мы
+                # отдаём MPC уже РЕЛЯТИВНЫЕ координаты (x[_THETA] = θ_meas
+                # − run.theta_start, см. _tick_run). Поэтому референс
+                # тоже должен быть в относительной системе: r(t)[2] = 0
+                # на drive-сегменте, ramps до target_heading на turn-
+                # сегменте. Иначе MPC видит θ_err = θ_start_abs (фантомные
+                # 1+ рад на старте) и упирает angular_z в u_max.
+                # Абсолютный θ_start робота нужен в _check_finish для
+                # сборки theta_target = run.theta_start + traj.phi_signed.
+                traj = build_reference(
+                    distance=distance,
+                    v_target=v_target,
+                    target_heading=target_heading,
+                    a_max=a_max,
+                    alpha_max=alpha_max,
+                    omega_max=self._omega_max_turn,
+                    theta_start=0.0,
+                )
+            except ValueError as exc:
+                self._publish_error('precondition',
+                                    f'reference build failed: {exc}',
+                                    run_id=run_id)
+                return
+
             self._run = _RunState(
-                run_id, distance, v_target,
-                s_start, theta_start, target_heading,
+                run_id=run_id,
+                distance=distance,
+                v_target=v_target,
+                target_heading=target_heading,
+                traj=traj,
+                s_start=s_start,
+                theta_start=theta_start,
                 x_start_abs=x_start_abs,
                 y_start_abs=y_start_abs,
                 lateral_lqr=lateral_lqr,
             )
             self._fsm_state = 'DRIVE_FORWARD_MPS'
 
-        self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f, lateral=%s',
-                      run_id, distance, v_target,
+        self.log_info('mps: starting run %s — D=%.2f, v_target=%.3f, '
+                      'target_heading=%.3f, t_end=%.2f, lateral=%s',
+                      run_id, distance, v_target, target_heading,
+                      traj.t_end,
                       'on' if lateral_lqr is not None else 'off')
 
     # ── /scenario/abort handler ───────────────────────────────────────
@@ -501,114 +561,48 @@ class MpsNode(MqttNode):
             run = self._run
             if run is None or self._fsm_state != 'DRIVE_FORWARD_MPS':
                 return
-            x = self._x_meas.copy()
-        # Позиция и курс — относительно старта сценария (s_ref, θ_ref с 0).
-        x[_S] = x[_S] - run.s_start
-        x[_THETA] = _normalize_angle(x[_THETA] - run.theta_start)
+        self._tick_run(run)
 
-        # Двухфазный сценарий: TURN (разворот к φ) → DRIVE (едем N метров).
-        if run.phase == 'turn':
-            if not self._tick_turn(run, x):
-                return            # ещё крутимся, либо прогон завершён
-            # фаза TURN завершилась этим тиком → продолжаем в DRIVE
-        self._tick_drive(run, x)
+    # ── Один тик feedforward pose-tracking сценария ───────────────────
+    def _tick_run(self, run: _RunState) -> None:
+        """Один тик MPC-трекинга опорной траектории r(t).
 
-    # ── Фаза TURN: разворот на месте к target_heading ─────────────────
-    def _tick_turn(self, run: _RunState, x: np.ndarray) -> bool:
-        """Один тик фазы разворота. `x` — уже относительный (s, θ).
+        Поведение: MPC получает x_ref = traj.r(run.t) — пред-вычисленный
+        кусок профиля accel→cruise→decel (drive) + accel→cruise→decel
+        (turn-after-arrival), без явных фаз TURN/DRIVE. После plant.step
+        x[4] (e_int) переписывается интегралом θ_err против ТЕКУЩЕГО
+        θ_ref(t) с anti-windup — иначе при non-zero θ_ref модель
+        `ė_int = −θ` гонит интегратор к θ=0 вместо θ_target (см. spec §3.3
+        и compute_node/mps_runner.py).
 
-        Возвращает True ровно когда поворот только что завершён — тогда
-        вызывающий (`_tick`) продолжает в DRIVE тем же тиком. False —
-        если ещё крутимся или прогон уже завершён (timeout / ошибка).
+        Если активна outer LQR-петля (`run.lateral_lqr is not None`),
+        delta_theta = -K_lat·[e_y, θ_err] публикуется в телеметрию как
+        diagnostic (на сам референс не добавляется — это снова прибор
+        внешней косвенной коррекции; за курс отвечает r(t)).
         """
-        phi = run.target_heading
-
-        # Курс совпал с целью → переход в DRIVE. Без публикации —
-        # cmd_vel/телеметрию за этот тик опубликует _tick_drive.
-        if abs(_normalize_angle(x[_THETA] - phi)) < self._turn_tol:
-            run.phase = 'drive'
-            run.drive_t = 0.0
-            return True
-
-        x_ref = np.array([0.0, 0.0, phi, 0.0, 0.0])
-        try:
-            u = self._mpc.step(x, x_ref=x_ref)
-        except Exception as exc:
-            self.log_error('mps turn mpc.step failed: %s', exc)
-            self._finish_run('error', f'mpc.step: {exc}')
-            return False
-
-        if not (np.all(np.isfinite(u)) and np.all(np.isfinite(x))):
-            self._finish_run('error', 'NaN/Inf in u or x')
-            return False
-
-        # Чистое вращение: ход — в ноль; ω — свой (более высокий) кап.
-        u[0] = 0.0
-        u[1] = max(-self._omega_max_turn, min(self._omega_max_turn, u[1]))
-
-        self._publish_cmd_and_telemetry(run, x, u)
-
         with self._lock:
-            run.no_odom_ticks += 1
-            stale = run.no_odom_ticks > _WATCHDOG_TICKS
-
-        # Turn timeout — по run.t. Валидно: TURN всегда первая фаза,
-        # run.t стартует с 0, поэтому run.t == времени разворота.
-        if run.t > self._turn_timeout:
-            self._finish_run('timeout', None)
-            return False
-
-        if stale and time.time() - self._x_meas_ts > 5.0 * self._tick_dt:
-            self._finish_run('error', 'watchdog: no odom for >3 ticks')
-            return False
-
-        run.t += self._tick_dt
-        return False
-
-    # ── Фаза DRIVE: едем N метров, удерживая курс target_heading ───────
-    def _tick_drive(self, run: _RunState, x: np.ndarray) -> None:
-        """Один тик фазы движения. `x` — уже относительный (s, θ).
-
-        Логика «вперёд D», но θ_ref = target_heading (удержание выбранного
-        курса, НЕ доворот к 0) и тайминг ramp/timeout по run.drive_t. Если
-        активна outer LQR-петля (`run.lateral_lqr is not None`), к θ_ref
-        прибавляется оптимальная коррекция δθ_ref = -K_lat·[e_y, θ_err],
-        чтобы вернуть робота на ideal-line при боковом сносе.
-        """
-        phi = run.target_heading
-
-        # Outer LQR-петля коррекции бокового сноса (см. lateral_lqr.py).
-        # e_y и θ_err публикуются в телеметрию даже если контроллер выключен —
-        # diagnostic-значения нужны UI для построения графиков ошибки.
-        with self._lock:
+            x_meas = self._x_meas.copy()
             x_abs = self._x_abs
             y_abs = self._y_abs
-        dx_abs = x_abs - run.x_start_abs
-        dy_abs = y_abs - run.y_start_abs
-        cos_l = math.cos(run.line_dir)
-        sin_l = math.sin(run.line_dir)
-        e_y = -dx_abs * sin_l + dy_abs * cos_l
-        theta_err = _normalize_angle(x[_THETA] - phi)
 
-        if run.lateral_lqr is not None:
-            try:
-                delta_theta = run.lateral_lqr.step(e_y, theta_err)
-            except Exception as exc:
-                # Outer-петля не критична — продолжаем без коррекции, логируем.
-                self.log_warn('mps: lateral_lqr.step failed (%s) — skipping outer', exc)
-                delta_theta = 0.0
-        else:
-            delta_theta = 0.0
-        theta_ref_corrected = phi + delta_theta
+        # Позиция и курс — относительно старта сценария (s_ref, θ_ref с 0).
+        # θ НЕ оборачиваем в [−π, π] — MPC проектируется на линеаризованной
+        # модели и ожидает «гладкое» x[θ] без дискретного скачка ±π. При
+        # сценариях с target_heading=±π референс θ_ref(t) тоже ramps до
+        # ±π без wrap, и контур остаётся в режиме малой ошибки. Обёртка
+        # вызывала overshoot: как только робот пересекал ±π, x[θ] прыгал
+        # в противоположный знак, MPC видел огромную ошибку и продолжал
+        # вращение в ту же сторону (см. test_mps_node_pose_arrival).
+        x = x_meas.copy()
+        x[_S] = x_meas[_S] - run.s_start
+        x[_THETA] = x_meas[_THETA] - run.theta_start
 
-        # Reference: ramp s_ref to D, hold v_target, hold heading φ+δθ.
-        s_ref = min(run.distance, run.drive_t * run.v_target)
-        x_ref = np.array([s_ref, run.v_target, theta_ref_corrected, 0.0, 0.0])
+        r_ref = run.traj.r(run.t)
 
         try:
-            u = self._mpc.step(x, x_ref=x_ref)
+            u = self._mpc.step(x, x_ref=r_ref)
         except Exception as exc:
-            self.log_error('mps drive mpc.step failed: %s', exc)
+            self.log_error('mps mpc.step failed: %s', exc)
             self._finish_run('error', f'mpc.step: {exc}')
             return
 
@@ -616,17 +610,20 @@ class MpsNode(MqttNode):
             self._finish_run('error', 'NaN/Inf in u or x')
             return
 
-        # Hard omega cap in forward scenario — guard against accidental rotation.
-        u[1] = max(-self._omega_max_fwd, min(self._omega_max_fwd, u[1]))
+        # Hard-cap по ω в drive-сегменте: v_ref ≠ 0 значит едем прямо,
+        # защита от случайного крена. В turn-сегменте (v_ref = 0) кап
+        # снимаем — профиль построен под omega_max_in_turn, MPC уже
+        # учитывает u_max через clip, дополнительное огрубление мешает
+        # отрабатывать «дотяжку» в settling-окне.
+        if abs(r_ref[_V]) > 1e-3:
+            u[1] = max(-self._omega_max_fwd, min(self._omega_max_fwd, u[1]))
 
-        # Integral action: накапливаем e_int = ∫(−θ_err) dt с anti-windup.
-        # Модель ставит интегратор курсовой ошибки в state[4] (A[4,2]=−1):
-        # в дискретной форме e_int_{k+1} = e_int_k − θ_err · Ts. Без этого
-        # самoё накопления интегральная часть LQR-закона мертва — MPC видит
-        # e_int ≡ 0 и удерживает heading только пропорционально (Q[2]=80
-        # помогает, но статическая ошибка от трения/asymmetry остаётся).
-        # Запись под тем же lock что и _on_odom, чтобы не потерять увеличение
-        # при гонке с MQTT-callback.
+        # Интегратор курсовой ошибки против ТЕКУЩЕГО θ_ref(t). Модель
+        # включает интегратор курсовой ошибки (A[4,2]=−1), но это
+        # «гонит θ к 0». При non-zero θ_ref правильный сигнал — интеграл
+        # θ_err = θ − θ_ref, поэтому перепишем x[4] руками с anti-windup
+        # (зеркалит compute mps_runner._accumulate_eint).
+        theta_err = _normalize_angle(x[_THETA] - r_ref[_THETA])
         with self._lock:
             new_eint = self._x_meas[_EINT] + (-theta_err) * self._tick_dt
             if new_eint > self._e_int_max:
@@ -635,9 +632,31 @@ class MpsNode(MqttNode):
                 new_eint = -self._e_int_max
             self._x_meas[_EINT] = new_eint
 
+        # Локальные координаты для UI (см. spec §5.3). X — вдоль курса
+        # робота на момент старта; Y — налево от X (правая система).
+        dx = x_abs - run.x_start_abs
+        dy = y_abs - run.y_start_abs
+        cs = math.cos(run.theta_start)
+        sn = math.sin(run.theta_start)
+        x_local = dx * cs + dy * sn
+        y_local = -dx * sn + dy * cs
+
+        # Outer LQR-петля коррекции бокового сноса (см. lateral_lqr.py).
+        # e_y публикуется в телеметрию даже если контроллер выключен —
+        # diagnostic-значения нужны UI для построения графиков ошибки.
+        e_y = y_local
+        delta_theta = 0.0
+        if run.lateral_lqr is not None:
+            try:
+                delta_theta = run.lateral_lqr.step(e_y, theta_err)
+            except Exception as exc:
+                self.log_warn('mps: lateral_lqr.step failed (%s) — skipping outer', exc)
+                delta_theta = 0.0
+
         self._publish_cmd_and_telemetry(
             run, x, u,
             e_y=e_y, theta_err=theta_err, delta_theta=delta_theta,
+            r=r_ref, x_local=x_local, y_local=y_local,
         )
 
         # Watchdog: нет одометрии 3 тика подряд → abort
@@ -645,15 +664,7 @@ class MpsNode(MqttNode):
             run.no_odom_ticks += 1
             stale = run.no_odom_ticks > _WATCHDOG_TICKS
 
-        # Reached?
-        if x[_S] >= run.distance - self._reach_eps:
-            self._finish_run('reached', None)
-            return
-
-        # Timeout?
-        timeout_t = max(1.0, 3.0 * run.distance / max(run.v_target, 1e-6))
-        if run.drive_t > timeout_t:
-            self._finish_run('timeout', None)
+        if self._check_finish(x, r_ref, run):
             return
 
         if stale and time.time() - self._x_meas_ts > 5.0 * self._tick_dt:
@@ -661,9 +672,51 @@ class MpsNode(MqttNode):
             return
 
         run.t += self._tick_dt
-        run.drive_t += self._tick_dt
 
-    # ── Публикация cmd_vel + телеметрии (общее для обеих фаз) ──────────
+    # ── Финиш-логика (4-координатный check вместо «доехал по s») ──────
+    def _check_finish(self, x: np.ndarray, r_ref: np.ndarray,
+                      run: _RunState) -> bool:
+        """Решить, завершён ли прогон. Возвращает True ровно когда
+        вызван _finish_run (caller должен сразу вернуться).
+
+        Логика (см. spec §4):
+          • t < t_end → разве что run timeout (контур упёрся в инстабильность
+            и t убежал >> ожидаемого);
+          • t ≥ t_end → 4 координаты (|s−D|<ε_s, |v|<ε_v, |θ_err|<ε_θ,
+            |ω|<ε_ω) против финальной точки [D, 0, θ_start+φ, 0];
+            если уложились — 'reached', иначе ждём settle_timeout
+            и закрываем как 'timeout_settle' с деталью невыполнения.
+        """
+        if run.t < run.traj.t_end:
+            # До конца профиля только run-timeout: контур взорвался и
+            # t убежал ≫ ожидаемого (защита от бесконечного цикла).
+            if run.t > max(1.0, 1.5 * run.traj.t_end + 2.0):
+                self._finish_run('timeout', 'run timeout before t_end')
+                return True
+            return False
+
+        # x[_THETA] и traj.phi_signed оба относительны run.theta_start
+        # (build_reference вызывается с theta_start=0.0 — см.
+        # _on_scenario_run). Целевое финальное относительное θ_target
+        # = phi_signed (=_normalize_angle(target_heading)).
+        theta_target_rel = run.traj.phi_signed
+        theta_err = _normalize_angle(x[_THETA] - theta_target_rel)
+        if (abs(x[_S] - run.distance) < self._reach_eps
+                and abs(x[_V]) < self._eps_v
+                and abs(theta_err) < self._eps_theta
+                and abs(x[_OMEGA]) < self._eps_omega):
+            self._finish_run('reached', None)
+            return True
+
+        if run.t > run.traj.t_end + self._settle_timeout:
+            detail = (f'settle timeout: |s−D|={abs(x[_S]-run.distance):.4f}, '
+                      f'|v|={abs(x[_V]):.4f}, |θ_err|={abs(theta_err):.4f}, '
+                      f'|ω|={abs(x[_OMEGA]):.4f}')
+            self._finish_run('timeout_settle', detail)
+            return True
+        return False
+
+    # ── Публикация cmd_vel + телеметрии ────────────────────────────────
     def _publish_cmd_and_telemetry(
         self,
         run: _RunState,
@@ -673,14 +726,16 @@ class MpsNode(MqttNode):
         e_y: Optional[float] = None,
         theta_err: Optional[float] = None,
         delta_theta: Optional[float] = None,
+        r: Optional[np.ndarray] = None,
+        x_local: Optional[float] = None,
+        y_local: Optional[float] = None,
     ) -> None:
-        """Опубликовать cmd_vel и точку телеметрии. Вызывается из обеих
-        фаз сценария (_tick_turn, _tick_drive). `run.t` — монотонное
-        суммарное время прогона, поэтому `point['t']` строго растёт.
+        """Опубликовать cmd_vel и точку телеметрии. `run.t` — монотонное
+        время прогона, поэтому `point['t']` строго растёт.
 
-        Опциональные `e_y`/`theta_err`/`delta_theta` присутствуют только в
-        фазе DRIVE (TURN их не вычисляет). Если переданы — добавляются в
-        точку телеметрии (schema_version 1.1, поля optional).
+        Опциональные `e_y`/`theta_err`/`delta_theta` — diagnostic outer LQR-
+        петли. `r/x_local/y_local` (schema 1.2) — опорная точка и локальные
+        координаты для UI; см. compute_node/dashboard/schemas/mps.py.
         """
         self.publish('cmd_vel', {
             'linear_x': float(u[0]),
@@ -706,11 +761,17 @@ class MpsNode(MqttNode):
             point['theta_err'] = float(theta_err)
         if delta_theta is not None:
             point['delta_theta'] = float(delta_theta)
+        if r is not None:
+            point['r'] = [float(v) for v in r]
+        if x_local is not None:
+            point['x_local'] = float(x_local)
+        if y_local is not None:
+            point['y_local'] = float(y_local)
         run.telemetry.append(point)
         self.publish('mps/telemetry', {
             'run_id': run.run_id,
             'point': point,
-            'schema_version': '1.1',
+            'schema_version': '1.2',
         }, qos=0)
 
     # ── Finalisation ─────────────────────────────────────────────────
