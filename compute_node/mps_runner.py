@@ -184,10 +184,15 @@ def run_scenario_idealized(
 
     Returns
     -------
-    MpsScenarioResult with status one of:
-        - 'reached'  — s ≥ D − 0.05
-        - 'timeout'  — wall-clock budget t > 3·D / v_target
-        - 'error'    — NaN/Inf in u or x, or |x| blows up
+    MpsScenarioResult with status one of (см. spec §4.1-4.3):
+        - 'reached'         — все 4 координаты сошлись (|s−D|<ε_s,
+                              |v|<ε_v, |θ_err|<ε_θ, |ω|<ε_ω) при t ≥ t_end
+        - 'timeout_settle'  — траектория r(t) дошла до t_end, но контур
+                              не уложился в settle_timeout (1.5 c)
+        - 'timeout'         — run-timeout (t > 1.5·t_end + 2.0 c) ещё до
+                              выхода в settling-окно
+        - 'error'           — build_reference ValueError, mpc.step
+                              exception, NaN/Inf в u/x, или |x| blow-up
     """
     if dt is None:
         dt = _mps_ts()
