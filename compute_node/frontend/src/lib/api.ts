@@ -143,57 +143,71 @@ export const api = {
     post('/api/robot/velocity', { linear, angular }),
 
   setClaw: (open: boolean) =>
-    post('/api/actuators/claw', { open }),
+    post('/api/actuators/claw', { state: open ? 'open' : 'close' }),
 
-  // Head (single servo camera)
+  // Head (single servo camera) — поля Pydantic-схемы HeadCommand:
+  //   {angle?, center?, locked?, frozen?}
   setHeadAngle: (angle: number) =>
     post('/api/actuators/head', { angle }),
 
   centerHead: () =>
-    post('/api/actuators/head', { command: 'center' }),
+    post('/api/actuators/head', { center: true }),
 
-  headCommand: (command: string) =>
-    post('/api/actuators/head', { command }),
+  headCommand: (command: 'freeze' | 'unfreeze' | 'lock' | 'unlock' | 'center') => {
+    switch (command) {
+      case 'freeze':   return post('/api/actuators/head', { frozen: true })
+      case 'unfreeze': return post('/api/actuators/head', { frozen: false })
+      case 'lock':     return post('/api/actuators/head', { locked: true })
+      case 'unlock':   return post('/api/actuators/head', { locked: false })
+      case 'center':   return post('/api/actuators/head', { center: true })
+    }
+  },
 
   headSavePreset: (name: string) =>
-    post('/api/actuators/head', { command: 'save_preset', name }),
+    post('/api/actuators/head/preset/save', { name }),
 
   headLoadPreset: (name: string) =>
-    post('/api/actuators/head', { command: 'load_preset', name }),
+    post('/api/actuators/head/preset/load', { name }),
 
   headDeletePreset: (name: string) =>
-    post('/api/actuators/head', { command: 'delete_preset', name }),
+    del(`/api/actuators/head/preset/${encodeURIComponent(name)}`),
 
   headListPresets: () =>
     get('/api/actuators/head/presets'),
 
-  // Arm (4 joints)
+  // Arm (4 joints) — поля Pydantic-схемы ArmJointCommand:
+  //   {j1?, j2?, j3?, j4?, joints?, home?, freeze?, joint_index?, preset?, locked?}
   setArmJoint: (joint: number, angle: number) =>
-    post('/api/actuators/arm', { joint, angle }),
+    post('/api/actuators/arm', { [`j${joint}`]: angle }),
 
   setArmAll: (joints: number[]) =>
     post('/api/actuators/arm', { joints }),
 
   homeArm: () =>
-    post('/api/actuators/arm', { command: 'home' }),
+    post('/api/actuators/arm', { home: true }),
 
-  armCommand: (command: string, extra?: object) =>
-    post('/api/actuators/arm', { command, ...extra }),
+  armCommand: (command: 'freeze' | 'unfreeze' | 'unlock') => {
+    switch (command) {
+      case 'freeze':   return post('/api/actuators/arm', { freeze: true })
+      case 'unfreeze': return post('/api/actuators/arm', { freeze: false })
+      case 'unlock':   return post('/api/actuators/arm', { locked: false })
+    }
+  },
 
   armFreezeJoint: (joint: number) =>
-    post('/api/actuators/arm', { command: 'freeze', joint }),
+    post('/api/actuators/arm', { freeze: true, joint_index: joint }),
 
   armUnfreezeJoint: (joint: number) =>
-    post('/api/actuators/arm', { command: 'unfreeze', joint }),
+    post('/api/actuators/arm', { freeze: false, joint_index: joint }),
 
   armSavePreset: (name: string) =>
-    post('/api/actuators/arm', { command: 'save_preset', name }),
+    post('/api/actuators/arm/preset/save', { name }),
 
   armLoadPreset: (name: string) =>
-    post('/api/actuators/arm', { command: 'load_preset', name }),
+    post('/api/actuators/arm/preset/load', { name }),
 
   armDeletePreset: (name: string) =>
-    post('/api/actuators/arm', { command: 'delete_preset', name }),
+    del(`/api/actuators/arm/preset/${encodeURIComponent(name)}`),
 
   armListPresets: () =>
     get('/api/actuators/arm/presets'),

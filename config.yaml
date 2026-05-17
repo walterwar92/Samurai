@@ -173,6 +173,9 @@ servos:
     home_angles: [0, 120, 0, 0]
     min_angles:  [0, 0, 0, 0]
     max_angles:  [120, 145, 180, 180]
+    invert_angles: [false, false, false, true]  # CH3 (клешня) физически инвертирован:
+                          # 0°=закрыта, 180°=открыта. arm_node делает physical = max - logical
+                          # чтобы UI/API оставался в логических координатах (0=open, 180=close).
     labels: ["Основание", "Сустав 1", "Сустав 2", "Клешня"]
     locked: true          # при запуске рука НЕ двигается (остаётся как есть)
                           # разблокировать: arm/command → "unlock" или {"command":"unlock"}

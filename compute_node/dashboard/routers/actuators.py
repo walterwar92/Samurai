@@ -173,6 +173,11 @@ async def set_arm(cmd: ArmJointCommand, mqtt: MQTTDep) -> CommandAck:
         mqtt.publish('arm/command',
                      {'command': 'load_preset', 'name': cmd.preset}, qos=1)
         return CommandAck()
+    if cmd.locked is False:
+        # arm_node реализует только unlock (инициализирует серво в home).
+        # Команды "lock" на Pi-стороне нет — locked=True игнорируем.
+        mqtt.publish('arm/command', {'command': 'unlock'}, qos=1)
+        return CommandAck()
     if cmd.freeze is not None:
         payload = {'command': 'freeze' if cmd.freeze else 'unfreeze'}
         if cmd.joint_index is not None:

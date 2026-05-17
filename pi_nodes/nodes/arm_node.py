@@ -52,6 +52,11 @@ class ArmNode(MqttNode):
         self._home_angles = cfg('servos.arm.home_angles', [0, 120, 0, 0])
         self._min_angles = cfg('servos.arm.min_angles', [0, 0, 0, 0])
         self._max_angles = cfg('servos.arm.max_angles', [120, 145, 180, 180])
+        # Per-channel inversion (физически инвертированные серво).
+        # Логический угол: 0..180 (как видит UI). Physical = max - logical (если invert=true).
+        # Это позволяет держать API/UI в "учебных" координатах (0=home, 180=крайнее),
+        # независимо от того, как монтирован конкретный серво. По умолчанию — никаких инверсий.
+        self._invert = cfg('servos.arm.invert_angles', [False] * len(self._channels))
         self._labels = cfg('servos.arm.labels',
                            ['Основание', 'Сустав 1', 'Сустав 2', 'Клешня'])
         self._num_joints = len(self._channels)
@@ -60,12 +65,17 @@ class ArmNode(MqttNode):
         # Unlock via arm/command: {"command": "unlock"} or "unlock"
         self._locked = cfg('servos.arm.locked', True)
 
-        # Create servo drivers — start_disabled=True so no PWM on boot
+        # Create servo drivers — start_disabled=True so no PWM on boot.
+        # init_angle для ServoDriver принимает физический угол, поэтому
+        # для инвертированных каналов нужно физически выставить max - home.
+        # Это не имеет эффекта при start_disabled=True (PWM не идёт), но при
+        # последующем set_angle(force=True) важно правильно посчитать.
         self._servos: list[ServoDriver] = []
         self._angles: list[float] = list(map(float, self._home_angles))
         for i in range(self._num_joints):
+            init_phys = self._to_physical(i, float(self._home_angles[i]))
             s = ServoDriver(channel=self._channels[i],
-                            init_angle=self._home_angles[i],
+                            init_angle=init_phys,
                             start_disabled=True)
             self._servos.append(s)
 
@@ -89,22 +99,29 @@ class ArmNode(MqttNode):
             self.log_info('Arm node ready (%d joints, channels=%s, locked=%s)',
                           self._num_joints, self._channels, self._locked)
 
+    def _to_physical(self, idx: int, logical: float) -> float:
+        """Translate logical UI angle → physical servo angle (применяет инверсию)."""
+        if 0 <= idx < self._num_joints and self._invert[idx]:
+            return float(self._max_angles[idx]) - float(logical) + float(self._min_angles[idx])
+        return float(logical)
+
     def _unlock(self):
         """Unlock arm and initialize servos to home angles."""
         self._locked = False
         if not self._servo_initialized:
             for i in range(self._num_joints):
-                self._servos[i].set_angle(self._home_angles[i], force=True)
+                phys = self._to_physical(i, self._home_angles[i])
+                self._servos[i].set_angle(phys, force=True)
                 self._angles[i] = float(self._home_angles[i])
             self._servo_initialized = True
 
     def _set_joint(self, idx: int, angle: float):
-        """Set joint angle with limits."""
+        """Set joint angle (логический) с лимитами. Инверсия применяется внутри."""
         if idx < 0 or idx >= self._num_joints:
             self.log_warn('Invalid joint index: %d', idx)
             return
         angle = max(self._min_angles[idx], min(self._max_angles[idx], angle))
-        self._servos[idx].set_angle(angle)
+        self._servos[idx].set_angle(self._to_physical(idx, angle))
         if not self._servos[idx].frozen:
             self._angles[idx] = angle
 

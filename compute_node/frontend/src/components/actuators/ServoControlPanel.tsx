@@ -264,8 +264,14 @@ interface ServoControlPanelProps {
 }
 
 export function ServoControlPanel({ head, arm, armPresets = [], headPresets = [] }: ServoControlPanelProps) {
+  // Leading + trailing edge throttle: первый event уходит сразу,
+  // последний в окне ожидания тоже гарантированно доезжает после THROTTLE_MS.
+  // Без trailing-edge при быстром перетаскивании финальный угол терялся —
+  // серво застревал на первом значении, не доходя до выбранного.
   const armTimers = useRef<(ReturnType<typeof setTimeout> | null)[]>([null, null, null, null])
+  const armPending = useRef<(number | null)[]>([null, null, null, null])
   const headTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const headPending = useRef<number | null>(null)
 
   // Request preset lists on mount
   useEffect(() => {
@@ -275,15 +281,39 @@ export function ServoControlPanel({ head, arm, armPresets = [], headPresets = []
 
   const sendArm = useCallback((joint: number, angle: number) => {
     const idx = joint - 1
-    if (armTimers.current[idx]) return
+    if (armTimers.current[idx]) {
+      // В окне ожидания — копим последнее значение для trailing send.
+      armPending.current[idx] = angle
+      return
+    }
     api.setArmJoint(joint, angle)
-    armTimers.current[idx] = setTimeout(() => { armTimers.current[idx] = null }, THROTTLE_MS)
+    armTimers.current[idx] = setTimeout(function flush() {
+      armTimers.current[idx] = null
+      const pending = armPending.current[idx]
+      if (pending !== null && pending !== angle) {
+        armPending.current[idx] = null
+        api.setArmJoint(joint, pending)
+        // Перезапускаем окно, чтобы продолжать throttle, если события идут.
+        armTimers.current[idx] = setTimeout(flush, THROTTLE_MS)
+      }
+    }, THROTTLE_MS)
   }, [])
 
   const sendHead = useCallback((angle: number) => {
-    if (headTimer.current) return
+    if (headTimer.current) {
+      headPending.current = angle
+      return
+    }
     api.setHeadAngle(angle)
-    headTimer.current = setTimeout(() => { headTimer.current = null }, THROTTLE_MS)
+    headTimer.current = setTimeout(function flush() {
+      headTimer.current = null
+      const pending = headPending.current
+      if (pending !== null && pending !== angle) {
+        headPending.current = null
+        api.setHeadAngle(pending)
+        headTimer.current = setTimeout(flush, THROTTLE_MS)
+      }
+    }, THROTTLE_MS)
   }, [])
 
   const headAngle  = head?.angle ?? 90

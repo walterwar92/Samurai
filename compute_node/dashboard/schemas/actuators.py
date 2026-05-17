@@ -81,7 +81,7 @@ class ArmJointCommand(BaseModel):
     """POST /api/actuators/arm — установка суставов или admin-команды.
 
     j1..j4 → одиночные углы (любая комбинация). joints → весь массив сразу.
-    home/freeze/unfreeze/preset — admin команды на Pi (arm_node).
+    home/freeze/unfreeze/preset/locked — admin команды на Pi (arm_node).
     """
     j1: Optional[float] = None
     j2: Optional[float] = None
@@ -101,6 +101,11 @@ class ArmJointCommand(BaseModel):
         description='Индекс сустава для freeze/unfreeze (1..4)'
     )
     preset: Optional[str] = Field(default=None, description='Имя пресета — load_preset')
+    locked: Optional[bool] = Field(
+        default=None,
+        description='False → "command": "unlock" (arm_node инициализирует серво в home). '
+                    'True → пока не реализовано на Pi-стороне (нет команды lock).'
+    )
 
 
 class LedCommand(BaseModel):
