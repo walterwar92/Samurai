@@ -14,7 +14,7 @@ Subscribes:
     samurai/{robot_id}/gesture/command  — hand gesture commands
 Publishes:
     samurai/{robot_id}/cmd_vel                  — {linear_x, angular_z}
-    samurai/{robot_id}/claw/command             — "open" / "close"
+    samurai/{robot_id}/arm/command              — load_preset / freeze (захват)
     samurai/{robot_id}/status                   — JSON state
     samurai/{robot_id}/goal_pose                — {x, y, theta}
     samurai/{robot_id}/patrol/command           — "start" / "stop"
@@ -32,6 +32,11 @@ import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from pi_nodes.mqtt_node import MqttNode
+
+try:
+    from config_loader import cfg
+except ImportError:
+    cfg = lambda key, default=None: default  # noqa: E731
 
 _MAX_CMD_LEN = 200
 # Минимальная уверенность LLM для исполнения voice/intent (#2, 2026-04).
@@ -490,12 +495,13 @@ class FSMNode(MqttNode):
         claw/command). См. spec 2026-05-17-arm-grab-sequence.
 
         Phase 1 (t<=0.1c): один раз публикуем arm/command load_preset grab_hold.
-        Phase 2 (0.1c < t < 1.5c): ждём пока _interpolate_tick доедет до позы.
-        Phase 3 (t >= 1.5c): freeze всех суставов → RETURNING.
+        Phase 2 (0.1c < t < settle): ждём пока _interpolate_tick доедет до позы.
+        Phase 3 (t >= settle): freeze всех суставов → RETURNING.
 
-        Settle 1.5с обоснован: самая длинная дельта при переходе
-        grab_ready (160,100,180,0) → grab_hold (10,30,180,180) — это CH0
-        (150°). При max_speed_deg_per_sec=120 это 1.25с + 0.25с jitter.
+        Settle выводится из max_speed_deg_per_sec: самая длинная дельта при
+        переходе grab_ready (160,100,180,0) → grab_hold (10,30,180,180) —
+        это CH0 (150°). settle = 150°/max_speed + 0.25с jitter.
+        При max_speed=120°/с это 1.5с; при изменении конфига — пересчитается.
         """
         self._grab_t += 0.1
 
@@ -507,8 +513,10 @@ class FSMNode(MqttNode):
             self.log_info('Arm → grab_hold (closing claw)')
             return
 
-        GRAB_SETTLE_S = 1.5
-        if self._grab_t < GRAB_SETTLE_S:
+        _GRAB_DELTA_DEG = 150.0   # CH0: grab_ready[0]=160 → grab_hold[0]=10
+        _max_speed = max(1.0, float(cfg('servos.arm.max_speed_deg_per_sec', 120.0)))
+        grab_settle_s = _GRAB_DELTA_DEG / _max_speed + 0.25
+        if self._grab_t < grab_settle_s:
             return
 
         # Phase 3 — freeze + переход
