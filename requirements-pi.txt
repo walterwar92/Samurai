@@ -1,0 +1,36 @@
+# ===============================================================
+# Samurai Robot — Pi-side Python Dependencies (только то что нужно
+# на Raspberry Pi для запуска pi_nodes/ через samurai-robot.service)
+# ===============================================================
+# Полный список зависимостей для ноута (compute-стек, dashboard,
+# YOLO, Vosk и т.д.) — в requirements.txt. На Pi НЕ ставить полный
+# requirements.txt — он тянет opencv-python, ultralytics, torch, av,
+# vosk и др. гиганты, собирающиеся из исходников на arm64 десятками
+# минут (а часто и часами).
+#
+# Установка на Pi (через bootstrap_pi.sh или вручную):
+#   pip3 install --user --break-system-packages -r requirements-pi.txt
+#
+# Что ставится через apt (НЕ через pip — быстрее, родные wheel):
+#   sudo apt install python3-picamera2
+
+# --- Hardware ---
+gpiozero
+RPi.GPIO
+adafruit-circuitpython-pca9685
+adafruit-circuitpython-motor
+adafruit-circuitpython-servokit
+smbus2                                  # I2C для MPU6050
+
+# --- MQTT ---
+paho-mqtt>=1.6.0
+
+# --- Config / Data ---
+PyYAML>=6.0
+numpy>=1.24.0,<2.0                      # numpy<2 для ROS2-совместимости
+
+# --- Behaviour Trees (FSM охоты за мячами) ---
+py-trees
+
+# --- Optional: быстрая JSON-сериализация для MQTT publish path ---
+orjson>=3.10.0

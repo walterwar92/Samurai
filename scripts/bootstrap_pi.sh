@@ -63,16 +63,29 @@ run apt-get install -y \
     rsync openssh-server
 
 # 2. Pip-зависимости под целевым юзером ──────────────────────────────────────
+# ВАЖНО: используем requirements-pi.txt (Pi-only подмножество), НЕ полный
+# requirements.txt. Полный список тянет opencv-python, ultralytics, torch,
+# av, vosk и др. гиганты, которые на arm64 без готовых wheel собираются
+# из исходников десятками минут (а часто часами). На Pi всё это не нужно —
+# YOLO/Vosk/dashboard крутятся на ноуте.
+#
 # На Debian 13 Trixie / RPi OS Bookworm+ системный Python — PEP 668 (externally
 # managed). Pip отказывается ставить без флага --break-system-packages.
 # Это легитимный override для контролируемого Pi-окружения (альтернатива —
 # venv, но systemd-юнит ожидает user-site пакеты, см. SAMURAI_SKIP_PIP_INSTALL).
-log_step "2/6 Pip-зависимости из requirements.txt"
-if [[ -f "$REPO_ROOT/requirements.txt" ]]; then
+log_step "2/6 Pip-зависимости из requirements-pi.txt"
+pi_req="$REPO_ROOT/requirements-pi.txt"
+# Fallback на полный файл если -pi.txt отсутствует (старые чекауты до этого фикса).
+if [[ ! -f "$pi_req" && -f "$REPO_ROOT/requirements.txt" ]]; then
+    log_warn "requirements-pi.txt не найден — fallback на requirements.txt"
+    log_warn "(это может занять очень долго на Pi — лучше git pull)"
+    pi_req="$REPO_ROOT/requirements.txt"
+fi
+if [[ -f "$pi_req" ]]; then
     run sudo -u "$TARGET_USER" pip3 install --user --break-system-packages \
-        -r "$REPO_ROOT/requirements.txt"
+        -r "$pi_req"
 else
-    log_warn "requirements.txt не найден — пропускаю pip"
+    log_warn "Ни requirements-pi.txt, ни requirements.txt не найдены — пропускаю pip"
 fi
 
 # 3. Группы (gpio/i2c/spi) ───────────────────────────────────────────────────
