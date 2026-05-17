@@ -76,7 +76,14 @@ async def get_claw(state: StateDep) -> ClawResponse:
 
 @router.post('/claw', response_model=CommandAck, tags=['actuators'])
 async def set_claw(cmd: ClawCommand, mqtt: MQTTDep) -> CommandAck:
-    """Клешня = arm joint 4 (1-indexed). open=0°, close=180°."""
+    """Клешня = arm joint 4 (1-indexed). open=0°, close=180°.
+
+    При открытии клешни (state=open или angle<90) дополнительно публикуем
+    arm/command unfreeze — снимаем заморозку, поставленную FSM в _do_grab.
+    Прокси «объект в руке» = «клешня закрыта»; открытие → объект отпущен,
+    рука может двигаться. Unfreeze идемпотентен на arm_node (no-op если уже
+    разморожен).
+    """
     if cmd.angle is not None:
         angle = max(0.0, min(180.0, float(cmd.angle)))
     elif cmd.state == 'open':
@@ -86,6 +93,8 @@ async def set_claw(cmd: ClawCommand, mqtt: MQTTDep) -> CommandAck:
     else:
         raise HTTPException(400, 'state ("open"/"close") or angle required')
     mqtt.publish('arm/command', {'joint': 4, 'angle': angle}, qos=1)
+    if angle < 90.0:
+        mqtt.publish('arm/command', {'command': 'unfreeze'}, qos=1)
     return CommandAck()
 
 
