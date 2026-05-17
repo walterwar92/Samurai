@@ -134,3 +134,23 @@ def test_theta_start_offset():
                            theta_start=1.0)
     r_end = traj.r(traj.t_end)
     assert abs(r_end[2] - 1.5) < 1e-9
+
+
+def test_drive_then_turn_combined():
+    """D > 0 AND φ ≠ 0: drive holds θ at θ_start; turn holds s at D."""
+    traj = build_reference(distance=0.30, v_target=0.15, target_heading=0.5,
+                           a_max=0.20, alpha_max=1.0, omega_max=0.5)
+    # End of drive: arrived at D, heading unchanged from θ_start=0
+    r_dr = traj.r(traj.t_drive)
+    np.testing.assert_allclose(r_dr, [0.30, 0.0, 0.0, 0.0, 0.0], atol=1e-9)
+    # End of turn: still at D, rotated to φ
+    r_end = traj.r(traj.t_end)
+    np.testing.assert_allclose(r_end, [0.30, 0.0, 0.5, 0.0, 0.0], atol=1e-9)
+
+
+def test_r_negative_t_no_crash_with_d_zero():
+    """r(-1.0) с D=0 не должен падать IndexError (см. clamp в r())."""
+    traj = build_reference(distance=0.0, v_target=0.15, target_heading=math.pi,
+                           a_max=0.20, alpha_max=1.0, omega_max=0.5)
+    out = traj.r(-1.0)  # должно отработать как r(0)
+    np.testing.assert_allclose(out, [0.0, 0.0, 0.0, 0.0, 0.0], atol=1e-12)

@@ -39,8 +39,9 @@ class _Segment:
 class ReferenceTrajectory:
     """Опорная траектория r(t) для pose-tracking сценария.
 
-    После постройки иммутабельна. Метод `r(t)` дёшев (бинпоиск +
-    арифметика), безопасен в hot-loop'е tick'а MPC.
+    После постройки иммутабельна. Метод `r(t)` дёшев (линейный поиск +
+    арифметика; ≤3 сегмента в каждом профиле), безопасен в hot-loop'е
+    tick'а MPC.
     """
     distance: float
     v_target: float
@@ -61,6 +62,12 @@ class ReferenceTrajectory:
     def r(self, t: float) -> np.ndarray:
         """Вернуть [s, v, θ, ω, e_int] на момент `t`. Для t > t_end —
         финальная точка [D, 0, θ_start+φ, 0, 0]."""
+        # Clamp negative t to 0 — спецификация неявно подразумевает t ∈ [0, ∞).
+        # Без clamp при D=0 + t<0 _find_segment вызывается на пустом tuple
+        # и падает IndexError. Сценарии r(t) запускаются от t=0, негативный
+        # вход — только из REPL/debug.
+        if t < 0.0:
+            t = 0.0
         out = np.zeros(5)
         # Drive
         if t < self.t_drive:
