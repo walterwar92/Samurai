@@ -233,8 +233,15 @@ detail='r(t) overshoot in time domain')`. Защита от подвиса (на
 - `|v_cmd| ≤ v_target_max` (дефолт `0.30 м/с`).
 - В drive-сегменте `r[v] > 0`: `|ω_cmd| ≤ omega_max_in_forward`
   (дефолт `0.5 rad/s`).
-- В turn-сегменте `r[v] = 0`: `|ω_cmd| ≤ omega_max_in_turn`
-  (дефолт `1.0 rad/s`).
+- В turn-сегменте `r[v] = 0`: hard-cap НЕ накладывается — `|ω_cmd|`
+  ограничен только `u_max[1]` из MPC-матриц (дефолт `2.0 rad/s` в
+  `mps.matrices.u_max`). Дополнительный clip до `omega_max_in_turn`
+  мешает «дотяжке» в settling-окне (см. Task 5 commit `5f3c4f4` —
+  deviation D4: при cap=1.0 rad/s settling по θ не успевал в 1.5с при
+  D=0.30, φ=π). Профиль референса всё равно строится с
+  `omega_max = omega_max_in_turn`, так что cruise-фаза turn сидит
+  на ≤1 rad/s; ускоренные дотяжки случаются только когда tracking-error
+  не нулевой к концу референс-профиля.
 
 ### 4.6 Деградации профиля
 
