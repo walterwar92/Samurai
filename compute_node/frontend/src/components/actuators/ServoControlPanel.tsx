@@ -7,15 +7,18 @@ import type { HeadState, ArmState } from '@/types/robot'
 
 /**
  * Servo mapping (PCA9685):
- *   CH0 — Основание   home=0   [0; 120]
+ *   CH0 — Основание   home=0   [0; 160]
  *   CH1 — Сустав 1    home=120 [0; 145]
  *   CH2 — Сустав 2    home=0   [0; 180]
  *   CH3 — Клешня      home=0   [0; 180]  (0=открыта, 180=закрыта)
  *   CH4 — Голова       home=90  [0; 180]
+ *
+ * Pre-grab поза grab_ready=[160, 100, 180, 0] требует CH0=160°,
+ * поэтому верхняя граница слайдера расширена с 120° до 160°.
  */
 
 const ARM_JOINTS = [
-  { label: 'Основание',  min: 0, max: 120, home: 0   },
+  { label: 'Основание',  min: 0, max: 160, home: 0   },
   { label: 'Сустав 1',   min: 0, max: 145, home: 120 },
   { label: 'Сустав 2',   min: 0, max: 180, home: 0   },
   { label: 'Клешня',     min: 0, max: 180, home: 0   },
