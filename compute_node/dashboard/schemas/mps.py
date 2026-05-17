@@ -27,7 +27,9 @@ from .common import OkResponse
 # 1.1: добавлены опциональные поля e_y/theta_err/delta_theta в
 # MpsTelemetryPoint (outer LQR-петля коррекции бокового сноса в mps_node).
 # Backwards-compatible: старые клиенты игнорируют None-поля.
-MPS_SCHEMA_VERSION = '1.1'
+# 1.2: добавлены опциональные r/x_local/y_local в MpsTelemetryPoint;
+# статус 'timeout_settle'; семантика target_heading = final heading.
+MPS_SCHEMA_VERSION = '1.2'
 
 # ── Размерности (фиксированы для курсовой Козлова) ─────────────────────
 N_STATES = 5            # x = [s, v, θ, ω, e_int]
@@ -188,9 +190,9 @@ class MpsScenarioRequest(BaseModel):
         default=0.0,
         ge=-math.pi,
         le=math.pi,
-        description='Относительный целевой курс (рад) от курса на старте '
-                    'сценария. 0.0 = ехать прямо вперёд (поведение по '
-                    'умолчанию). Используется только при source="robot".'
+        description='Финальный курс φ (рад) после прибытия в (D, 0) локального '
+                    'фрейма старта. 0.0 = не разворачивается; π = разворот на '
+                    '180° после доезда. Используется только при source="robot".'
     )
     schema_version: str = MPS_SCHEMA_VERSION
 
@@ -225,6 +227,28 @@ class MpsTelemetryPoint(BaseModel):
         description='Коррекция курсовой ссылки δθ_ref = -K_lat·[e_y,θ_err], '
                     'клипнута до ±delta_theta_max (рад, robot/DRIVE only)',
     )
+    r: list[float] | None = Field(
+        default=None,
+        description='Опорный 5-вектор r(t) = [s_ref, v_ref, θ_ref, ω_ref, e_int_ref] '
+                    'на этом тике. None для старой телеметрии (pre-2026-05-17).',
+    )
+    x_local: float | None = Field(
+        default=None,
+        description='Позиция робота в локальном фрейме старта (X-локальное = '
+                    'курс на момент _on_scenario_run). None для старой телеметрии.',
+    )
+    y_local: float | None = Field(
+        default=None,
+        description='Позиция робота в локальном фрейме старта (Y-локальное). '
+                    'None для старой телеметрии.',
+    )
+
+    @field_validator('r')
+    @classmethod
+    def _check_r_len(cls, v: list[float] | None) -> list[float] | None:
+        if v is not None and len(v) != N_STATES:
+            raise ValueError(f'r must have {N_STATES} elements')
+        return v
 
 
 # ── Метрики ────────────────────────────────────────────────────────────
@@ -238,7 +262,7 @@ class MpsMetrics(BaseModel):
 
 
 # ── Результат прогона ──────────────────────────────────────────────────
-ScenarioStatus = Literal['running', 'reached', 'timeout', 'aborted', 'error']
+ScenarioStatus = Literal['running', 'reached', 'timeout', 'timeout_settle', 'aborted', 'error']
 
 
 class MpsScenarioResult(BaseModel):
