@@ -7,11 +7,12 @@ import { RobotModel } from '@/components/3d/RobotModel'
 
 function statusText(s: ScenarioStatus): string {
   switch (s) {
-    case 'reached':  return 'достигнуто'
-    case 'aborted':  return 'прервано'
-    case 'timeout':  return 'таймаут'
-    case 'error':    return 'ошибка'
-    case 'running':  return 'выполняется'
+    case 'reached':         return 'достигнуто'
+    case 'aborted':         return 'прервано'
+    case 'timeout':         return 'таймаут'
+    case 'timeout_settle':  return 'таймаут стабилизации'
+    case 'error':           return 'ошибка'
+    case 'running':         return 'выполняется'
   }
 }
 

@@ -8,21 +8,23 @@ import { Mps3DScene } from './Mps3DScene'
 
 function statusText(s: ScenarioStatus): string {
   switch (s) {
-    case 'reached':  return 'достигнуто'
-    case 'aborted':  return 'прервано'
-    case 'timeout':  return 'таймаут'
-    case 'error':    return 'ошибка'
-    case 'running':  return 'выполняется'
+    case 'reached':         return 'достигнуто'
+    case 'aborted':         return 'прервано'
+    case 'timeout':         return 'таймаут'
+    case 'timeout_settle':  return 'таймаут стабилизации'
+    case 'error':           return 'ошибка'
+    case 'running':         return 'выполняется'
   }
 }
 
 function statusColor(s: ScenarioStatus): string {
   switch (s) {
-    case 'reached':  return 'text-emerald-400'
+    case 'reached':         return 'text-emerald-400'
     case 'aborted':
-    case 'timeout':  return 'text-amber-400'
-    case 'error':    return 'text-red-400'
-    case 'running':  return 'text-zinc-300'
+    case 'timeout':
+    case 'timeout_settle':  return 'text-amber-400'
+    case 'error':           return 'text-red-400'
+    case 'running':         return 'text-zinc-300'
   }
 }
 

@@ -16,6 +16,7 @@ const STATUS_TEXT_COLOR: Record<ScenarioStatus, string> = {
   running: 'text-blue-600',
   reached: 'text-green-600',
   timeout: 'text-amber-600',
+  timeout_settle: 'text-amber-600',
   aborted: 'text-orange-600',
   error: 'text-red-600',
 }
@@ -23,6 +24,7 @@ const STATUS_STRIPE_COLOR: Record<ScenarioStatus, string> = {
   running: 'bg-blue-500',
   reached: 'bg-green-500',
   timeout: 'bg-amber-500',
+  timeout_settle: 'bg-amber-500',
   aborted: 'bg-orange-500',
   error: 'bg-red-500',
 }
