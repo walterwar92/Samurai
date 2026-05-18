@@ -308,7 +308,7 @@ class DashboardState:
             pdrive_result = dict(c.precision_drive_result)
             cal_status = dict(c.calibration_status)
             cal_result = dict(c.calibration_result)
-            cal_active = c.calibration_active_profile
+            cal_active = (c.calibration_coeffs or {}).get('profile')
             cal_profiles = list(c.calibration_profiles)
             explorer_status = dict(c.explorer_status)
             mission_status = dict(c.mission_status)

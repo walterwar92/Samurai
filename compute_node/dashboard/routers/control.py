@@ -231,7 +231,7 @@ async def calibration_profile_list(
     mqtt.publish('calibration/profile/list', '{}', qos=1)
     with state.lock:
         raw = list(state.control.calibration_profiles)
-        active = state.control.calibration_active_profile
+        active = (state.control.calibration_coeffs or {}).get('profile')
     profiles: list[CalibrationProfile] = []
     for p in raw:
         if isinstance(p, dict) and 'name' in p:
@@ -250,7 +250,7 @@ async def calibration_profile_list(
     '/coefficients', response_model=CalibrationCoefficientsResponse, tags=['control'])
 async def calibration_coefficients(state: StateDep) -> CalibrationCoefficientsResponse:
     with state.lock:
-        active = state.control.calibration_active_profile
+        active = (state.control.calibration_coeffs or {}).get('profile')
     # В старом dashboard_node возвращался _calibration_active целиком — но он
     # содержит только имя профиля. Coeffs приходят с того же топика, храним
     # их в calibration_status как fallback.

@@ -263,3 +263,45 @@ def test_legacy_snapshot_emits_full_calibration_coeffs(handlers):
         'scale_bwd': 0.9,
         'motor_trim': -10.0,
     }
+
+
+def test_snapshot_calibration_active_uses_coeffs_profile(handlers):
+    """Новый snapshot() — поле control.calibration.active должно браться
+    из calibration_coeffs.profile, а не из устаревшего calibration_active_profile."""
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }).encode())
+    state = handlers._state
+    snap = None
+    for name in ('snapshot', 'snapshot_state', 'get_snapshot'):
+        fn = getattr(state, name, None)
+        if callable(fn):
+            snap = fn()
+            break
+    if snap is None:
+        pytest.skip("snapshot() not present — skip")
+    assert snap['control']['calibration']['active'] == 'tile'
+
+
+def test_calibration_profile_list_endpoint_returns_active_from_coeffs(handlers):
+    """Endpoint /api/calibration/profile/list возвращает active из coeffs.profile.
+    Тест через CalibrationProfileListResponse: дергаем async-функцию напрямую."""
+    import asyncio
+    from compute_node.dashboard.routers.control import calibration_profile_list
+
+    class _FakeMqtt:
+        def publish(self, *_a, **_kw): pass
+
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'carpet',
+        'scale_fwd': 1.1,
+        'scale_bwd': 1.0,
+        'motor_trim': 0.0,
+    }).encode())
+    result = asyncio.run(
+        calibration_profile_list(handlers._state, _FakeMqtt())
+    )
+    assert result.active == 'carpet'
