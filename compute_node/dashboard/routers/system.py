@@ -218,6 +218,24 @@ async def hardware_active() -> HardwareActiveResponse:
 shutdown_router = APIRouter()
 
 
+def _shutdown_target_pid() -> int:
+    """PID, в который шлём SIGTERM для завершения compute-стека.
+
+    Внутри Docker (samurai compute) FastAPI запущен как один из child-процессов
+    ros2 launch; убийство uvicorn НЕ останавливает контейнер — ros2 launch
+    продолжает крутиться, либо перезапускает FastAPI. Чтобы корректно
+    завершить контейнер с `--rm`, нужно убить PID 1 (это `bash → ros2 launch`).
+    После выхода контейнера bash-launcher `samurai.sh compute` отрабатывает
+    trap cleanup_all и снимает lock.
+
+    Вне Docker (dev-режим, `python -m compute_node.dashboard`) PID 1 — это
+    init/systemd, к нему мы не имеем доступа. Шлём SIGTERM себе.
+    """
+    if os.path.exists('/.dockerenv'):
+        return 1
+    return os.getpid()
+
+
 @shutdown_router.post('', response_model=CommandAck, tags=['system'])
 async def system_shutdown(
     background_tasks: BackgroundTasks,
@@ -228,17 +246,19 @@ async def system_shutdown(
     Pi-side: SystemNode ловит samurai/{robot_id}/system/shutdown
     и шлёт SIGTERM родительскому процессу (robot_launcher).
 
-    Compute-side: через 500мс шлём SIGTERM самому себе. uvicorn
-    делает graceful shutdown, Docker контейнер samurai_compute
-    останавливается; bash-launcher `samurai.sh compute` отлавливает
-    выход docker и выполняет cleanup_all + release_lock.
+    Compute-side: через 500мс шлём SIGTERM в PID 1 контейнера (или себе —
+    в dev-режиме без Docker). Завершение PID 1 останавливает контейнер с
+    `--rm`; bash-launcher `samurai.sh compute` отлавливает выход docker и
+    выполняет cleanup_all + release_lock.
     """
     mqtt.publish('system/shutdown', {'source': 'dashboard'}, qos=1)
 
+    target_pid = _shutdown_target_pid()
+
     async def _shutdown_self() -> None:
         await asyncio.sleep(0.5)
-        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(target_pid, signal.SIGTERM)
 
     background_tasks.add_task(_shutdown_self)
-    log.warning('System shutdown requested from dashboard')
+    log.warning('System shutdown requested from dashboard (target PID=%d)', target_pid)
     return CommandAck()

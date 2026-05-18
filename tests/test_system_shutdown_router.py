@@ -52,16 +52,34 @@ def test_shutdown_publishes_mqtt(client, fake_mqtt):
     )
 
 
-def test_shutdown_schedules_self_kill(client, fake_mqtt):
-    """BackgroundTask делает os.kill(getpid(), SIGTERM)."""
+def test_shutdown_schedules_self_kill_outside_docker(client, fake_mqtt):
+    """Вне Docker (нет /.dockerenv): BackgroundTask делает os.kill(getpid(), SIGTERM)."""
     import signal as _signal
 
-    with patch('compute_node.dashboard.routers.system.os.kill') as mock_kill:
+    with patch('compute_node.dashboard.routers.system.os.kill') as mock_kill, \
+         patch('compute_node.dashboard.routers.system.os.path.exists',
+               return_value=False) as mock_exists:
         r = client.post('/api/v1/system/shutdown')
-        # TestClient ждёт BackgroundTasks → к этому моменту _shutdown_self уже отработал
         assert r.status_code == 200
 
+    mock_exists.assert_any_call('/.dockerenv')
     assert mock_kill.called, 'os.kill должен быть вызван BackgroundTask-ом'
     args = mock_kill.call_args.args
     assert args[0] == os.getpid()
+    assert args[1] == _signal.SIGTERM
+
+
+def test_shutdown_kills_pid_1_inside_docker(client, fake_mqtt):
+    """Внутри Docker (/.dockerenv существует): SIGTERM в PID 1, чтобы убить контейнер."""
+    import signal as _signal
+
+    with patch('compute_node.dashboard.routers.system.os.kill') as mock_kill, \
+         patch('compute_node.dashboard.routers.system.os.path.exists',
+               return_value=True):
+        r = client.post('/api/v1/system/shutdown')
+        assert r.status_code == 200
+
+    assert mock_kill.called
+    args = mock_kill.call_args.args
+    assert args[0] == 1, f'В Docker должны убивать PID 1, не {args[0]}'
     assert args[1] == _signal.SIGTERM
