@@ -526,7 +526,7 @@ class DashboardState:
                 'collision_guard_enabled': c.collision_guard_enabled,
                 'calibration': dict(c.calibration_status) if c.calibration_status else None,
                 'calibration_result': dict(c.calibration_result) if c.calibration_result else None,
-                'calibration_coeffs': {'name': c.calibration_active_profile} if c.calibration_active_profile else None,
+                'calibration_coeffs': dict(c.calibration_coeffs) if c.calibration_coeffs else None,
                 'calibration_profiles': list(c.calibration_profiles) if c.calibration_profiles else None,
                 'explorer': dict(c.explorer_status) if c.explorer_status else None,
                 'mission': dict(c.mission_status) if c.mission_status else None,

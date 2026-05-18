@@ -245,3 +245,30 @@ def test_calibration_active_ignores_garbage_json(handlers):
         'scale_bwd': 0.9,
         'motor_trim': -10.0,
     }
+
+
+def test_legacy_snapshot_emits_full_calibration_coeffs(handlers):
+    """После _h_calibration_active legacy snapshot должен эмитить
+    весь dict {profile, scale_fwd, scale_bwd, motor_trim}, а не {name: ...}."""
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }).encode())
+    # Найти метод снэпшота — может называться по-разному, попробуем известные.
+    state = handlers._state
+    snap = None
+    for name in ('get_state', 'legacy_snapshot', 'snapshot_legacy', 'as_legacy_dict',
+                 'legacy_socketio_state'):
+        fn = getattr(state, name, None)
+        if callable(fn):
+            snap = fn()
+            break
+    assert snap is not None, "legacy snapshot method not found on DashboardState"
+    assert snap['calibration_coeffs'] == {
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }
