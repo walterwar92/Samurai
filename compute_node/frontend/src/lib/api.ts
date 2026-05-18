@@ -241,6 +241,10 @@ export const api = {
   resetPosition: () =>
     post('/api/robot/reset_position'),
 
+  // System shutdown — kill robot (MQTT) + dashboard (self-SIGTERM)
+  shutdownAll: () =>
+    post('/api/v1/system/shutdown'),
+
   // Odometry source / fusion (etap 1B/1C)
   // Pi-side motor_node.PositionFusion can run in 4 modes — switch live to
   // compare wheel/IMU/complementary/EKF on the same recorded run.
