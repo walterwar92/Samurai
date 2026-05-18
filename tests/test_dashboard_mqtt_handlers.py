@@ -239,4 +239,9 @@ def test_calibration_active_ignores_garbage_json(handlers):
     handlers._h_calibration_active(b'{not json')
     with handlers._state.lock:
         coeffs = handlers._state.control.calibration_coeffs
-    assert coeffs is not None and coeffs['profile'] == 'tile'
+    assert coeffs == {
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }
