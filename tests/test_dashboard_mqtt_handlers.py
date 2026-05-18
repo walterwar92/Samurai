@@ -138,3 +138,23 @@ def test_mps_live_state_missing_keys_is_dropped(handlers):
 
     assert handlers._last_live_state is None
     assert captured == []
+
+
+def test_mps_live_state_broadcaster_exception_does_not_corrupt_buffer(handlers):
+    """Падающий broadcaster (например, упавший WS) не должен ломать
+    буфер _last_live_state и не должен пробрасывать исключение наверх.
+    Буфер пишется ДО вызова broadcaster — это гарантирует send-on-connect
+    для следующего клиента, даже если текущий упал."""
+    def bad_broadcaster(_frame):
+        raise RuntimeError('WS connection lost')
+
+    handlers.set_mps_live_state_broadcaster(bad_broadcaster)
+    payload = {
+        'ts': 1.0, 'x': [0.0, 0.1, 0.2, 0.3, 0.4], 'u': [0.1, 0.0],
+        'scenario_active': False, 'run_id': None, 'schema_version': '1.0',
+    }
+    # Не должно пробросить исключение.
+    handlers._h_mps_live_state(_json.dumps(payload).encode())
+    # Буфер записан несмотря на падение broadcaster.
+    assert handlers._last_live_state is not None
+    assert handlers._last_live_state['x'] == [0.0, 0.1, 0.2, 0.3, 0.4]

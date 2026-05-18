@@ -173,40 +173,29 @@ export interface MpsLiveStateWsFrame {
 
 ### 3.2 `compute_node/dashboard/mqtt_handlers.py` (~30 строк)
 
-1. Добавить `'mps/live_state'` в `_MPS_TOPICS`.
+Следуем тому же single-slot паттерну, что уже используется для
+`_mps_ws_broadcaster` (`/ws/mps/telemetry`) — а не fan-out list.
+Это согласовано с реальной структурой файла (один сервер dashboard
+= один WS broker для топика).
+
+1. Добавить `'mps/live_state'` в `_SUBSCRIBE_TOPICS` (список подписок).
 2. В `MQTTHandlers.__init__`:
    ```python
-   self._last_live_state: dict | None = None
-   self._live_state_broadcasters: list[Callable[[dict], None]] = []
+   self._last_live_state: Optional[dict] = None
    ```
-3. Хэндлер:
+3. Class-level (рядом с `_mps_ws_broadcaster`):
    ```python
-   def _h_mps_live_state(self, payload: dict) -> None:
-       try:
-           x = payload['x']
-           u = payload['u']
-           if not (isinstance(x, list) and len(x) == 5
-                   and isinstance(u, list) and len(u) == 2):
-               return
-       except (KeyError, TypeError):
-           return
-       with self._lock:
-           self._last_live_state = payload
-       frame = {'type': 'live_state', 'point': payload}
-       for cb in self._live_state_broadcasters:
-           try:
-               cb(frame)
-           except Exception as exc:
-               log.warning('live_state broadcast: %s', exc)
+   _mps_live_state_broadcaster: Optional[Callable] = None
    ```
-4. Зарегистрировать в маппинге `_HANDLERS`:
+4. Setter (рядом с `set_mps_ws_broadcaster`):
+   ```python
+   def set_mps_live_state_broadcaster(self, broadcaster: Optional[Callable]) -> None:
+       self._mps_live_state_broadcaster = broadcaster
+   ```
+5. Handler `_h_mps_live_state(payload: bytes)` — парсит JSON сам, валидирует, пишет в `_last_live_state` под `self._state.lock`, вызывает `_mps_live_state_broadcaster` если он зарегистрирован (try/except вокруг вызова).
+6. Зарегистрировать в маппинге `_dispatch` (топик → handler):
    ```python
    'mps/live_state': MQTTHandlers._h_mps_live_state,
-   ```
-5. Регистрация подписчика:
-   ```python
-   def register_live_state_broadcaster(self, cb): ...
-   def unregister_live_state_broadcaster(self, cb): ...
    ```
 
 ### 3.3 `compute_node/dashboard/routers/mps.py` (~40 строк)
