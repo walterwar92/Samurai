@@ -491,15 +491,31 @@ class MQTTHandlers:
             self._state.control.calibration_result = d
 
     def _h_calibration_active(self, payload: bytes):
+        """motor_node публикует {profile, scale_fwd, scale_bwd, motor_trim}.
+        Сохраняем весь dict — фронт ждёт полную структуру.
+        Неполный/некорректный payload игнорируем (не затираем хороший state).
+        """
         try:
             d = json.loads(payload)
         except Exception:
             return
+        if not isinstance(d, dict):
+            return
+        required = ('profile', 'scale_fwd', 'scale_bwd', 'motor_trim')
+        if not all(k in d for k in required):
+            return
+        try:
+            new_coeffs = {
+                'profile': str(d['profile']),
+                'scale_fwd': float(d['scale_fwd']),
+                'scale_bwd': float(d['scale_bwd']),
+                'motor_trim': float(d['motor_trim']),
+            }
+        except (TypeError, ValueError):
+            return
         with self._state.lock:
-            if isinstance(d, dict):
-                self._state.control.calibration_active_profile = d.get('name')
-            else:
-                self._state.control.calibration_active_profile = str(d)
+            self._state.control.calibration_coeffs = new_coeffs
+            self._state.control.calibration_active_profile = new_coeffs['profile']
 
     def _h_calibration_profile_all(self, payload: bytes):
         try:

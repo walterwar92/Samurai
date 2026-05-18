@@ -158,3 +158,85 @@ def test_mps_live_state_broadcaster_exception_does_not_corrupt_buffer(handlers):
     # Буфер записан несмотря на падение broadcaster.
     assert handlers._last_live_state is not None
     assert handlers._last_live_state['x'] == [0.0, 0.1, 0.2, 0.3, 0.4]
+
+
+# ── calibration/active ─────────────────────────────────────────────────────
+
+def test_calibration_active_saves_full_dict(handlers):
+    """_h_calibration_active должен сохранять весь dict
+    {profile, scale_fwd, scale_bwd, motor_trim}, а не только имя."""
+    payload = json.dumps({
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }).encode()
+    handlers._h_calibration_active(payload)
+    with handlers._state.lock:
+        coeffs = handlers._state.control.calibration_coeffs
+    assert coeffs == {
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }
+
+
+def test_calibration_active_ignores_incomplete_payload(handlers):
+    """Неполный payload (без scale_bwd) не должен затирать существующий state."""
+    # Подготовка: положим валидный state.
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }).encode())
+    # Атака: неполный payload.
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'broken',
+        'scale_fwd': 2.0,
+    }).encode())
+    with handlers._state.lock:
+        coeffs = handlers._state.control.calibration_coeffs
+    # State не должен быть затёрт.
+    assert coeffs == {
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }
+
+
+def test_calibration_active_ignores_non_dict_payload(handlers):
+    """Голый float / string / list — игнорируем, state не затираем."""
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }).encode())
+    handlers._h_calibration_active(b'42.5')
+    handlers._h_calibration_active(b'"justastring"')
+    handlers._h_calibration_active(b'[1,2,3]')
+    with handlers._state.lock:
+        coeffs = handlers._state.control.calibration_coeffs
+    assert coeffs == {
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }
+
+
+def test_calibration_active_ignores_garbage_json(handlers):
+    """Битый JSON — не падаем, state не затираем."""
+    handlers._h_calibration_active(json.dumps({
+        'profile': 'tile',
+        'scale_fwd': 1.5,
+        'scale_bwd': 0.9,
+        'motor_trim': -10.0,
+    }).encode())
+    handlers._h_calibration_active(b'{not json')
+    with handlers._state.lock:
+        coeffs = handlers._state.control.calibration_coeffs
+    assert coeffs is not None and coeffs['profile'] == 'tile'
