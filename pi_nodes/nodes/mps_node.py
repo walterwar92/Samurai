@@ -208,6 +208,9 @@ class MpsNode(MqttNode):
 
         # x_meas от position_fusion (через odom MQTT). Атомарно read by tick.
         self._x_meas = np.zeros(5)
+        # Последнее опубликованное управление; используется
+        # _publish_live_state когда сценарий активен.
+        self._last_u = np.zeros(2)
         self._x_meas_ts = 0.0
         # Абсолютная позиция одометрии (x, y) для outer-loop расчёта e_y.
         # Хранится отдельно от _x_meas (которое уже в относительных координатах
@@ -739,6 +742,7 @@ class MpsNode(MqttNode):
         петли. `r/x_local/y_local` (schema 1.2) — опорная точка и локальные
         координаты для UI; см. compute_node/dashboard/schemas/mps.py.
         """
+        self._last_u = u.copy()
         self.publish('cmd_vel', {
             'linear_x': float(u[0]),
             'angular_z': float(u[1]),

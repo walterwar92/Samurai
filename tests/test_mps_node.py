@@ -1057,3 +1057,27 @@ def test_mps_node_settle_timeout_reports_detail(mps_node):
     assert 'settle timeout' in (msg.get('error_message') or ''), (
         f'detail must contain "settle timeout", got: {msg.get("error_message")}'
     )
+
+
+# ── live_state: _last_u ────────────────────────────────────────────────
+def test_last_u_updated_in_publish_cmd_and_telemetry(mps_node):
+    """После публикации cmd_vel + telemetry, _last_u должен содержать u."""
+    import numpy as np
+
+    # `_RunState.__init__` требует ReferenceTrajectory; мокаем целиком —
+    # `_publish_cmd_and_telemetry` использует только run_id, distance, t,
+    # telemetry. См. pi_nodes/nodes/mps_node.py:74-126.
+    run = MagicMock()
+    run.run_id = 'r-test'
+    run.distance = 1.0
+    run.t = 0.0
+    run.telemetry = []
+    x = np.array([0.0, 0.1, 0.0, 0.0, 0.0])
+    u = np.array([0.123, -0.456])
+    mps_node._plant = MagicMock()
+    mps_node._plant.output.return_value = x.copy()
+
+    mps_node._publish_cmd_and_telemetry(run, x, u)
+
+    assert mps_node._last_u[0] == pytest.approx(0.123)
+    assert mps_node._last_u[1] == pytest.approx(-0.456)
