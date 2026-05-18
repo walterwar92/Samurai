@@ -154,3 +154,6 @@ frames/
 gen_pptx*
 # --- Git worktrees (local, ephemeral) ---
 .worktrees/
+
+# UI shutdown request flag (см. compute.sh start_shutdown_watcher)
+.shutdown_request

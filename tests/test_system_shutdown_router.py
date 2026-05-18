@@ -52,34 +52,64 @@ def test_shutdown_publishes_mqtt(client, fake_mqtt):
     )
 
 
-def test_shutdown_schedules_self_kill_outside_docker(client, fake_mqtt):
-    """Вне Docker (нет /.dockerenv): BackgroundTask делает os.kill(getpid(), SIGTERM)."""
+def test_shutdown_outside_docker_kills_self(client, fake_mqtt):
+    """Вне Docker (нет /root/Samurai mount'а): SIGTERM uvicorn'у."""
     import signal as _signal
 
     with patch('compute_node.dashboard.routers.system.os.kill') as mock_kill, \
-         patch('compute_node.dashboard.routers.system.os.path.exists',
-               return_value=False) as mock_exists:
+         patch('compute_node.dashboard.routers.system.os.path.isdir',
+               return_value=False):
         r = client.post('/api/v1/system/shutdown')
         assert r.status_code == 200
 
-    mock_exists.assert_any_call('/.dockerenv')
-    assert mock_kill.called, 'os.kill должен быть вызван BackgroundTask-ом'
+    assert mock_kill.called, 'Вне Docker должны kill self'
     args = mock_kill.call_args.args
     assert args[0] == os.getpid()
     assert args[1] == _signal.SIGTERM
 
 
-def test_shutdown_kills_pid_1_inside_docker(client, fake_mqtt):
-    """Внутри Docker (/.dockerenv существует): SIGTERM в PID 1, чтобы убить контейнер."""
-    import signal as _signal
+def test_shutdown_inside_docker_does_not_kill_self(client, fake_mqtt):
+    """В Docker: SIGTERM uvicorn'у НЕ шлётся.
 
+    Bash-watcher на хосте увидит .shutdown_request и сделает docker stop.
+    Если мы убьём FastAPI сами, ros2 launch с respawn=True перезапустит
+    его раньше чем watcher отработает.
+    """
     with patch('compute_node.dashboard.routers.system.os.kill') as mock_kill, \
-         patch('compute_node.dashboard.routers.system.os.path.exists',
+         patch('compute_node.dashboard.routers.system._request_compute_shutdown_via_file',
                return_value=True):
         r = client.post('/api/v1/system/shutdown')
         assert r.status_code == 200
 
-    assert mock_kill.called
-    args = mock_kill.call_args.args
-    assert args[0] == 1, f'В Docker должны убивать PID 1, не {args[0]}'
-    assert args[1] == _signal.SIGTERM
+    assert not mock_kill.called, (
+        'В Docker НЕ должны kill self — иначе ros2 launch перезапустит uvicorn'
+    )
+
+
+def test_request_compute_shutdown_writes_file_in_docker():
+    """Unit test для _request_compute_shutdown_via_file."""
+    from unittest.mock import mock_open as mo
+    from compute_node.dashboard.routers import system as sys_mod
+
+    m = mo()
+    with patch.object(sys_mod.os.path, 'isdir', return_value=True), \
+         patch('builtins.open', m):
+        result = sys_mod._request_compute_shutdown_via_file()
+
+    assert result is True
+    # Файл открыт на запись по mount-пути
+    call_args = m.call_args
+    path_arg = call_args.args[0]
+    assert path_arg.replace('\\', '/').endswith('/root/Samurai/.shutdown_request'), (
+        f'Ожидался путь .../root/Samurai/.shutdown_request, получили {path_arg}'
+    )
+    assert call_args.args[1] == 'w'
+    m().write.assert_called_once_with('dashboard\n')
+
+
+def test_request_compute_shutdown_returns_false_outside_docker():
+    """Если /root/Samurai не существует — возвращает False."""
+    from compute_node.dashboard.routers import system as sys_mod
+
+    with patch.object(sys_mod.os.path, 'isdir', return_value=False):
+        assert sys_mod._request_compute_shutdown_via_file() is False

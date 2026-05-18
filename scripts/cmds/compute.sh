@@ -25,6 +25,8 @@ CONTAINER_NAME="samurai_compute"
 ROS_DOMAIN_ID=42
 SAMCAN_PID=""
 SAMCAN_LOG="/tmp/samcan_bridge.log"
+SHUTDOWN_WATCHER_PID=""
+SHUTDOWN_FLAG_FILE="$SAMURAI_ROOT/.shutdown_request"
 
 # ── Сборка фронта ───────────────────────────────────────────────────────────
 build_frontend() {
@@ -130,6 +132,38 @@ stop_samcan_bridge() {
     pkill -f "samcan_bridge.py" 2>/dev/null || true
 }
 
+# ── Shutdown-request watcher ────────────────────────────────────────────────
+# Дашборд (UI «Выключить всё») создаёт файл .shutdown_request в проектной
+# директории, которая mount'ится в контейнер как /root/Samurai. Поллим файл
+# раз в секунду: при появлении — `docker stop` контейнера. Контейнер с --rm
+# завершается, `docker run` возвращается, bash-скрипт идёт в EXIT trap →
+# cleanup_all → освобождение lock + остановка samcan.
+start_shutdown_watcher() {
+    rm -f "$SHUTDOWN_FLAG_FILE" 2>/dev/null || true
+    (
+        while sleep 1; do
+            if [[ -f "$SHUTDOWN_FLAG_FILE" ]]; then
+                rm -f "$SHUTDOWN_FLAG_FILE" 2>/dev/null || true
+                docker stop -t 5 "$CONTAINER_NAME" &>/dev/null \
+                    || docker kill "$CONTAINER_NAME" &>/dev/null || true
+                exit 0
+            fi
+            # Watcher выходит сам если контейнер уже не существует.
+            docker ps -q --filter "name=$CONTAINER_NAME" | grep -q . || exit 0
+        done
+    ) &
+    SHUTDOWN_WATCHER_PID=$!
+    log_ok "Shutdown-watcher запущен (PID $SHUTDOWN_WATCHER_PID, файл: $SHUTDOWN_FLAG_FILE)"
+}
+
+stop_shutdown_watcher() {
+    if [[ -n "${SHUTDOWN_WATCHER_PID:-}" ]] && kill -0 "$SHUTDOWN_WATCHER_PID" 2>/dev/null; then
+        kill "$SHUTDOWN_WATCHER_PID" 2>/dev/null || true
+        wait "$SHUTDOWN_WATCHER_PID" 2>/dev/null || true
+    fi
+    rm -f "$SHUTDOWN_FLAG_FILE" 2>/dev/null || true
+}
+
 # Единый cleanup: сначала Docker (иначе ros2 launch виснет 20-60 сек на Ctrl+C
 # из-за плохого проброса SIGINT через MSYS/Docker Desktop), потом Samcan.
 # Идемпотентно — может вызываться из INT/TERM trap и затем EXIT trap.
@@ -143,6 +177,7 @@ cleanup_all() {
         docker stop -t 5 "$CONTAINER_NAME" &>/dev/null || \
             docker kill "$CONTAINER_NAME" &>/dev/null || true
     fi
+    stop_shutdown_watcher
     stop_samcan_bridge
 }
 
@@ -219,6 +254,10 @@ launch_docker() {
     else
         log_info "MQTT auth: anonymous (нет ~/.samurai/mqtt.passwd)"
     fi
+
+    # Запускаем watcher .shutdown_request ДО docker run — UI «Выключить
+    # всё» в дашборде создаст этот файл, watcher сделает docker stop.
+    start_shutdown_watcher
 
     # shellcheck disable=SC2086
     MSYS_NO_PATHCONV=1 docker run --rm \

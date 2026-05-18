@@ -218,22 +218,33 @@ async def hardware_active() -> HardwareActiveResponse:
 shutdown_router = APIRouter()
 
 
-def _shutdown_target_pid() -> int:
-    """PID, в который шлём SIGTERM для завершения compute-стека.
+def _request_compute_shutdown_via_file() -> bool:
+    """Попросить bash-launcher на хосте сделать `docker stop samurai_compute`.
 
-    Внутри Docker (samurai compute) FastAPI запущен как один из child-процессов
-    ros2 launch; убийство uvicorn НЕ останавливает контейнер — ros2 launch
-    продолжает крутиться, либо перезапускает FastAPI. Чтобы корректно
-    завершить контейнер с `--rm`, нужно убить PID 1 (это `bash → ros2 launch`).
-    После выхода контейнера bash-launcher `samurai.sh compute` отрабатывает
-    trap cleanup_all и снимает lock.
+    Внутри Docker `compute_node/dashboard` крутится как ребёнок `ros2 launch`
+    (PID 1). Сигналы к PID 1 ядром игнорируются по умолчанию, плюс у нод в
+    launch файле может быть `respawn=True` — поэтому SIGTERM в FastAPI или
+    PID 1 не гарантирует завершение контейнера.
 
-    Вне Docker (dev-режим, `python -m compute_node.dashboard`) PID 1 — это
-    init/systemd, к нему мы не имеем доступа. Шлём SIGTERM себе.
+    Решение: создать маркер-файл в проектной директории (она mount'ится с
+    хоста как `-v $SAMURAI_ROOT:/root/Samurai`). Параллельный watcher в
+    `scripts/cmds/compute.sh` обнаружит файл и сделает `docker stop`, что
+    корректно остановит контейнер и активирует trap `cleanup_all`.
+
+    Возвращает True если файл создан (Docker mount существует), иначе False
+    (значит мы вне Docker — fallback на SIGTERM себе).
     """
-    if os.path.exists('/.dockerenv'):
-        return 1
-    return os.getpid()
+    mount_root = '/root/Samurai'
+    if not os.path.isdir(mount_root):
+        return False
+    flag_path = os.path.join(mount_root, '.shutdown_request')
+    try:
+        with open(flag_path, 'w', encoding='utf-8') as f:
+            f.write('dashboard\n')
+        return True
+    except OSError as e:
+        log.warning('Не удалось создать %s: %s', flag_path, e)
+        return False
 
 
 @shutdown_router.post('', response_model=CommandAck, tags=['system'])
@@ -243,22 +254,32 @@ async def system_shutdown(
 ) -> CommandAck:
     """Полное выключение робота и дашборда.
 
-    Pi-side: SystemNode ловит samurai/{robot_id}/system/shutdown
-    и шлёт SIGTERM родительскому процессу (robot_launcher).
+    Pi-side: SystemNode ловит samurai/{robot_id}/system/shutdown и шлёт
+    SIGTERM родительскому процессу (robot_launcher).
 
-    Compute-side: через 500мс шлём SIGTERM в PID 1 контейнера (или себе —
-    в dev-режиме без Docker). Завершение PID 1 останавливает контейнер с
-    `--rm`; bash-launcher `samurai.sh compute` отлавливает выход docker и
-    выполняет cleanup_all + release_lock.
+    Compute-side:
+    - В Docker: создаём `.shutdown_request` в shared volume; bash-watcher
+      на хосте делает `docker stop samurai_compute`; trap cleanup_all
+      освобождает lock и тушит samcan bridge.
+    - Вне Docker (dev): SIGTERM uvicorn'у — он сам корректно выйдет.
     """
     mqtt.publish('system/shutdown', {'source': 'dashboard'}, qos=1)
 
-    target_pid = _shutdown_target_pid()
+    used_file = _request_compute_shutdown_via_file()
 
     async def _shutdown_self() -> None:
         await asyncio.sleep(0.5)
-        os.kill(target_pid, signal.SIGTERM)
+        if used_file:
+            # bash-watcher теперь сделает docker stop — мы можем продолжать
+            # отвечать на запросы пока контейнер не остановится. SIGTERM
+            # себе не шлём, иначе FastAPI умрёт и ros2 launch с respawn
+            # его перезапустит до того как docker stop отработает.
+            return
+        os.kill(os.getpid(), signal.SIGTERM)
 
     background_tasks.add_task(_shutdown_self)
-    log.warning('System shutdown requested from dashboard (target PID=%d)', target_pid)
+    log.warning(
+        'System shutdown requested from dashboard (file-trigger=%s)',
+        used_file,
+    )
     return CommandAck()
