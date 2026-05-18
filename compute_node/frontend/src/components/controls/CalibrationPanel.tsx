@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -61,6 +61,11 @@ export function CalibrationPanel({ coeffs, profiles }: CalibrationPanelProps) {
   const [editing, setEditing] = useState(false)
   const [showSave, setShowSave] = useState(false)
 
+  // ── Калькулятор (авто-подбор по измерению) ──────────────
+  const [calcDir, setCalcDir] = useState<'fwd' | 'bwd'>('fwd')
+  const [dTarget, setDTarget] = useState('')
+  const [dMeasured, setDMeasured] = useState('')
+
   // Sync inputs from live coefficients
   useEffect(() => {
     if (coeffs && !editing) {
@@ -74,6 +79,25 @@ export function CalibrationPanel({ coeffs, profiles }: CalibrationPanelProps) {
   useEffect(() => {
     api.listCalibrationProfiles()
   }, [])
+
+  const currentScale = calcDir === 'fwd' ? coeffs?.scale_fwd : coeffs?.scale_bwd
+
+  const newScale = useMemo(() => {
+    if (currentScale == null) return null
+    const t = parseFloat(dTarget)
+    const m = parseFloat(dMeasured)
+    return computeNewScale(currentScale, t, m)
+  }, [currentScale, dTarget, dMeasured])
+
+  function handleApplyCalculator() {
+    if (newScale == null) return
+    if (calcDir === 'fwd') {
+      setFwd(newScale.toFixed(4))
+    } else {
+      setBwd(newScale.toFixed(4))
+    }
+    setEditing(true)
+  }
 
   const handleApply = () => {
     const f = parseFloat(fwd)
@@ -119,6 +143,9 @@ export function CalibrationPanel({ coeffs, profiles }: CalibrationPanelProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="p-3 space-y-2.5">
+        <div className="text-[10px] text-zinc-500 leading-tight">
+          Применяется только в режиме Robot
+        </div>
         {/* Active profile indicator */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
@@ -145,6 +172,7 @@ export function CalibrationPanel({ coeffs, profiles }: CalibrationPanelProps) {
               value={fwd}
               onChange={e => { setFwd(e.target.value); setEditing(true) }}
               placeholder="1.235"
+              aria-label="FWD"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -154,6 +182,7 @@ export function CalibrationPanel({ coeffs, profiles }: CalibrationPanelProps) {
               value={bwd}
               onChange={e => { setBwd(e.target.value); setEditing(true) }}
               placeholder="0.988"
+              aria-label="BWD"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -163,9 +192,103 @@ export function CalibrationPanel({ coeffs, profiles }: CalibrationPanelProps) {
               value={trim}
               onChange={e => { setTrim(e.target.value); setEditing(true) }}
               placeholder="-12.003"
+              aria-label="TRIM %"
             />
           </div>
         </div>
+
+        <Separator />
+
+        {/* Авто-подбор по измерению */}
+        <div className="space-y-1.5">
+          <div className="text-[10px] uppercase text-muted-foreground tracking-wider">
+            Авто-подбор по измерению
+          </div>
+
+          {/* Direction toggle */}
+          <div className="flex gap-3 text-xs">
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="calc-dir"
+                checked={calcDir === 'fwd'}
+                onChange={() => setCalcDir('fwd')}
+                aria-label="Вперёд"
+              />
+              <span>Вперёд</span>
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="calc-dir"
+                checked={calcDir === 'bwd'}
+                onChange={() => setCalcDir('bwd')}
+                aria-label="Назад"
+              />
+              <span>Назад</span>
+            </label>
+          </div>
+
+          {/* D inputs */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-zinc-500 w-24 shrink-0">D заданное, м</span>
+            <input
+              className={inputCls}
+              type="number"
+              step="0.01"
+              min="0"
+              value={dTarget}
+              onChange={e => setDTarget(e.target.value)}
+              placeholder="2.00"
+              aria-label="D заданное, м"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-zinc-500 w-24 shrink-0">D измеренное, м</span>
+            <input
+              className={inputCls}
+              type="number"
+              step="0.01"
+              min="0"
+              value={dMeasured}
+              onChange={e => setDMeasured(e.target.value)}
+              placeholder="2.18"
+              aria-label="D измеренное, м"
+            />
+          </div>
+
+          {/* Preview + button */}
+          <div className="text-[10px] text-zinc-400 font-mono">
+            {currentScale == null ? (
+              <span className="text-zinc-600">Жду коэффициентов из robot…</span>
+            ) : newScale == null ? (
+              <span className="text-zinc-600">Введи D &gt; 0</span>
+            ) : (
+              <>
+                <span>Текущий {calcDir.toUpperCase()}: </span>
+                <span data-testid="calc-current-scale">{currentScale.toFixed(3)}</span>
+                <span> → Новый: </span>
+                <span data-testid="calc-new-scale">{newScale.toFixed(3)}</span>
+                <span className={newScale >= currentScale ? 'text-emerald-400' : 'text-amber-400'}>
+                  {'  (Δ '}
+                  {(newScale - currentScale >= 0 ? '+' : '') + (newScale - currentScale).toFixed(3)}
+                  {')'}
+                </span>
+              </>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs h-7 w-full"
+            onClick={handleApplyCalculator}
+            disabled={newScale == null}
+          >
+            Подставить в {calcDir.toUpperCase()}
+          </Button>
+        </div>
+
+        <Separator />
 
         {/* Apply / Save buttons */}
         <div className="flex gap-1.5">
