@@ -1061,9 +1061,8 @@ def test_mps_node_settle_timeout_reports_detail(mps_node):
 
 # ── live_state: _last_u ────────────────────────────────────────────────
 def test_last_u_updated_in_publish_cmd_and_telemetry(mps_node):
-    """После публикации cmd_vel + telemetry, _last_u должен содержать u."""
-    import numpy as np
-
+    """После публикации cmd_vel + telemetry, _last_u должен содержать u
+    и быть копией (мутация u не должна затрагивать _last_u)."""
     # `_RunState.__init__` требует ReferenceTrajectory; мокаем целиком —
     # `_publish_cmd_and_telemetry` использует только run_id, distance, t,
     # telemetry. См. pi_nodes/nodes/mps_node.py:74-126.
@@ -1081,3 +1080,7 @@ def test_last_u_updated_in_publish_cmd_and_telemetry(mps_node):
 
     assert mps_node._last_u[0] == pytest.approx(0.123)
     assert mps_node._last_u[1] == pytest.approx(-0.456)
+
+    # _last_u должен быть копией, не alias: мутация u не отражается.
+    u[0] = 999.0
+    assert mps_node._last_u[0] == pytest.approx(0.123)
