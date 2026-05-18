@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { CalibrationPanel } from '@/components/controls/CalibrationPanel'
 import { DiagnosticsPanel } from '@/components/mps/DiagnosticsPanel'
 import { DraftStatus } from '@/components/mps/DraftStatus'
 import { EigenvaluePanel } from '@/components/mps/EigenvaluePanel'
@@ -19,6 +20,7 @@ import { useMpsLiveTelemetry } from '@/hooks/useMpsLiveTelemetry'
 import { useMpsMatrices } from '@/hooks/useMpsMatrices'
 import { useMpsRun } from '@/hooks/useMpsRun'
 import { useMpsValidate } from '@/hooks/useMpsValidate'
+import { useRobotState } from '@/hooks/useRobotState'
 import { detectPhysics, DEFAULT_TAU_V, DEFAULT_TAU_OMEGA } from '@/lib/mps/canonical'
 import type {
   MpsMatrices,
@@ -42,6 +44,7 @@ function MpsPageInner() {
   const runHook = useMpsRun()
   const validateHook = useMpsValidate()
   const historyHook = useMpsHistory()
+  const robotState = useRobotState()
 
   const [source, setSource] = useState<ScenarioSource>('sim')
   const [compareSelection, setCompareSelection] = useState<MpsScenarioResult[]>([])
@@ -236,6 +239,10 @@ function MpsPageInner() {
               draft={matricesHook.draft}
               onPatch={(m) => void matricesHook.saveDraft(m)}
               defaults={{ tau_v: DEFAULT_TAU_V, tau_omega: DEFAULT_TAU_OMEGA }}
+            />
+            <CalibrationPanel
+              coeffs={robotState?.calibration_coeffs ?? null}
+              profiles={robotState?.calibration_profiles ?? null}
             />
           </aside>
 
