@@ -72,6 +72,7 @@ NODE_REGISTRY = {
     # state.mps.active_run навсегда зависает в 'running' и второй запуск
     # ловит 409 Conflict.
     'mps':          'pi_nodes.nodes.mps_node.MpsNode',
+    'system':       'pi_nodes.nodes.system_node.SystemNode',
 }
 
 # Core nodes — essential for robot operation (13 nodes, 13 MQTT connections)
@@ -84,6 +85,7 @@ DEFAULT_NODES = [
     'slam_map',                                # SLAM map relay for laptop
     'precision_drive',                         # test scenarios (dashboard UI)
     'mps',                                     # state-space сценарий «D метров вперёд»
+    'system',                                  # MQTT-shutdown handler from dashboard
 ]
 # Disabled by default (add via --nodes if needed):
 # 'fallback_nav', 'path_recorder', 'calibration',
