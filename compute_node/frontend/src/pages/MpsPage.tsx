@@ -4,6 +4,7 @@ import { DiagnosticsPanel } from '@/components/mps/DiagnosticsPanel'
 import { DraftStatus } from '@/components/mps/DraftStatus'
 import { EigenvaluePanel } from '@/components/mps/EigenvaluePanel'
 import { HistoryPanel } from '@/components/mps/HistoryPanel'
+import { LiveStateVector } from '@/components/mps/LiveStateVector'
 import { MatrixEditor } from '@/components/mps/MatrixEditor'
 import { OdeCard } from '@/components/mps/OdeCard'
 import { PhysicsParams } from '@/components/mps/PhysicsParams'
@@ -229,6 +230,7 @@ function MpsPageInner() {
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(360px,_35%)_1fr] gap-4">
           <aside className="space-y-3 lg:sticky lg:top-16 lg:self-start lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto">
+            <LiveStateVector />
             <OdeCard matrices={matricesHook.draft ?? matricesHook.applied} />
             <PhysicsParams
               applied={matricesHook.applied}
