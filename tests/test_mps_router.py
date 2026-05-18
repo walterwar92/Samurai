@@ -417,20 +417,30 @@ def test_live_state_ws_broadcasts_new_frame(client):
 
 
 def test_live_state_ws_no_last_no_replay(client):
-    """Если _last is None — клиент не получает фрейм до broadcast."""
+    """Если _last is None — клиент не получает phantom фрейм до broadcast.
+
+    Делаем 2 broadcast'а с уникальными ts; проверяем что в очереди ровно
+    2 сообщения (а не 3 — иначе значит был phantom replay из _last)."""
     from compute_node.dashboard.routers.mps import mps_live_state_broker
 
     mps_live_state_broker.set_last(None)
 
-    with client.websocket_connect('/ws/mps/live_state') as ws:
-        # Ожидание сразу таймаутит — мы НЕ ждём reply, пушим и проверяем.
-        mps_live_state_broker.broadcast({
+    def _frame(ts: float) -> dict:
+        return {
             'type': 'live_state',
             'point': {
-                'ts': 1.0, 'x': [0, 0, 0, 0, 0], 'u': [0, 0],
+                'ts': ts, 'x': [0, 0, 0, 0, 0], 'u': [0, 0],
                 'scenario_active': False, 'run_id': None,
                 'schema_version': '1.0',
             },
-        })
-        msg = ws.receive_json()
-        assert msg['type'] == 'live_state'
+        }
+
+    with client.websocket_connect('/ws/mps/live_state') as ws:
+        mps_live_state_broker.broadcast(_frame(1.0))
+        mps_live_state_broker.broadcast(_frame(2.0))
+
+        msg1 = ws.receive_json()
+        msg2 = ws.receive_json()
+        # Первое сообщение — первый broadcast, не replay из _last.
+        assert msg1['point']['ts'] == pytest.approx(1.0)
+        assert msg2['point']['ts'] == pytest.approx(2.0)

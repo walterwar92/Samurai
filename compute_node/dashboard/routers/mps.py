@@ -489,6 +489,11 @@ class _MpsWsBroker:
         with self._lock:
             self._subs = [(q, r) for (q, r) in self._subs if q is not queue]
 
+    def ensure_loop(self) -> None:
+        """Idempotent: запомнить running loop, если ещё не сохранён."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+
     def broadcast(self, frame: dict) -> None:
         """Called from the MQTT thread. Push frame onto each matching queue
         via call_soon_threadsafe — never blocks the publisher."""
@@ -498,10 +503,16 @@ class _MpsWsBroker:
                 q for (q, rid) in self._subs
                 if rid is None or rid == frame.get('run_id')
             ]
-        if not targets or loop is None:
+        if not targets:
             return
         for q in targets:
-            loop.call_soon_threadsafe(_safe_put_nowait, q, frame)
+            if loop is None or loop.is_closed():
+                # Loop ещё не зарегистрирован (старт) или уже закрыт
+                # (например, Starlette TestClient закрыл loop). Пишем в
+                # очередь напрямую — в проде эта ветка не достигается.
+                _safe_put_nowait(q, frame)
+            else:
+                loop.call_soon_threadsafe(_safe_put_nowait, q, frame)
 
 
 def _safe_put_nowait(q: asyncio.Queue, item: dict) -> None:
@@ -559,6 +570,11 @@ class _MpsLiveStateBroker:
         with self._lock:
             return self._last
 
+    def ensure_loop(self) -> None:
+        """Idempotent: запомнить running loop, если ещё не сохранён."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+
     def broadcast(self, frame: dict) -> None:
         """Called from MQTT thread or test thread. Persists last + pushes."""
         loop = self._loop
@@ -569,8 +585,10 @@ class _MpsLiveStateBroker:
             return
         for q in targets:
             if loop is None or loop.is_closed():
-                # Тестовый путь: client.websocket_connect использует тот же
-                # loop как и сервер — пушим напрямую.
+                # Loop ещё не зарегистрирован или уже закрыт (например,
+                # Starlette TestClient закрыл его до того, как тестовый
+                # поток дёрнул broadcast). Пишем напрямую — в проде эта
+                # ветка не достигается.
                 _safe_put_nowait(q, frame)
             else:
                 loop.call_soon_threadsafe(_safe_put_nowait, q, frame)
@@ -583,8 +601,7 @@ mps_live_state_broker = _MpsLiveStateBroker()
 async def mps_live_state_ws(websocket: WebSocket):
     """Без handshake. На connect — replay последнего фрейма, потом стрим."""
     await websocket.accept()
-    if mps_live_state_broker._loop is None:
-        mps_live_state_broker.attach_loop(asyncio.get_event_loop())
+    mps_live_state_broker.ensure_loop()
 
     queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=64)
     mps_live_state_broker.add(queue)
@@ -617,8 +634,7 @@ async def mps_ws(websocket: WebSocket):
         client → {action:"subscribe", run_id?:string}
     Then server streams telemetry/finished/error frames until close."""
     await websocket.accept()
-    if mps_broker._loop is None:
-        mps_broker.attach_loop(asyncio.get_event_loop())
+    mps_broker.ensure_loop()
 
     queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=512)
     run_id: Optional[str] = None
