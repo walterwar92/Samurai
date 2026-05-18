@@ -78,3 +78,63 @@ def test_temperature_handler_accepts_integer_scalar(handlers):
         t = handlers._state.sensors.temperature
     assert t.value == pytest.approx(42.0)
     assert t.unit == 'C'
+
+
+# ── mps/live_state ─────────────────────────────────────────────────────
+import json as _json
+
+
+def test_mps_live_state_valid_payload_updates_last_and_broadcasts(handlers):
+    """Корректный payload → _last_live_state записан, broadcaster вызван."""
+    captured = []
+    handlers.set_mps_live_state_broadcaster(lambda f: captured.append(f))
+
+    payload = {
+        'ts': 1747574400.5,
+        'x': [0.0, 0.12, -0.05, 0.0, 0.0],
+        'u': [0.12, 0.0],
+        'scenario_active': False,
+        'run_id': None,
+        'schema_version': '1.0',
+    }
+    handlers._h_mps_live_state(_json.dumps(payload).encode())
+
+    assert handlers._last_live_state is not None
+    assert handlers._last_live_state['x'] == [0.0, 0.12, -0.05, 0.0, 0.0]
+    assert len(captured) == 1
+    assert captured[0]['type'] == 'live_state'
+    assert captured[0]['point']['x'][1] == pytest.approx(0.12)
+
+
+def test_mps_live_state_invalid_x_len_is_dropped(handlers):
+    captured = []
+    handlers.set_mps_live_state_broadcaster(lambda f: captured.append(f))
+
+    bad = {'ts': 1.0, 'x': [0, 0, 0, 0], 'u': [0, 0],
+           'scenario_active': False, 'run_id': None, 'schema_version': '1.0'}
+    handlers._h_mps_live_state(_json.dumps(bad).encode())
+
+    assert handlers._last_live_state is None
+    assert captured == []
+
+
+def test_mps_live_state_invalid_u_len_is_dropped(handlers):
+    captured = []
+    handlers.set_mps_live_state_broadcaster(lambda f: captured.append(f))
+
+    bad = {'ts': 1.0, 'x': [0, 0, 0, 0, 0], 'u': [0],
+           'scenario_active': False, 'run_id': None, 'schema_version': '1.0'}
+    handlers._h_mps_live_state(_json.dumps(bad).encode())
+
+    assert handlers._last_live_state is None
+    assert captured == []
+
+
+def test_mps_live_state_missing_keys_is_dropped(handlers):
+    captured = []
+    handlers.set_mps_live_state_broadcaster(lambda f: captured.append(f))
+
+    handlers._h_mps_live_state(b'{}')
+
+    assert handlers._last_live_state is None
+    assert captured == []

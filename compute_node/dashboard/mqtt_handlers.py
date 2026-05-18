@@ -73,6 +73,7 @@ _SUBSCRIBE_TOPICS = [
     'mps/scenario/finished',
     'mps/telemetry',
     'mps/error',
+    'mps/live_state',
 ]
 
 
@@ -98,6 +99,8 @@ class MQTTHandlers:
         self._robot_id = robot_id
         self._prefix = f'samurai/{robot_id}'
         self._state = state
+        # mps/live_state — последний фрейм для send-on-connect.
+        self._last_live_state: Optional[dict] = None
 
         self._client = mqtt_client.Client(client_id=client_id)
         self._client.on_connect = self._on_connect
@@ -640,10 +643,16 @@ class MQTTHandlers:
     # из app.py при создании WebSocket-эндпойнта; None по умолчанию —
     # тогда фрейм просто оседает в state.last_telemetry.
     _mps_ws_broadcaster: Optional[Callable] = None
+    # Hook для broadcast в WebSocket /ws/mps/live_state.
+    _mps_live_state_broadcaster: Optional[Callable] = None
 
     def set_mps_ws_broadcaster(self, broadcaster: Optional[Callable]) -> None:
         """Plumbing: app.py регистрирует функцию `broadcast(frame: dict)`."""
         self._mps_ws_broadcaster = broadcaster
+
+    def set_mps_live_state_broadcaster(self, broadcaster: Optional[Callable]) -> None:
+        """Plumbing: app.py регистрирует функцию `broadcast(frame: dict)`."""
+        self._mps_live_state_broadcaster = broadcaster
 
     def _broadcast_mps(self, frame: dict) -> None:
         cb = self._mps_ws_broadcaster
@@ -746,6 +755,36 @@ class MQTTHandlers:
             'message': str(d.get('message', '')),
         })
 
+    def _h_mps_live_state(self, payload: bytes):
+        """Обновляет _last_live_state и шлёт фрейм в /ws/mps/live_state.
+
+        Контракт: docs/superpowers/specs/2026-05-18-mps-live-state-vector-design.md §2.1.
+        Невалидные payload'ы (некорректные длины x/u, отсутствующие ключи)
+        молча игнорируются — это live-канал, дроп лучше падения.
+        """
+        try:
+            d = json.loads(payload)
+        except Exception:
+            return
+        if not isinstance(d, dict):
+            return
+        try:
+            x = d['x']
+            u = d['u']
+        except KeyError:
+            return
+        if not (isinstance(x, list) and len(x) == 5
+                and isinstance(u, list) and len(u) == 2):
+            return
+        with self._state.lock:
+            self._last_live_state = d
+        cb = self._mps_live_state_broadcaster
+        if cb is not None:
+            try:
+                cb({'type': 'live_state', 'point': d})
+            except Exception as exc:
+                log.warning('mps live_state WS broadcast failed: %s', exc)
+
     # ── Топик → handler dispatch ────────────────────────────────────
     # Заполняется ниже после определения класса (Python требует сначала
     # завершить class body чтобы методы стали bound).
@@ -796,4 +835,5 @@ MQTTHandlers._dispatch = {
     'mps/scenario/finished': MQTTHandlers._h_mps_scenario_finished,
     'mps/telemetry': MQTTHandlers._h_mps_telemetry,
     'mps/error': MQTTHandlers._h_mps_error,
+    'mps/live_state': MQTTHandlers._h_mps_live_state,
 }
