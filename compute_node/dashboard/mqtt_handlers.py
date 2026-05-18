@@ -515,7 +515,6 @@ class MQTTHandlers:
             return
         with self._state.lock:
             self._state.control.calibration_coeffs = new_coeffs
-            self._state.control.calibration_active_profile = new_coeffs['profile']
 
     def _h_calibration_profile_all(self, payload: bytes):
         try:
