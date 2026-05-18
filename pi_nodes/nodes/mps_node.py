@@ -61,6 +61,7 @@ _REACH_EPS_DEFAULT = 0.005
 
 # Состояние x = [s, v, θ, ω, e_int]
 _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
+LIVE_STATE_RATE_HZ = 10.0
 
 # Watchdog: сколько подряд тиков без свежей одометрии до abort.
 _WATCHDOG_TICKS = 3
@@ -231,6 +232,8 @@ class MpsNode(MqttNode):
         self.create_timer(self._tick_dt, self._tick)
         # Periodic status (полезно для UI / тестов).
         self.create_timer(1.0, self._publish_status)
+        # Live state vector 10 Hz — постоянная публикация x и u для UI.
+        self.create_timer(1.0 / LIVE_STATE_RATE_HZ, self._publish_live_state)
 
         self.log_info(
             'mps_node started — tick_dt=%.3f, distance_max=%.2f, v_target_max=%.2f',
@@ -849,6 +852,35 @@ class MpsNode(MqttNode):
             'state': self._fsm_state,
             'mps_active': run is not None,
             'mps_run_id': run.run_id if run else None,
+        }, qos=0)
+
+    def _publish_live_state(self) -> None:
+        """Публикует текущий вектор состояния x и управление u 10 Hz.
+
+        Вне активного сценария: e_int=0, u=[0,0], scenario_active=False.
+        Внутри сценария: x как есть из _x_meas, u=_last_u, run_id.
+        Контракт см. docs/superpowers/specs/2026-05-18-mps-live-state-vector-design.md §2.1.
+        """
+        with self._lock:
+            x = self._x_meas.copy()
+            last_u = self._last_u.copy()
+            run = self._run
+        if run is None:
+            x[_EINT] = 0.0
+            u = [0.0, 0.0]
+            scenario_active = False
+            run_id = None
+        else:
+            u = last_u.tolist()
+            scenario_active = True
+            run_id = run.run_id
+        self.publish('mps/live_state', {
+            'ts': time.time(),
+            'x': x.tolist(),
+            'u': u,
+            'scenario_active': scenario_active,
+            'run_id': run_id,
+            'schema_version': '1.0',
         }, qos=0)
 
 

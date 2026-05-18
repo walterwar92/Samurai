@@ -1084,3 +1084,59 @@ def test_last_u_updated_in_publish_cmd_and_telemetry(mps_node):
     # _last_u должен быть копией, не alias: мутация u не отражается.
     u[0] = 999.0
     assert mps_node._last_u[0] == pytest.approx(0.123)
+
+
+# ── live_state: publish ────────────────────────────────────────────────
+def test_publish_live_state_idle(mps_node):
+    """Без активного _run: scenario_active=False, e_int=0, u=[0,0]."""
+    mps_node._x_meas = np.array([0.5, 0.12, 0.1, 0.0, 0.42])
+    mps_node._last_u = np.array([0.2, -0.1])
+    mps_node._run = None
+    mps_node._published.clear()
+
+    mps_node._publish_live_state()
+
+    suffixes = [s for s, _, _ in mps_node._published]
+    assert 'mps/live_state' in suffixes
+    suffix, payload, qos = next(
+        (s, p, q) for s, p, q in mps_node._published if s == 'mps/live_state'
+    )
+    assert payload['scenario_active'] is False
+    assert payload['run_id'] is None
+    assert payload['x'][0] == pytest.approx(0.5)
+    assert payload['x'][1] == pytest.approx(0.12)
+    assert payload['x'][2] == pytest.approx(0.1)
+    assert payload['x'][3] == pytest.approx(0.0)
+    assert payload['x'][4] == pytest.approx(0.0)  # e_int обнулён
+    assert payload['u'] == [0.0, 0.0]
+    assert payload['schema_version'] == '1.0'
+    assert isinstance(payload['ts'], float) and payload['ts'] > 0
+    assert qos == 0
+
+
+def test_publish_live_state_active(mps_node):
+    """С активным _run: scenario_active=True, e_int реальный, u=_last_u."""
+    mps_node._x_meas = np.array([1.2, 0.18, 0.05, 0.01, 0.33])
+    mps_node._last_u = np.array([0.18, 0.02])
+    # Мок вместо _RunState — нужен только run_id.
+    run_mock = MagicMock()
+    run_mock.run_id = 'r-live-1'
+    mps_node._run = run_mock
+    mps_node._published.clear()
+
+    mps_node._publish_live_state()
+
+    payload = next(p for s, p, _ in mps_node._published if s == 'mps/live_state')
+    assert payload['scenario_active'] is True
+    assert payload['run_id'] == 'r-live-1'
+    assert payload['x'][4] == pytest.approx(0.33)  # e_int сохранён
+    assert payload['u'][0] == pytest.approx(0.18)
+    assert payload['u'][1] == pytest.approx(0.02)
+
+
+def test_publish_live_state_schema_version(mps_node):
+    mps_node._run = None
+    mps_node._published.clear()
+    mps_node._publish_live_state()
+    payload = next(p for s, p, _ in mps_node._published if s == 'mps/live_state')
+    assert payload['schema_version'] == '1.0'
