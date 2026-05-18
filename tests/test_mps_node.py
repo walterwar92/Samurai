@@ -1134,9 +1134,12 @@ def test_publish_live_state_active(mps_node):
     assert payload['u'][1] == pytest.approx(0.02)
 
 
-def test_publish_live_state_schema_version(mps_node):
+def test_publish_live_state_ts_is_fresh(mps_node):
+    """ts должен быть свежим (в пределах 1 секунды от now)."""
     mps_node._run = None
     mps_node._published.clear()
+    before = time.time()
     mps_node._publish_live_state()
+    after = time.time()
     payload = next(p for s, p, _ in mps_node._published if s == 'mps/live_state')
-    assert payload['schema_version'] == '1.0'
+    assert before <= payload['ts'] <= after

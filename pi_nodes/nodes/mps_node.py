@@ -61,7 +61,7 @@ _REACH_EPS_DEFAULT = 0.005
 
 # Состояние x = [s, v, θ, ω, e_int]
 _S, _V, _THETA, _OMEGA, _EINT = 0, 1, 2, 3, 4
-LIVE_STATE_RATE_HZ = 10.0
+_LIVE_STATE_RATE_HZ = 10.0
 
 # Watchdog: сколько подряд тиков без свежей одометрии до abort.
 _WATCHDOG_TICKS = 3
@@ -233,7 +233,7 @@ class MpsNode(MqttNode):
         # Periodic status (полезно для UI / тестов).
         self.create_timer(1.0, self._publish_status)
         # Live state vector 10 Hz — постоянная публикация x и u для UI.
-        self.create_timer(1.0 / LIVE_STATE_RATE_HZ, self._publish_live_state)
+        self.create_timer(1.0 / _LIVE_STATE_RATE_HZ, self._publish_live_state)
 
         self.log_info(
             'mps_node started — tick_dt=%.3f, distance_max=%.2f, v_target_max=%.2f',
@@ -866,6 +866,8 @@ class MpsNode(MqttNode):
             last_u = self._last_u.copy()
             run = self._run
         if run is None:
+            # обнуляем e_int в локальной копии — контроллер
+            # не интегрирует ошибку курса вне сценария.
             x[_EINT] = 0.0
             u = [0.0, 0.0]
             scenario_active = False
