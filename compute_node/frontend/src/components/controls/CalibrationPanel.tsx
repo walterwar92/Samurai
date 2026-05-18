@@ -4,6 +4,32 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { api } from '@/lib/api'
 
+/**
+ * Пересчёт scale-коэффициента по измеренному расстоянию.
+ *
+ * motor_node применяет v_target = lin × scale_fwd перед интегрированием
+ * в одометрию. Если робот при D_target = 2.0 проехал реально 2.18 — текущий
+ * scale недосчитывает, новый = old × (real/target).
+ *
+ * Возвращает null если ввод некорректен (≤ 0, NaN, Infinity).
+ */
+export function computeNewScale(
+  oldScale: number,
+  dTarget: number,
+  dMeasured: number,
+): number | null {
+  if (
+    !Number.isFinite(oldScale) ||
+    !Number.isFinite(dTarget) ||
+    !Number.isFinite(dMeasured) ||
+    dTarget <= 0 ||
+    dMeasured <= 0
+  ) {
+    return null
+  }
+  return oldScale * (dMeasured / dTarget)
+}
+
 interface CalibrationCoeffs {
   profile: string
   scale_fwd: number
