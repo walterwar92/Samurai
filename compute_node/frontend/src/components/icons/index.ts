@@ -32,5 +32,6 @@ export {
   Check as CheckIcon,
   X as XIcon,
   Circle as RecordIcon,
+  Power as PowerIcon,
   type LucideProps,
 } from 'lucide-react'
