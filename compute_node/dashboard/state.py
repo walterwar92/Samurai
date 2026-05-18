@@ -130,6 +130,7 @@ class _ControlBlock:
     calibration_status: dict = field(default_factory=dict)
     calibration_result: dict = field(default_factory=dict)
     calibration_active_profile: Optional[str] = None
+    calibration_coeffs: Optional[dict] = None  # {profile, scale_fwd, scale_bwd, motor_trim}
     calibration_profiles: list = field(default_factory=list)
     explorer_status: dict = field(default_factory=dict)
     mission_status: dict = field(default_factory=dict)
