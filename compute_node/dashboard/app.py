@@ -479,6 +479,7 @@ def create_app(
     app.include_router(system.mqtt_status_router, prefix='/api/v1/mqtt/status')
     app.include_router(system.multi_robot_router, prefix='/api/v1/multi_robot')
     app.include_router(system.hardware_router, prefix='/api/v1/hardware')
+    app.include_router(system.shutdown_router, prefix='/api/v1/system/shutdown')
     # camera (HTTP) + samcan (proxy)
     app.include_router(camera.router, prefix='/api/v1/camera')
     app.include_router(samcan.router, prefix='/api/v1/samcan')

@@ -18,12 +18,14 @@ Routers: status snapshot, log, hardware presets, multi-robot, mqtt status.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import signal
 import sys
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from ..schemas.common import CommandAck
 from ..schemas.control import MultiRobotCallCommand
@@ -210,3 +212,33 @@ async def hardware_preset_apply(
 async def hardware_active() -> HardwareActiveResponse:
     hw = _import_hw_presets()
     return HardwareActiveResponse(active=hw.get_active())
+
+
+# ── System shutdown ────────────────────────────────────────────────────
+shutdown_router = APIRouter()
+
+
+@shutdown_router.post('', response_model=CommandAck, tags=['system'])
+async def system_shutdown(
+    background_tasks: BackgroundTasks,
+    mqtt: MQTTDep,
+) -> CommandAck:
+    """Полное выключение робота и дашборда.
+
+    Pi-side: SystemNode ловит samurai/{robot_id}/system/shutdown
+    и шлёт SIGTERM родительскому процессу (robot_launcher).
+
+    Compute-side: через 500мс шлём SIGTERM самому себе. uvicorn
+    делает graceful shutdown, Docker контейнер samurai_compute
+    останавливается; bash-launcher `samurai.sh compute` отлавливает
+    выход docker и выполняет cleanup_all + release_lock.
+    """
+    mqtt.publish('system/shutdown', {'source': 'dashboard'}, qos=1)
+
+    async def _shutdown_self() -> None:
+        await asyncio.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    background_tasks.add_task(_shutdown_self)
+    log.warning('System shutdown requested from dashboard')
+    return CommandAck()
