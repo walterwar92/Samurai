@@ -198,3 +198,28 @@ export type MpsWsFrame =
   | MpsWsTelemetryFrame
   | MpsWsFinishedFrame
   | MpsWsErrorFrame
+
+// ── /ws/mps/live_state ────────────────────────────────────────────────
+// Постоянный поток вектора состояния x ∈ ℝ⁵ и управления u ∈ ℝ²
+// (10 Hz), независимо от прогона. Контракт: docs/superpowers/specs/
+// 2026-05-18-mps-live-state-vector-design.md §2.
+export const MPS_LIVE_STATE_SCHEMA = '1.0' as const
+
+export interface MpsLiveStatePoint {
+  /** Pi-clock unix seconds */
+  ts: number
+  /** Состояние [s, v, θ, ω, e_int]; длина 5 */
+  x: number[]
+  /** Управление [v_cmd, ω_cmd]; длина 2 */
+  u: number[]
+  /** true когда mps_node в DRIVE_FORWARD_MPS */
+  scenario_active: boolean
+  /** UUID активного прогона, если scenario_active=true */
+  run_id: string | null
+  schema_version: string
+}
+
+export interface MpsLiveStateWsFrame {
+  type: 'live_state'
+  point: MpsLiveStatePoint
+}
