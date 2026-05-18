@@ -256,16 +256,7 @@ def test_legacy_snapshot_emits_full_calibration_coeffs(handlers):
         'scale_bwd': 0.9,
         'motor_trim': -10.0,
     }).encode())
-    # Найти метод снэпшота — может называться по-разному, попробуем известные.
-    state = handlers._state
-    snap = None
-    for name in ('get_state', 'legacy_snapshot', 'snapshot_legacy', 'as_legacy_dict',
-                 'legacy_socketio_state'):
-        fn = getattr(state, name, None)
-        if callable(fn):
-            snap = fn()
-            break
-    assert snap is not None, "legacy snapshot method not found on DashboardState"
+    snap = handlers._state.legacy_socketio_state()
     assert snap['calibration_coeffs'] == {
         'profile': 'tile',
         'scale_fwd': 1.5,
