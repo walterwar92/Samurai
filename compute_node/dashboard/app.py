@@ -491,6 +491,7 @@ def create_app(
     # из своего thread'а, broker делает call_soon_threadsafe в asyncio loop.
     if mqtt is not None:
         mqtt.set_mps_ws_broadcaster(mps.mps_broker.broadcast)
+        mqtt.set_mps_live_state_broadcaster(mps.mps_live_state_broker.broadcast)
 
     # WebSocket /ws/h264 (без /api префикса — middleware его не трогает)
     app.include_router(camera.ws_router)
