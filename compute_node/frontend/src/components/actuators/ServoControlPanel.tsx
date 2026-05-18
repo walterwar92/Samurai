@@ -28,10 +28,10 @@ const THROTTLE_MS = 80
 
 // Пауза между фазами теста захвата. Соответствует spec
 // 2026-05-17-arm-grab-sequence §3.4: settle = 150°/max_speed + 0.25c.
-// При servos.arm.max_speed_deg_per_sec=120 (config.yaml) это
-// 1.25с + 0.25с jitter = 1.5с. Если max_speed в конфиге изменится —
+// При servos.arm.max_speed_deg_per_sec=45 (config.yaml) это
+// 3.33с + 0.25с jitter ≈ 3.6с. Если max_speed в конфиге изменится —
 // этот литерал тоже надо обновить (нет авто-синхронизации с Pi).
-const GRAB_TEST_SETTLE_MS = 1500
+const GRAB_TEST_SETTLE_MS = 3600
 
 type GrabTestPhase = null | 'unfreezing' | 'grab_ready' | 'grab_hold' | 'freezing'
 

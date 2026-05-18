@@ -181,7 +181,10 @@ servos:
     # шагами _interpolate_tick @ 50Гц с этим лимитом (°/сек).
     # Общий для всех 4 суставов; если CH3 (клешня) визуально нужно
     # отличать — расширим до per-joint списка.
-    max_speed_deg_per_sec: 120
+    # 45°/с = «потихоньку» (для 160° дельты — ~3.6с). FSM grab-settle
+    # авто-пересчитается из этого значения; frontend GRAB_TEST_SETTLE_MS
+    # нужно держать в синхроне вручную (см. ServoControlPanel.tsx).
+    max_speed_deg_per_sec: 45
     labels: ["Основание", "Сустав 1", "Сустав 2", "Клешня"]
     locked: true          # при запуске рука НЕ двигается (остаётся как есть)
                           # разблокировать: arm/command → "unlock" или {"command":"unlock"}

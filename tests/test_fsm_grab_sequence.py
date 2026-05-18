@@ -19,10 +19,27 @@ sys.path.insert(0, os.path.join(
 
 
 @pytest.fixture
-def fsm_node_factory():
-    """Фабрика FSMNode с замоканной MQTT-связью и таймерами."""
+def fsm_node_factory(monkeypatch):
+    """Фабрика FSMNode с замоканной MQTT-связью и таймерами.
+
+    Также патчит fsm_module.cfg, фиксируя servos.arm.max_speed_deg_per_sec=120
+    для детерминизма grab-settle math в _do_grab. Без патча тесты
+    зависят от текущего значения в config.yaml и сломаются при его
+    изменении (например, понижении до 45°/с — settle становится ~3.58с
+    вместо 1.5с, и проверка на 16 тиков (1.6с) переставала бы триггерить
+    freeze). Этот патч изолирует тесты от runtime-конфига.
+    """
     def _factory():
         from pi_nodes.nodes import fsm_node as fsm_module
+
+        real_cfg = fsm_module.cfg
+
+        def fake_cfg(key, default=None):
+            if key == 'servos.arm.max_speed_deg_per_sec':
+                return 120.0
+            return real_cfg(key, default)
+
+        monkeypatch.setattr(fsm_module, 'cfg', fake_cfg)
 
         with patch('pi_nodes.mqtt_node.mqtt.Client') as MockClient:
             MockClient.return_value = MagicMock()
