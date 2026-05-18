@@ -230,7 +230,6 @@ function MpsPageInner() {
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(360px,_35%)_1fr] gap-4">
           <aside className="space-y-3 lg:sticky lg:top-16 lg:self-start lg:max-h-[calc(100vh-5rem)] lg:overflow-y-auto">
-            <LiveStateVector />
             <OdeCard matrices={matricesHook.draft ?? matricesHook.applied} />
             <PhysicsParams
               applied={matricesHook.applied}
@@ -263,14 +262,17 @@ function MpsPageInner() {
               lastValidatedAt={lastValidatedAt}
             />
 
-            <ScenarioControls
-              running={runHook.running}
-              onRun={handleRun}
-              onAbort={handleAbort}
-              source={source}
-              onSourceChange={setSource}
-              progress={scenarioProgress}
-            />
+            <div className="grid grid-cols-1 md:grid-cols-[minmax(260px,_32%)_1fr] gap-3 items-start">
+              <LiveStateVector />
+              <ScenarioControls
+                running={runHook.running}
+                onRun={handleRun}
+                onAbort={handleAbort}
+                source={source}
+                onSourceChange={setSource}
+                progress={scenarioProgress}
+              />
+            </div>
 
             <ResultPlots
               primary={primaryResult}
