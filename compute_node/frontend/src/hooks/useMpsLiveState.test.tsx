@@ -116,4 +116,20 @@ describe('useMpsLiveState', () => {
     act(() => ws.fireMessage({ type: 'telemetry', run_id: 'x', point: {} }))
     expect(result.current.point).toBeNull()
   })
+
+  it('после onclose планирует reconnect через RECONNECT_DELAYS_MS[0]=1s', () => {
+    vi.useFakeTimers()
+    renderHook(() => useMpsLiveState())
+    expect(fakes.length).toBe(1)
+    const ws = fakes[0] as unknown as FakeWebSocket
+    act(() => ws.fireOpen())
+    act(() => ws.close())
+    // Reconnect ещё не сработал — таймер только запланирован.
+    expect(fakes.length).toBe(1)
+    act(() => {
+      vi.advanceTimersByTime(1_000)
+    })
+    // После 1с — создан второй FakeWebSocket.
+    expect(fakes.length).toBe(2)
+  })
 })

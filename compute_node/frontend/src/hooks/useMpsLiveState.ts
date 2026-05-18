@@ -47,6 +47,7 @@ export function useMpsLiveState(): UseMpsLiveStateResult {
       }
 
       ws.onmessage = (ev: MessageEvent) => {
+        if (cancelled) return
         let frame: MpsLiveStateWsFrame
         try {
           frame = JSON.parse(ev.data) as MpsLiveStateWsFrame
@@ -91,6 +92,7 @@ export function useMpsLiveState(): UseMpsLiveStateResult {
       cancelled = true
       clearInterval(tick)
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      reconnectAttemptRef.current = 0
       try {
         wsRef.current?.close()
       } catch {
