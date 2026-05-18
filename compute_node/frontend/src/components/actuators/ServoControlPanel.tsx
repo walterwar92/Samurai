@@ -26,6 +26,15 @@ const ARM_JOINTS = [
 
 const THROTTLE_MS = 80
 
+// Пауза между фазами теста захвата. Соответствует spec
+// 2026-05-17-arm-grab-sequence §3.4: settle = 150°/max_speed + 0.25c.
+// При servos.arm.max_speed_deg_per_sec=120 (config.yaml) это
+// 1.25с + 0.25с jitter = 1.5с. Если max_speed в конфиге изменится —
+// этот литерал тоже надо обновить (нет авто-синхронизации с Pi).
+const GRAB_TEST_SETTLE_MS = 1500
+
+type GrabTestPhase = null | 'unfreezing' | 'grab_ready' | 'grab_hold' | 'freezing'
+
 /* ─── single servo slider with local state ─────────────────────── */
 
 interface ServoSliderProps {
@@ -276,6 +285,43 @@ export function ServoControlPanel({ head, arm, armPresets = [], headPresets = []
   const headTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const headPending = useRef<number | null>(null)
 
+  // Тест захвата: оркестрирует arm-секвенцию grab_ready → grab_hold → freeze
+  // через существующие REST endpoints. Без движения робота и детектора —
+  // только проверка поз и плавности на железе. См. spec
+  // 2026-05-18-arm-grab-test-button.
+  const [testPhase, setTestPhase] = useState<GrabTestPhase>(null)
+
+  const runGrabTest = useCallback(async () => {
+    try {
+      setTestPhase('unfreezing')
+      await api.armCommand('unfreeze')
+      setTestPhase('grab_ready')
+      await api.armLoadPreset('grab_ready')
+      await new Promise(r => setTimeout(r, GRAB_TEST_SETTLE_MS))
+      setTestPhase('grab_hold')
+      await api.armLoadPreset('grab_hold')
+      await new Promise(r => setTimeout(r, GRAB_TEST_SETTLE_MS))
+      setTestPhase('freezing')
+      await api.armCommand('freeze')
+    } catch (e) {
+      // Промежуточная ошибка — рука останется в последней успешной позе.
+      // Шумных alert/toast не делаем; видно в console + UI восстанавливается.
+      console.error('Grab test failed:', e)
+    } finally {
+      setTestPhase(null)
+    }
+  }, [])
+
+  const grabTestLabel = (() => {
+    switch (testPhase) {
+      case 'unfreezing': return 'Тест: разморозка…'
+      case 'grab_ready': return 'Тест: pre-grab…'
+      case 'grab_hold':  return 'Тест: захват…'
+      case 'freezing':   return 'Тест: freeze…'
+      default:           return 'Тест захвата'
+    }
+  })()
+
   // Request preset lists on mount
   useEffect(() => {
     api.armListPresets()
@@ -428,6 +474,7 @@ export function ServoControlPanel({ head, arm, armPresets = [], headPresets = []
                     size="sm"
                     className="h-6 px-2 text-[10px]"
                     onClick={() => api.homeArm()}
+                    disabled={testPhase !== null}
                   >
                     Домой
                   </Button>
@@ -436,8 +483,19 @@ export function ServoControlPanel({ head, arm, armPresets = [], headPresets = []
                     size="sm"
                     className={`h-6 px-2 text-[10px] ${anyArmFrozen ? 'bg-blue-600 hover:bg-blue-500' : ''}`}
                     onClick={() => api.armCommand(anyArmFrozen ? 'unfreeze' : 'freeze')}
+                    disabled={testPhase !== null}
                   >
                     {anyArmFrozen ? 'Разм. все' : 'Замор. все'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={runGrabTest}
+                    disabled={testPhase !== null}
+                    title="Прогнать arm-секвенцию grab_ready → grab_hold → freeze (без движения робота)"
+                  >
+                    {grabTestLabel}
                   </Button>
                 </>
               )}
