@@ -274,15 +274,7 @@ def test_snapshot_calibration_active_uses_coeffs_profile(handlers):
         'scale_bwd': 0.9,
         'motor_trim': -10.0,
     }).encode())
-    state = handlers._state
-    snap = None
-    for name in ('snapshot', 'snapshot_state', 'get_snapshot'):
-        fn = getattr(state, name, None)
-        if callable(fn):
-            snap = fn()
-            break
-    if snap is None:
-        pytest.skip("snapshot() not present — skip")
+    snap = handlers._state.snapshot()
     assert snap['control']['calibration']['active'] == 'tile'
 
 
