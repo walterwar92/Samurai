@@ -523,6 +523,94 @@ def _safe_put_nowait(q: asyncio.Queue, item: dict) -> None:
 mps_broker = _MpsWsBroker()
 
 
+# ─────────────────────────────────────────────────────────────────────
+# WebSocket /ws/mps/live_state — постоянный поток вектора состояния
+# x ∈ ℝ⁵ и управления u ∈ ℝ² (10 Hz), независимо от прогона сценария.
+# Контракт: docs/superpowers/specs/2026-05-18-mps-live-state-vector-design.md §2.2.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _MpsLiveStateBroker:
+    """Fan-out без run_id-фильтра + буфер последнего фрейма для replay."""
+
+    def __init__(self) -> None:
+        self._subs: list[asyncio.Queue] = []
+        self._lock = _Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._last: Optional[dict] = None
+
+    def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def add(self, queue: asyncio.Queue) -> None:
+        with self._lock:
+            self._subs.append(queue)
+
+    def remove(self, queue: asyncio.Queue) -> None:
+        with self._lock:
+            self._subs = [q for q in self._subs if q is not queue]
+
+    def set_last(self, frame: Optional[dict]) -> None:
+        """Setter для тестов и для handler-side persist."""
+        with self._lock:
+            self._last = frame
+
+    def get_last(self) -> Optional[dict]:
+        with self._lock:
+            return self._last
+
+    def broadcast(self, frame: dict) -> None:
+        """Called from MQTT thread or test thread. Persists last + pushes."""
+        loop = self._loop
+        with self._lock:
+            self._last = frame
+            targets = list(self._subs)
+        if not targets:
+            return
+        for q in targets:
+            if loop is None or loop.is_closed():
+                # Тестовый путь: client.websocket_connect использует тот же
+                # loop как и сервер — пушим напрямую.
+                _safe_put_nowait(q, frame)
+            else:
+                loop.call_soon_threadsafe(_safe_put_nowait, q, frame)
+
+
+mps_live_state_broker = _MpsLiveStateBroker()
+
+
+@ws_router.websocket('/ws/mps/live_state')
+async def mps_live_state_ws(websocket: WebSocket):
+    """Без handshake. На connect — replay последнего фрейма, потом стрим."""
+    await websocket.accept()
+    if mps_live_state_broker._loop is None:
+        mps_live_state_broker.attach_loop(asyncio.get_event_loop())
+
+    queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=64)
+    mps_live_state_broker.add(queue)
+
+    last = mps_live_state_broker.get_last()
+    if last is not None:
+        try:
+            await websocket.send_json(last if last.get('type') == 'live_state'
+                                       else {'type': 'live_state', 'point': last})
+        except Exception:
+            pass
+
+    try:
+        while True:
+            frame = await queue.get()
+            await websocket.send_json(frame)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        mps_live_state_broker.remove(queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @ws_router.websocket('/ws/mps/telemetry')
 async def mps_ws(websocket: WebSocket):
     """One subscriber per WS connection. Handshake:

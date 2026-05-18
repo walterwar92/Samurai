@@ -368,3 +368,69 @@ def test_websocket_accepts_and_streams_via_broker(client):
         msg = ws.receive_json()
         assert msg['type'] == 'telemetry'
         assert msg['run_id'] == 'test'
+
+
+# ── WebSocket /ws/mps/live_state ──────────────────────────────────────
+def test_live_state_ws_replays_last_on_connect(client):
+    """При подключении сервер шлёт последний известный фрейм сразу."""
+    from compute_node.dashboard.routers.mps import mps_live_state_broker
+
+    last = {
+        'ts': 1747574400.0,
+        'x': [0.0, 0.1, 0.0, 0.0, 0.0],
+        'u': [0.1, 0.0],
+        'scenario_active': False,
+        'run_id': None,
+        'schema_version': '1.0',
+    }
+    mps_live_state_broker.set_last(last)
+
+    with client.websocket_connect('/ws/mps/live_state') as ws:
+        msg = ws.receive_json()
+        assert msg['type'] == 'live_state'
+        assert msg['point']['x'][1] == pytest.approx(0.1)
+
+
+def test_live_state_ws_broadcasts_new_frame(client):
+    """Открытый WS получает новые frames через broker.broadcast()."""
+    from compute_node.dashboard.routers.mps import mps_live_state_broker
+
+    # Сбросить буфер last (предыдущий тест мог его положить).
+    mps_live_state_broker.set_last(None)
+
+    with client.websocket_connect('/ws/mps/live_state') as ws:
+        mps_live_state_broker.broadcast({
+            'type': 'live_state',
+            'point': {
+                'ts': 1747574500.0,
+                'x': [1.0, 0.2, 0.05, 0.0, 0.0],
+                'u': [0.2, 0.0],
+                'scenario_active': True,
+                'run_id': 'r-1',
+                'schema_version': '1.0',
+            },
+        })
+        msg = ws.receive_json()
+        assert msg['type'] == 'live_state'
+        assert msg['point']['scenario_active'] is True
+        assert msg['point']['run_id'] == 'r-1'
+
+
+def test_live_state_ws_no_last_no_replay(client):
+    """Если _last is None — клиент не получает фрейм до broadcast."""
+    from compute_node.dashboard.routers.mps import mps_live_state_broker
+
+    mps_live_state_broker.set_last(None)
+
+    with client.websocket_connect('/ws/mps/live_state') as ws:
+        # Ожидание сразу таймаутит — мы НЕ ждём reply, пушим и проверяем.
+        mps_live_state_broker.broadcast({
+            'type': 'live_state',
+            'point': {
+                'ts': 1.0, 'x': [0, 0, 0, 0, 0], 'u': [0, 0],
+                'scenario_active': False, 'run_id': None,
+                'schema_version': '1.0',
+            },
+        })
+        msg = ws.receive_json()
+        assert msg['type'] == 'live_state'
