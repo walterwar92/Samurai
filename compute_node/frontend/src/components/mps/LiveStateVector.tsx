@@ -7,8 +7,7 @@ function fmt(n: number | undefined, digits: number): string {
   return n >= 0 ? `+${s}` : s
 }
 
-function fmtAge(ms: number | null): string {
-  if (ms === null) return ''
+function fmtAge(ms: number): string {
   const sec = ms / 1000
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
 }
@@ -40,7 +39,7 @@ function StatusBadge({ connected, stale, ageMs }: BadgeProps) {
         data-testid="status-badge"
         className="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-700"
       >
-        stale · {fmtAge(ageMs)}
+        stale{ageMs !== null && ` · ${fmtAge(ageMs)}`}
       </span>
     )
   }
