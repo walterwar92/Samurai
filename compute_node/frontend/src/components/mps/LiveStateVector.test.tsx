@@ -18,7 +18,7 @@ describe('LiveStateVector', () => {
   it('point=null + disconnected: рендерит «—» и бейдж disconnected', () => {
     mockResult = { point: null, connected: false, stale: false, ageMs: null }
     render(<LiveStateVector />)
-    expect(screen.getByText(/disconnected/i)).toBeInTheDocument()
+    expect(screen.getByTestId('status-badge').textContent).toMatch(/disconnected/i)
     // «—» появляется в каждой строке вектора
     expect(screen.getAllByText('—').length).toBeGreaterThan(0)
   })
@@ -38,13 +38,14 @@ describe('LiveStateVector', () => {
       ageMs: 100,
     }
     render(<LiveStateVector />)
-    expect(screen.getByText(/live/i)).toBeInTheDocument()
+    expect(screen.getByTestId('status-badge').textContent).toMatch(/live/i)
     // s = +0.234
     expect(screen.getByText(/\+0\.234/)).toBeInTheDocument()
     // v = +0.118
     expect(screen.getByText(/\+0\.118/)).toBeInTheDocument()
-    // idle подпись
-    expect(screen.getByText(/idle/i)).toBeInTheDocument()
+    // idle + обновлено в подписи снизу
+    expect(screen.getByTestId('scenario-caption').textContent).toMatch(/idle/i)
+    expect(screen.getByTestId('scenario-caption').textContent).toMatch(/обновлено/)
   })
 
   it('stale: бейдж stale показывает возраст в секундах', () => {
@@ -62,8 +63,11 @@ describe('LiveStateVector', () => {
       ageMs: 5_400,
     }
     render(<LiveStateVector />)
-    expect(screen.getByText(/stale/i)).toBeInTheDocument()
-    expect(screen.getByText(/5s|5\.4s/i)).toBeInTheDocument()
+    const badge = screen.getByTestId('status-badge')
+    expect(badge.textContent).toMatch(/stale/i)
+    expect(badge.textContent).toMatch(/5\.4s/)
+    // И подпись снизу тоже содержит возраст.
+    expect(screen.getByTestId('scenario-caption').textContent).toMatch(/5\.4s/)
   })
 
   it('scenario_active=true: показывает префикс с обрезанным run_id', () => {
@@ -81,7 +85,8 @@ describe('LiveStateVector', () => {
       ageMs: 100,
     }
     render(<LiveStateVector />)
-    expect(screen.getByText(/abcdef12/)).toBeInTheDocument()
-    expect(screen.queryByText(/^idle\b/i)).not.toBeInTheDocument()
+    const caption = screen.getByTestId('scenario-caption')
+    expect(caption.textContent).toMatch(/abcdef12/)
+    expect(caption.textContent).not.toMatch(/^idle\b/i)
   })
 })

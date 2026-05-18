@@ -26,20 +26,29 @@ interface BadgeProps {
 function StatusBadge({ connected, stale, ageMs }: BadgeProps) {
   if (!connected) {
     return (
-      <span className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground">
+      <span
+        data-testid="status-badge"
+        className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground"
+      >
         disconnected
       </span>
     )
   }
   if (stale) {
     return (
-      <span className="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-700">
+      <span
+        data-testid="status-badge"
+        className="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-700"
+      >
         stale · {fmtAge(ageMs)}
       </span>
     )
   }
   return (
-    <span className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-700">
+    <span
+      data-testid="status-badge"
+      className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-700"
+    >
       ● live
     </span>
   )
@@ -113,8 +122,12 @@ export function LiveStateVector() {
             unit={omegaCmd === undefined ? '' : `(${fmt(omegaCmd, 4)} рад/с)`}
           />
         </div>
-        <div className="text-muted-foreground border-t pt-2">
+        <div
+          data-testid="scenario-caption"
+          className="text-muted-foreground border-t pt-2"
+        >
           {scenarioLabel}
+          {ageMs !== null && ` · обновлено ${fmtAge(ageMs)} назад`}
         </div>
       </CardContent>
     </Card>
