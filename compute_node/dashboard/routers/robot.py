@@ -183,3 +183,53 @@ emergency_router = APIRouter()
 async def emergency_stop(state: StateDep, mqtt: MQTTDep) -> CommandAck:
     """Alias для POST /robot/stop, путь /api/emergency_stop."""
     return await stop(state, mqtt)
+
+
+# ── /ws/robot/live_state ──────────────────────────────────────────────────
+# Постоянный канал текущего состояния робота для DashboardPage.
+# Контракт: docs/superpowers/specs/2026-05-19-robot-live-state-vector-design.md §2.
+import math as _math
+from ..schemas.robot_live_state import (
+    RobotLiveStatePoint,
+    RobotLiveStatePose,
+    RobotLiveStateVel,
+    RobotLiveStateImu,
+)
+
+
+def build_live_state_point(state) -> RobotLiveStatePoint:
+    """Snapshot DashboardState → RobotLiveStatePoint. Захватывает lock внутри.
+
+    Чистая функция — юнит-тестируется без FastAPI окружения.
+    Конвертирует:
+      - pose.yaw (rad) → также yaw_deg для UI;
+      - imu.gyro / accel (Vec3) → list[3];
+      - imu_ekf_bias (rad/s) → ekf_bias_deg (°/s); None если EKF выключен.
+    """
+    with state.lock:
+        p = state.robot.pose
+        ve = state.robot.velocity_estimated
+        imu = state.sensors.imu
+        bias_rad = list(state.sensors.imu_ekf_bias)
+        ts = state.robot.mqtt_odom_ts or time.time()
+        stationary = state.robot.stationary
+        has_ekf = imu.ekf is not None
+        # imu.yaw/pitch/roll уже в °; gyro/accel — Vec3 → list
+        ypr_deg = [imu.yaw, imu.pitch, imu.roll]
+        gyro = [imu.gyro.x, imu.gyro.y, imu.gyro.z]
+        accel = [imu.accel.x, imu.accel.y, imu.accel.z]
+    return RobotLiveStatePoint(
+        ts=ts,
+        pose=RobotLiveStatePose(
+            x=p.x, y=p.y, yaw_rad=p.yaw, yaw_deg=_math.degrees(p.yaw),
+        ),
+        vel=RobotLiveStateVel(linear=ve.linear_x, angular=ve.angular_z),
+        imu=RobotLiveStateImu(
+            ypr_deg=ypr_deg,
+            gyro=gyro,
+            accel=accel,
+            ekf_bias_deg=[_math.degrees(b) for b in bias_rad] if has_ekf else None,
+            has_ekf=has_ekf,
+        ),
+        stationary=stationary,
+    )
