@@ -28,7 +28,8 @@ def arm_node_factory(tmp_path):
     Каждый тест может задать стартовый presets.json через `presets_seed`
     (dict с ключом 'arm').
     """
-    def _factory(max_speed: float = 120.0, presets_seed: dict | None = None):
+    def _factory(max_speed: float = 120.0, presets_seed: dict | None = None,
+                 reset_after_init: bool = True):
         from pi_nodes.nodes import arm_node as arm_node_module
 
         # Засеваем presets-файл
@@ -85,8 +86,12 @@ def arm_node_factory(tmp_path):
         node.publish = _capture  # type: ignore[assignment]
         # Сброс mock-счётчиков: _unlock() в __init__ уже вызвал set_angle
         # для всех серво, тестам интереснее то, что произошло ПОСЛЕ старта.
-        for m in instances:
-            m.reset_mock()
+        # Тесты, проверяющие саму инициализацию (__init__ → _unlock), могут
+        # передать reset_after_init=False, чтобы увидеть set_angle/freeze
+        # вызовы из стартового unlock'а.
+        if reset_after_init:
+            for m in instances:
+                m.reset_mock()
         return node
 
     return _factory
