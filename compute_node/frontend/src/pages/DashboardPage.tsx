@@ -8,6 +8,7 @@ import { MapCanvas } from '@/components/map/MapCanvas'
 import { FsmBadge } from '@/components/fsm/FsmBadge'
 import { SensorPanel } from '@/components/sensors/SensorPanel'
 import { OdometryComparePanel } from '@/components/sensors/OdometryComparePanel'
+import { RobotStateVector } from '@/components/sensors/RobotStateVector'
 import { DetectionBanner } from '@/components/detection/DetectionBanner'
 import { DetectionTable } from '@/components/detection/DetectionTable'
 import { BallsTable } from '@/components/detection/BallsTable'
@@ -54,7 +55,7 @@ export function DashboardPage() {
       />
       <SamuraiStatusBanner state={state} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_340px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_280px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">
         {/* Col 1, Row 1: Camera */}
         <CameraFeed />
 
@@ -105,6 +106,9 @@ export function DashboardPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* ── LIVE STATE VECTOR ── */}
+              <RobotStateVector />
 
               {/* ── ОДОМЕТРИЯ — переключатель источников ── */}
               <OdometryComparePanel
