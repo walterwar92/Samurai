@@ -531,9 +531,16 @@ class FSMNode(MqttNode):
         if self._grab_t < grab_settle_s:
             return
 
-        # Phase 3 — freeze + переход
+        # Phase 3 — freeze + переход.
+        # arm_node freeze-all исключает клешню (CH3) из общей заморозки
+        # (только личная ❄ кнопка слайдера её морозит), поэтому FSM шлёт
+        # ДВА freeze: общий для CH0..CH2 и явный joint=4 для клешни —
+        # иначе после grab_hold PWM на CH3 отключится через HOLD_TIME
+        # и захваченный мяч выпадет.
         self.publish('arm/command', {'command': 'freeze'}, qos=1)
-        self.log_info('Arm FROZEN — holding object')
+        self.publish('arm/command',
+                     {'command': 'freeze', 'joint': 4}, qos=1)
+        self.log_info('Arm FROZEN — holding object (incl. claw)')
         self._transition(State.RETURNING)
 
     def _do_call(self):

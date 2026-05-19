@@ -164,8 +164,15 @@ def test_grab_does_not_publish_claw_command(fsm_node_factory):
 def test_grab_after_settle_sends_freeze_and_transitions_to_returning(
         fsm_node_factory):
     """Через ~1.5с после первой команды grab_hold (интерполятор успевает
-    доехать) FSM шлёт arm/command {"command":"freeze"} и переходит в
-    RETURNING. Рука остаётся frozen в grab_hold, корпус едет домой.
+    доехать) FSM шлёт два arm/command freeze (общий + явный для клешни)
+    и переходит в RETURNING. Рука остаётся frozen в grab_hold, корпус
+    едет домой.
+
+    Парный freeze нужен потому, что arm_node._freeze_all_except_claw
+    исключает CH3 из общего freeze (см. UX-требование «клешня морозится
+    только личной кнопкой»). FSM компенсирует это явным joint=4 freeze —
+    иначе после grab PWM на клешне отключится через HOLD_TIME и мяч
+    выпадет.
     """
     from pi_nodes.nodes.fsm_node import State
 
@@ -177,8 +184,8 @@ def test_grab_after_settle_sends_freeze_and_transitions_to_returning(
     # вызывать _do_grab напрямую — а он это делает) Phase 1 повторит
     # load_preset grab_hold. В продакшене это не происходит, потому что
     # _tick роутится по state: после RETURNING вызывается _do_return,
-    # не _do_grab. Тест ниже фиксирует контракт: freeze ровно 1 раз,
-    # переход состоялся. См. также len(preset_pubs) assertion ниже.
+    # не _do_grab. Тест ниже фиксирует контракт: freeze ровно 2 раза
+    # (общий + клешня), переход состоялся.
     for _ in range(16):
         node._do_grab()
 
@@ -186,7 +193,10 @@ def test_grab_after_settle_sends_freeze_and_transitions_to_returning(
                 if p[0] == 'arm/command'
                 and isinstance(p[1], dict)]
     freeze_pubs = [p for p in arm_pubs if p[1].get('command') == 'freeze']
-    assert len(freeze_pubs) == 1
+    assert len(freeze_pubs) == 2
+    # Сначала общий freeze (без joint), затем явный для клешни (joint=4).
+    assert 'joint' not in freeze_pubs[0][1]
+    assert freeze_pubs[1][1].get('joint') == 4
     # Переход в RETURNING
     assert node._state == State.RETURNING
 

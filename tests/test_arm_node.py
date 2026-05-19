@@ -260,8 +260,8 @@ def test_init_migrates_default_presets_when_empty(arm_node_factory):
     """
     node = arm_node_factory(presets_seed=None)
 
-    assert node._presets.load_preset('arm', 'grab_ready') == [110.0, 100.0, 180.0, 0.0]
-    assert node._presets.load_preset('arm', 'grab_hold') == [10.0, 30.0, 180.0, 180.0]
+    assert node._presets.load_preset('arm', 'grab_ready') == [30.0, 60.0, 0.0, 0.0]
+    assert node._presets.load_preset('arm', 'grab_hold') == [0.0, 100.0, 0.0, 180.0]
 
 
 def test_init_does_not_overwrite_user_presets(arm_node_factory):
@@ -282,7 +282,7 @@ def test_init_does_not_overwrite_user_presets(arm_node_factory):
     # Пользовательский сохраняется
     assert node._presets.load_preset('arm', 'grab_ready') == [150.0, 95.0, 175.0, 5.0]
     # Отсутствующий — создаётся из дефолта
-    assert node._presets.load_preset('arm', 'grab_hold') == [10.0, 30.0, 180.0, 180.0]
+    assert node._presets.load_preset('arm', 'grab_hold') == [0.0, 100.0, 0.0, 180.0]
 
 
 def test_set_joint_allow_frozen_true_updates_target(arm_node_factory):
@@ -402,3 +402,57 @@ def test_frozen_flag_not_mutated_by_single_joint_drag(arm_node_factory):
     assert node._mock_servos[0].frozen is True
     # ServoDriver.unfreeze() не вызывался — никто не размораживал
     node._mock_servos[0].unfreeze.assert_not_called()
+
+
+def test_cmd_cb_freeze_all_skips_claw_dict_form(arm_node_factory):
+    """{"command":"freeze"} без joint морозит CH0/CH1/CH2, но НЕ клешню (CH3).
+
+    Клешня — особый сустав: морозится только явной командой через личную
+    кнопку ❄ рядом с её слайдером (UI шлёт freeze c joint=4). Парная защита
+    к servos.arm.claw_init_on_startup: клешня живёт по собственным правилам,
+    общие arm/command freeze её не дёргают.
+    """
+    node = arm_node_factory()
+
+    node._cmd_cb('arm/command', {'command': 'freeze'})
+
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()
+
+
+def test_cmd_cb_freeze_all_skips_claw_string_form(arm_node_factory):
+    """Legacy строковая форма 'freeze' тоже исключает клешню."""
+    node = arm_node_factory()
+
+    node._cmd_cb('arm/command', 'freeze')
+
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()
+
+
+def test_cmd_cb_freeze_single_claw_works(arm_node_factory):
+    """Личная кнопка ❄ слайдера CH3 шлёт {"command":"freeze","joint":4} —
+    клешня МОЖЕТ быть заморожена явно (это единственный путь).
+    """
+    node = arm_node_factory()
+
+    node._cmd_cb('arm/command', {'command': 'freeze', 'joint': 4})
+
+    node._mock_servos[3].freeze.assert_called_once()
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_not_called()
+
+
+def test_cmd_cb_unfreeze_all_still_covers_claw(arm_node_factory):
+    """Asymметрия freeze/unfreeze: unfreeze-all снимает заморозку со ВСЕХ
+    суставов, включая клешню. Идея — личная кнопка может оставить клешню
+    frozen, и общий 'Разм. все' должен вернуть её под слайдер.
+    """
+    node = arm_node_factory()
+
+    node._cmd_cb('arm/command', {'command': 'unfreeze'})
+
+    for i in range(4):
+        node._mock_servos[i].unfreeze.assert_called_once()

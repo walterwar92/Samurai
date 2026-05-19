@@ -145,8 +145,8 @@ class ArmNode(MqttNode):
         # sequence-design.md) получает готовые grab_ready и grab_hold без
         # ручных кликов в UI.
         _DEFAULT_ARM_PRESETS = {
-            'grab_ready': [110.0, 100.0, 180.0, 0.0],
-            'grab_hold':  [10.0,  30.0,  180.0, 180.0],
+            'grab_ready': [30.0, 60.0, 0.0, 0.0],
+            'grab_hold':  [0.0,  100.0,  0.0, 180.0],
         }
         for _name, _angles in _DEFAULT_ARM_PRESETS.items():
             if self._presets.load_preset('arm', _name) is None:
@@ -265,9 +265,7 @@ class ArmNode(MqttNode):
                 return
             if cmd_lower == 'freeze':
                 self._unlock_if_needed()
-                for s in self._servos:
-                    s.freeze()
-                self.log_info('Arm ALL joints FROZEN')
+                self._freeze_all_except_claw()
                 return
             if cmd_lower == 'unfreeze':
                 for s in self._servos:
@@ -310,9 +308,7 @@ class ArmNode(MqttNode):
                     self.log_info('Arm joint %d FROZEN at %.1f°',
                                   idx + 1, self._target_angles[idx])
             else:
-                for s in self._servos:
-                    s.freeze()
-                self.log_info('Arm ALL joints FROZEN')
+                self._freeze_all_except_claw()
             return
 
         if cmd == 'unfreeze':
@@ -402,6 +398,21 @@ class ArmNode(MqttNode):
         """Unlock arm if locked."""
         if self._locked:
             self._unlock()
+
+    def _freeze_all_except_claw(self):
+        """Freeze всех суставов руки, КРОМЕ клешни (последний канал).
+
+        Клешня (CH3) морозится только явной командой joint=N через личную
+        ❄ кнопку слайдера в UI — пара к servos.arm.claw_init_on_startup,
+        который тоже выделяет клешню в отдельную дисциплину. Это позволяет
+        держать руку в позе захвата (CH0..CH2 frozen), а клешню оставлять
+        под прямым ручным управлением слайдером без лишних разморозок.
+        """
+        if self._num_joints <= 1:
+            return
+        for s in self._servos[:-1]:
+            s.freeze()
+        self.log_info('Arm joints FROZEN (claw excluded)')
 
     def _publish_state(self):
         with self._state_lock:
