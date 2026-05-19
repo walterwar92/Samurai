@@ -290,6 +290,29 @@ def test_init_does_not_overwrite_user_presets(arm_node_factory):
     assert node._presets.load_preset('arm', 'grab_hold') == [0.0, 100.0, 0.0, 180.0]
 
 
+def test_init_migrates_grab_return_preset(arm_node_factory):
+    """При пустом presets.json arm_node автомигрирует grab_return.
+    Значения: CH0/1/2 как у grab_ready, CH3=180 (клешня закрыта).
+    Это нужно FSM grab v2 Phase 5 — возврат в позу grab_ready
+    с удержанием объекта.
+    """
+    node = arm_node_factory(presets_seed=None)
+
+    assert node._presets.load_preset('arm', 'grab_return') == [30.0, 60.0, 0.0, 180.0]
+
+
+def test_init_does_not_overwrite_user_grab_return(arm_node_factory):
+    """Пользовательский grab_return не перезаписывается миграцией."""
+    custom = {
+        'arm': {
+            'grab_return': [55.0, 75.0, 5.0, 175.0],    # user-edited
+        }
+    }
+    node = arm_node_factory(presets_seed=custom)
+
+    assert node._presets.load_preset('arm', 'grab_return') == [55.0, 75.0, 5.0, 175.0]
+
+
 def test_set_joint_allow_frozen_true_updates_target(arm_node_factory):
     """_set_joint(idx, X, allow_frozen=True) обновляет target даже для frozen."""
     node = arm_node_factory()

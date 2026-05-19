@@ -157,6 +157,11 @@ class ArmNode(MqttNode):
         _DEFAULT_ARM_PRESETS = {
             'grab_ready': [30.0, 60.0, 0.0, 0.0],
             'grab_hold':  [0.0,  100.0,  0.0, 180.0],
+            # Возврат после grab_hold в позу grab_ready, НО с закрытой клешнёй.
+            # FSM grab v2 Phase 5 загружает этот пресет — рука едет в grab_ready
+            # CH0/1/2 углы, клешня (CH3) остаётся 180 (объект удержан).
+            # Через 20с timer в arm_node размораживает клешню → объект освобождается.
+            'grab_return': [30.0, 60.0, 0.0, 180.0],
         }
         for _name, _angles in _DEFAULT_ARM_PRESETS.items():
             if self._presets.load_preset('arm', _name) is None:
