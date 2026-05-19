@@ -218,11 +218,11 @@ class ArmNode(MqttNode):
         Реальный PWM шлёт _interpolate_tick @ 50Гц, плавно шагая current
         к target с max_speed_deg_per_sec.
 
-        Если сустав frozen и allow_frozen=False — target НЕ обновляется
-        (mass-команды home/preset/joints-array не двигают замороженный
-        сустав, чтобы случайно не сорвать захват мяча после FSM grab).
-        Single-joint команды от UI слайдера передают allow_frozen=True —
-        пользователь явно целится в конкретный сустав, разрешаем.
+        Если сустав frozen и allow_frozen=False — target НЕ обновляется.
+        В текущем коде все источники (single-joint от UI слайдера,
+        mass-команды home/load_preset/joints-array) передают
+        allow_frozen=True. Default False оставлен как защитная семантика
+        на случай новых внутренних вызовов.
         """
         if idx < 0 or idx >= self._num_joints:
             self.log_warn('Invalid joint index: %d', idx)
