@@ -379,6 +379,9 @@ class ArmNode(MqttNode):
         if 'joint' in d and 'angle' in d:
             self._unlock_if_needed()
             idx = int(d['joint']) - 1
+            if idx < 0 or idx >= self._num_joints:
+                self.log_warn('Invalid arm joint index: %d', idx + 1)
+                return
             angle = float(d['angle'])
             self._set_joint(idx, angle, allow_frozen=True)
             self.log_info('Arm joint %d → %.1f°', idx + 1, self._target_angles[idx])

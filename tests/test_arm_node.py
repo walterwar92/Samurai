@@ -356,3 +356,25 @@ def test_cmd_cb_joints_array_skips_frozen(arm_node_factory):
 
     assert node._target_angles[0] == 100.0  # frozen не изменился
     assert node._target_angles[1] == 20.0   # unfrozen загрузил
+
+
+def test_cmd_cb_string_home_skips_frozen(arm_node_factory):
+    """Legacy string-form 'home' тоже уважает frozen (не двигает заморож. сустав)."""
+    node = arm_node_factory()
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 30.0
+    node._target_angles[1] = 60.0
+
+    node._cmd_cb('arm/command', 'home')
+
+    assert node._target_angles[0] == 30.0    # frozen не изменился
+    assert node._target_angles[1] == 120.0   # unfrozen уехал в home
+
+
+def test_cmd_cb_single_joint_invalid_index_no_crash(arm_node_factory):
+    """Bad joint index (out of range) не валит callback thread — лог + return."""
+    node = arm_node_factory()
+    # Не должно бросить IndexError при чтении _target_angles[99]
+    node._cmd_cb('arm/command', {'joint': 99, 'angle': 50.0})
+    # Состояние не изменилось
+    assert node._target_angles == [0.0, 120.0, 0.0, 0.0]
