@@ -511,7 +511,7 @@ class ArmNode(MqttNode):
             prev.join(timeout=1.0)
         self._servos[idx].unfreeze()
 
-    def _freeze_all_except_claw(self):
+    def _freeze_all_except_claw(self, duration: float | None = None):
         """Freeze всех суставов руки, КРОМЕ клешни (последний канал).
 
         Клешня (CH3) морозится только явной командой joint=N через личную
@@ -519,11 +519,18 @@ class ArmNode(MqttNode):
         который тоже выделяет клешню в отдельную дисциплину. Это позволяет
         держать руку в позе захвата (CH0..CH2 frozen), а клешню оставлять
         под прямым ручным управлением слайдером без лишних разморозок.
+
+        duration: если задан и > 0 — каждый из CH0/1/2 получает свой
+        auto-unfreeze Timer на duration секунд. По умолчанию None — freeze
+        indefinite (старое поведение).
+
+        Routing through _freeze_joint обеспечивает единый таймер-кэш и
+        race-safety (см. Task 1 — _freeze_timer_lock + identity compare).
         """
         if self._num_joints <= 1:
             return
-        for s in self._servos[:-1]:
-            s.freeze()
+        for i in range(self._num_joints - 1):
+            self._freeze_joint(i, duration)
         self.log_info('Arm joints FROZEN (claw excluded)')
 
     def _publish_state(self):

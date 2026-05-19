@@ -786,3 +786,33 @@ def test_cmd_cb_unfreeze_all_cancels_all_timers(arm_node_factory):
     for i in range(4):
         assert node._freeze_timers[i] is None
         node._mock_servos[i].unfreeze.assert_called_once()
+
+
+def test_freeze_all_except_claw_supports_duration(arm_node_factory):
+    """_freeze_all_except_claw(duration) морозит CH0/1/2 с auto-unfreeze
+    таймером для каждого. CH3 (клешня) не тронут.
+    """
+    node = arm_node_factory()
+
+    node._freeze_all_except_claw(duration=10.0)
+
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+        assert node._freeze_timers[i] is not None
+        node._freeze_timers[i].cancel()    # cleanup
+    node._mock_servos[3].freeze.assert_not_called()
+    assert node._freeze_timers[3] is None
+
+
+def test_freeze_all_except_claw_without_duration_no_timers(arm_node_factory):
+    """_freeze_all_except_claw() (без duration) — current behavior:
+    морозит CH0/1/2 без таймеров (frozen indefinite).
+    """
+    node = arm_node_factory()
+
+    node._freeze_all_except_claw()
+
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+        assert node._freeze_timers[i] is None
+    node._mock_servos[3].freeze.assert_not_called()
