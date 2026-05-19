@@ -493,3 +493,98 @@ def test_unlock_auto_freezes_ch0_ch1_ch2(arm_node_factory):
     for i in range(3):
         node._mock_servos[i].freeze.assert_called_once()
     node._mock_servos[3].freeze.assert_not_called()
+
+
+def test_unfreeze_persists_through_single_joint_command(arm_node_factory):
+    """После arm/command "unfreeze" одиночная команда {joint:1, angle:50}
+    НЕ морозит CH0 обратно. Авто-refreeze случается только в mass-командах
+    (home/load_preset/joints-array)."""
+    node = arm_node_factory()
+    # Старт: CH0/1/2 заморожены автоматически. Эмулируем это в моках.
+    for i in range(3):
+        node._mock_servos[i].frozen = True
+
+    # Пользователь жмёт "Разм. все"
+    node._cmd_cb('arm/command', {'command': 'unfreeze'})
+    for s in node._mock_servos:
+        s.frozen = False   # эмулируем эффект unfreeze() на моках
+
+    # Очищаем call-history после unfreeze, чтобы видеть только последующие freeze'ы.
+    for m in node._mock_servos:
+        m.reset_mock()
+
+    # Single-joint drag не должен ничего морозить
+    node._cmd_cb('arm/command', {'joint': 1, 'angle': 50.0})
+
+    assert node._target_angles[0] == 50.0
+    for m in node._mock_servos:
+        m.freeze.assert_not_called()
+
+
+def test_home_after_unfreeze_refreezes_again(arm_node_factory):
+    """После unfreeze всех суставов команда home должна снова заморозить
+    CH0/1/2 — «возврат в известное положение всегда морозит»."""
+    node = arm_node_factory()
+
+    # Эмуляция unfreeze
+    node._cmd_cb('arm/command', {'command': 'unfreeze'})
+    for s in node._mock_servos:
+        s.frozen = False
+
+    # Сброс счётчиков
+    for m in node._mock_servos:
+        m.reset_mock()
+
+    # home
+    node._cmd_cb('arm/command', {'command': 'home'})
+
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()
+
+
+def test_fsm_grab_sequence_end_to_end_with_default_frozen(arm_node_factory):
+    """E2E: arm_node стартует с default-frozen CH0/1/2 (после _unlock).
+    FSM шлёт load_preset grab_ready → load_preset grab_hold → freeze.
+    Никаких прямых unfreeze. Target должен в итоге доехать до grab_hold,
+    финальный freeze на CH0/1/2 идёт через _freeze_all_except_claw
+    (FSM сам отдельно делает freeze joint=4 для клешни — не тестируем).
+    """
+    node = arm_node_factory(reset_after_init=False)
+    # _unlock уже отморозил CH0/1/2 в __init__
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    # Эмулируем эффект freeze() на моках
+    for i in range(3):
+        node._mock_servos[i].frozen = True
+
+    # Сброс mock-call-history для чистого подсчёта в последующих шагах
+    for m in node._mock_servos:
+        m.reset_mock()
+
+    # FSM шаг 1: grab_ready
+    node._cmd_cb('arm/command', {'command': 'load_preset', 'name': 'grab_ready'})
+    # grab_ready preset из миграции: [30, 60, 0, 0]
+    assert node._target_angles == [30.0, 60.0, 0.0, 0.0]
+    # CH0/1/2 заморожены снова
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+
+    for m in node._mock_servos:
+        m.reset_mock()
+
+    # FSM шаг 2: grab_hold
+    node._cmd_cb('arm/command', {'command': 'load_preset', 'name': 'grab_hold'})
+    # grab_hold preset: [0, 100, 0, 180]
+    assert node._target_angles == [0.0, 100.0, 0.0, 180.0]
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+
+    for m in node._mock_servos:
+        m.reset_mock()
+
+    # FSM шаг 3: финальный freeze (CH0/1/2 уже frozen, но команда идемпотентна)
+    node._cmd_cb('arm/command', {'command': 'freeze'})
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()
