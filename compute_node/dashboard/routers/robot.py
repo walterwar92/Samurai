@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -266,6 +266,46 @@ class _RobotLiveStateBroker:
 
 
 robot_live_state_broker = _RobotLiveStateBroker()
+
+ws_router = APIRouter()
+
+
+@ws_router.websocket('/ws/robot/live_state')
+async def robot_live_state_ws(websocket: WebSocket):
+    """Без handshake. На connect — replay последнего фрейма (если есть),
+    затем стрим из broker. При разрыве — клиент сам переподключается
+    (см. useRobotLiveState).
+    """
+    await websocket.accept()
+    robot_live_state_broker.ensure_loop()
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+    robot_live_state_broker.add(queue)
+
+    last = robot_live_state_broker.get_last()
+    if last is not None:
+        try:
+            # last уже в обёртке {'type': 'live_state', 'point': ...} —
+            # см. _RobotLiveStateBroker.broadcast().
+            await websocket.send_json(
+                last if last.get('type') == 'live_state'
+                else {'type': 'live_state', 'point': last}
+            )
+        except Exception:
+            pass
+
+    try:
+        while True:
+            frame = await queue.get()
+            await websocket.send_json(frame)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        robot_live_state_broker.remove(queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def build_live_state_point(state) -> RobotLiveStatePoint:

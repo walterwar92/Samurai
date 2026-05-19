@@ -487,6 +487,8 @@ def create_app(
     app.include_router(mps.router, prefix='/api/v1/mps')
     # WebSocket /ws/mps/telemetry — без /api префикса, не трогается middleware-ом.
     app.include_router(mps.ws_router)
+    # /ws/robot/live_state — постоянный канал состояния робота для DashboardPage.
+    app.include_router(robot.ws_router)
     # Подключаем MQTT broadcaster → WS broker. mqtt_handlers зовёт _broadcast_mps()
     # из своего thread'а, broker делает call_soon_threadsafe в asyncio loop.
     if mqtt is not None:

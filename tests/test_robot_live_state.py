@@ -144,3 +144,92 @@ def test_broker_broadcast_persists_last():
     frame = {'type': 'live_state', 'point': {'ts': 3.0}}
     b.broadcast(frame)
     assert b.get_last() == frame
+
+
+# ── /ws/robot/live_state ───────────────────────────────────────────────
+def test_robot_live_state_ws_replays_last_on_connect(client):
+    """При подключении сервер шлёт последний известный фрейм сразу."""
+    from compute_node.dashboard.routers.robot import robot_live_state_broker
+
+    last = {
+        'type': 'live_state',
+        'point': {
+            'ts': 1747574400.0,
+            'pose': {'x': 0.1, 'y': 0.2, 'yaw_rad': 0.0, 'yaw_deg': 0.0},
+            'vel': {'linear': 0.0, 'angular': 0.0},
+            'imu': {
+                'ypr_deg': [0, 0, 0], 'gyro': [0, 0, 0],
+                'accel': [0, 0, 9.8], 'ekf_bias_deg': None, 'has_ekf': False,
+            },
+            'stationary': True,
+            'schema_version': '1.0',
+        },
+    }
+    robot_live_state_broker.set_last(last)
+    try:
+        with client.websocket_connect('/ws/robot/live_state') as ws:
+            msg = ws.receive_json()
+            assert msg['type'] == 'live_state'
+            assert msg['point']['pose']['x'] == pytest.approx(0.1)
+    finally:
+        robot_live_state_broker.set_last(None)
+
+
+def test_robot_live_state_ws_broadcasts_new_frame(client):
+    """Открытый WS получает новые frames через broker.broadcast()."""
+    from compute_node.dashboard.routers.robot import robot_live_state_broker
+    robot_live_state_broker.set_last(None)
+    try:
+        with client.websocket_connect('/ws/robot/live_state') as ws:
+            robot_live_state_broker.broadcast({
+                'type': 'live_state',
+                'point': {
+                    'ts': 1747574500.0,
+                    'pose': {'x': 1.5, 'y': 2.5, 'yaw_rad': 0.5, 'yaw_deg': 28.6},
+                    'vel': {'linear': 0.2, 'angular': 0.1},
+                    'imu': {
+                        'ypr_deg': [28, 2, -1], 'gyro': [0.01, 0.02, 0.03],
+                        'accel': [0.1, 0.2, 9.8],
+                        'ekf_bias_deg': [0.01, -0.02, 0.03], 'has_ekf': True,
+                    },
+                    'stationary': False,
+                    'schema_version': '1.0',
+                },
+            })
+            msg = ws.receive_json()
+            assert msg['type'] == 'live_state'
+            assert msg['point']['pose']['x'] == pytest.approx(1.5)
+            assert msg['point']['imu']['has_ekf'] is True
+    finally:
+        robot_live_state_broker.set_last(None)
+
+
+def test_robot_live_state_ws_no_last_no_replay(client):
+    """Если _last is None — клиент НЕ получает phantom frame до broadcast."""
+    from compute_node.dashboard.routers.robot import robot_live_state_broker
+    robot_live_state_broker.set_last(None)
+
+    def _frame(ts: float) -> dict:
+        return {
+            'type': 'live_state',
+            'point': {
+                'ts': ts,
+                'pose': {'x': 0, 'y': 0, 'yaw_rad': 0, 'yaw_deg': 0},
+                'vel': {'linear': 0, 'angular': 0},
+                'imu': {'ypr_deg': [0, 0, 0], 'gyro': [0, 0, 0],
+                        'accel': [0, 0, 0], 'ekf_bias_deg': None, 'has_ekf': False},
+                'stationary': True,
+                'schema_version': '1.0',
+            },
+        }
+
+    try:
+        with client.websocket_connect('/ws/robot/live_state') as ws:
+            robot_live_state_broker.broadcast(_frame(1.0))
+            robot_live_state_broker.broadcast(_frame(2.0))
+            msg1 = ws.receive_json()
+            msg2 = ws.receive_json()
+            assert msg1['point']['ts'] == pytest.approx(1.0)
+            assert msg2['point']['ts'] == pytest.approx(2.0)
+    finally:
+        robot_live_state_broker.set_last(None)
