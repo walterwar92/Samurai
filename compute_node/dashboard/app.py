@@ -100,8 +100,7 @@ async def _run_robot_live_state_tick(_state) -> None:
     try:
         point = build_live_state_point(_state).model_dump()
     except Exception as exc:
-        logging.getLogger('dashboard').exception(
-            'robot live_state aggregator failed: %s', exc)
+        log.exception('robot live_state aggregator failed: %s', exc)
         return
     robot_live_state_broker.broadcast({'type': 'live_state', 'point': point})
 
