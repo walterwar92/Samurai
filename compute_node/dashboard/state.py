@@ -130,7 +130,7 @@ class _ControlBlock:
     calibration_status: dict = field(default_factory=dict)
     calibration_result: dict = field(default_factory=dict)
     calibration_coeffs: Optional[dict] = None  # {profile, scale_fwd, scale_bwd, motor_trim}
-    calibration_profiles: list = field(default_factory=list)
+    calibration_profiles: Optional[dict] = None  # {profiles: Record<name, coeffs>, active: str}
     explorer_status: dict = field(default_factory=dict)
     mission_status: dict = field(default_factory=dict)
     mission_list: list[str] = field(default_factory=list)
@@ -308,7 +308,7 @@ class DashboardState:
             cal_status = dict(c.calibration_status)
             cal_result = dict(c.calibration_result)
             cal_active = (c.calibration_coeffs or {}).get('profile')
-            cal_profiles = list(c.calibration_profiles)
+            cal_profiles = dict(c.calibration_profiles) if c.calibration_profiles else None
             explorer_status = dict(c.explorer_status)
             mission_status = dict(c.mission_status)
             mission_list = list(c.mission_list)
@@ -526,7 +526,7 @@ class DashboardState:
                 'calibration': dict(c.calibration_status) if c.calibration_status else None,
                 'calibration_result': dict(c.calibration_result) if c.calibration_result else None,
                 'calibration_coeffs': dict(c.calibration_coeffs) if c.calibration_coeffs else None,
-                'calibration_profiles': list(c.calibration_profiles) if c.calibration_profiles else None,
+                'calibration_profiles': dict(c.calibration_profiles) if c.calibration_profiles else None,
                 'explorer': dict(c.explorer_status) if c.explorer_status else None,
                 'mission': dict(c.mission_status) if c.mission_status else None,
                 'tts_enabled': sys_.tts_enabled,

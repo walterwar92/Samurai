@@ -297,3 +297,133 @@ def test_calibration_profile_list_endpoint_returns_active_from_coeffs(handlers):
         calibration_profile_list(handlers._state, _FakeMqtt())
     )
     assert result.active == 'carpet'
+
+
+# ── calibration/profile/all envelope ───────────────────────────────────────
+
+def test_calibration_profile_all_stores_envelope(handlers):
+    """_h_calibration_profile_all сохраняет ВЕСЬ envelope {profiles, active},
+    а не только внутренний profiles. Фронт ждёт оба поля."""
+    payload = json.dumps({
+        'profiles': {
+            'default': {
+                'scale_fwd': 1.235, 'scale_bwd': 0.988,
+                'motor_trim': -12.003, 'description': 'base',
+            },
+            'carpet': {
+                'scale_fwd': 1.45, 'scale_bwd': 0.91,
+                'motor_trim': -8.0, 'description': 'ковёр',
+            },
+        },
+        'active': 'default',
+    }).encode()
+    handlers._h_calibration_profile_all(payload)
+    with handlers._state.lock:
+        stored = handlers._state.control.calibration_profiles
+    assert stored == {
+        'profiles': {
+            'default': {
+                'scale_fwd': 1.235, 'scale_bwd': 0.988,
+                'motor_trim': -12.003, 'description': 'base',
+            },
+            'carpet': {
+                'scale_fwd': 1.45, 'scale_bwd': 0.91,
+                'motor_trim': -8.0, 'description': 'ковёр',
+            },
+        },
+        'active': 'default',
+    }
+
+
+def test_calibration_profile_all_ignores_bad_payload(handlers):
+    """Не-dict / неполный payload не затирает корректный state."""
+    handlers._h_calibration_profile_all(json.dumps({
+        'profiles': {'default': {'scale_fwd': 1.235, 'scale_bwd': 0.988,
+                                  'motor_trim': -12.003, 'description': ''}},
+        'active': 'default',
+    }).encode())
+    handlers._h_calibration_profile_all(b'[1,2,3]')
+    handlers._h_calibration_profile_all(b'42.5')
+    handlers._h_calibration_profile_all(b'{not json')
+    handlers._h_calibration_profile_all(json.dumps({'only': 'profiles'}).encode())
+    with handlers._state.lock:
+        stored = handlers._state.control.calibration_profiles
+    assert stored is not None
+    assert stored['active'] == 'default'
+    assert 'default' in stored['profiles']
+
+
+def test_legacy_snapshot_emits_profile_envelope(handlers):
+    """legacy_socketio_state эмитит весь envelope, а не список имён."""
+    handlers._h_calibration_profile_all(json.dumps({
+        'profiles': {
+            'default': {'scale_fwd': 1.235, 'scale_bwd': 0.988,
+                        'motor_trim': -12.003, 'description': 'base'},
+        },
+        'active': 'default',
+    }).encode())
+    snap = handlers._state.legacy_socketio_state()
+    assert snap['calibration_profiles'] == {
+        'profiles': {
+            'default': {'scale_fwd': 1.235, 'scale_bwd': 0.988,
+                        'motor_trim': -12.003, 'description': 'base'},
+        },
+        'active': 'default',
+    }
+
+
+def test_modern_snapshot_emits_profile_envelope(handlers):
+    """Современный snapshot() — control.calibration.profiles содержит envelope."""
+    handlers._h_calibration_profile_all(json.dumps({
+        'profiles': {
+            'tile': {'scale_fwd': 1.1, 'scale_bwd': 1.0,
+                     'motor_trim': 0.0, 'description': ''},
+        },
+        'active': 'tile',
+    }).encode())
+    snap = handlers._state.snapshot()
+    assert snap['control']['calibration']['profiles'] == {
+        'profiles': {
+            'tile': {'scale_fwd': 1.1, 'scale_bwd': 1.0,
+                     'motor_trim': 0.0, 'description': ''},
+        },
+        'active': 'tile',
+    }
+
+
+# ── calibration/profile/save — description survives ────────────────────────
+
+def test_calibration_profile_save_command_accepts_description():
+    """Схема CalibrationProfileSaveCommand должна принимать поле description."""
+    from compute_node.dashboard.schemas.control import CalibrationProfileSaveCommand
+    cmd = CalibrationProfileSaveCommand(name='foo', description='hello world')
+    assert cmd.name == 'foo'
+    assert cmd.description == 'hello world'
+
+
+def test_calibration_profile_save_command_description_default_empty():
+    """Если description не задан — пустая строка по умолчанию (frontend
+    может не отправить поле)."""
+    from compute_node.dashboard.schemas.control import CalibrationProfileSaveCommand
+    cmd = CalibrationProfileSaveCommand(name='foo')
+    assert cmd.description == ''
+
+
+def test_calibration_profile_save_endpoint_publishes_description():
+    """Endpoint /profile/save должен публиковать {name, description},
+    а не только {name} — иначе motor_node теряет описание."""
+    import asyncio
+    from compute_node.dashboard.routers.control import calibration_profile_save
+    from compute_node.dashboard.schemas.control import CalibrationProfileSaveCommand
+
+    captured: dict = {}
+
+    class _FakeMqtt:
+        def publish(self, topic, payload, qos=0):
+            captured['topic'] = topic
+            captured['payload'] = payload
+
+    cmd = CalibrationProfileSaveCommand(name='tile', description='Кафель сухой')
+    asyncio.run(calibration_profile_save(cmd, _FakeMqtt()))
+    assert captured['topic'] == 'calibration/profile/save'
+    assert captured['payload'] == {'name': 'tile', 'description': 'Кафель сухой'}

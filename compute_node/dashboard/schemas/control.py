@@ -135,6 +135,7 @@ class CalibrationProfileSaveCommand(BaseModel):
     """POST /api/calibration/profile/save."""
     name: str = Field(min_length=1, max_length=64,
                       pattern=r'^[a-zA-Z0-9_\-]+$')
+    description: str = Field(default='', max_length=256)
 
 
 class CalibrationProfileLoadCommand(BaseModel):

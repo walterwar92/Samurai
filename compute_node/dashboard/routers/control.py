@@ -209,7 +209,8 @@ async def calibration_profile_load(
 async def calibration_profile_save(
     cmd: CalibrationProfileSaveCommand, mqtt: MQTTDep
 ) -> CommandAck:
-    mqtt.publish('calibration/profile/save', {'name': cmd.name}, qos=1)
+    mqtt.publish('calibration/profile/save',
+                 {'name': cmd.name, 'description': cmd.description}, qos=1)
     return CommandAck()
 
 
@@ -230,19 +231,19 @@ async def calibration_profile_list(
     и одновременно вернуть текущий кэш из state."""
     mqtt.publish('calibration/profile/list', '{}', qos=1)
     with state.lock:
-        raw = list(state.control.calibration_profiles)
-        active = (state.control.calibration_coeffs or {}).get('profile')
+        envelope = state.control.calibration_profiles or {}
+        raw = dict(envelope.get('profiles') or {})
+        active = ((state.control.calibration_coeffs or {}).get('profile')
+                  or envelope.get('active'))
     profiles: list[CalibrationProfile] = []
-    for p in raw:
-        if isinstance(p, dict) and 'name' in p:
+    for name, p in raw.items():
+        if isinstance(p, dict):
             profiles.append(CalibrationProfile(
-                name=p['name'],
+                name=name,
                 scale_fwd=p.get('scale_fwd', 1.0),
                 scale_bwd=p.get('scale_bwd', 1.0),
                 motor_trim=p.get('motor_trim', 0.0),
             ))
-        elif isinstance(p, str):
-            profiles.append(CalibrationProfile(name=p))
     return CalibrationProfileListResponse(profiles=profiles, active=active)
 
 

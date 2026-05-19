@@ -517,15 +517,26 @@ class MQTTHandlers:
             self._state.control.calibration_coeffs = new_coeffs
 
     def _h_calibration_profile_all(self, payload: bytes):
+        """motor_node публикует {profiles: Record, active: str}.
+        Сохраняем весь envelope — фронт ждёт обе ключевых части (список профилей
+        и имя активного). Неполный/некорректный payload игнорируем чтобы
+        не затирать корректный state.
+        """
         try:
             d = json.loads(payload)
         except Exception:
             return
+        if not isinstance(d, dict):
+            return
+        if 'profiles' not in d or 'active' not in d:
+            return
+        if not isinstance(d['profiles'], dict):
+            return
         with self._state.lock:
-            if isinstance(d, list):
-                self._state.control.calibration_profiles = d
-            elif isinstance(d, dict):
-                self._state.control.calibration_profiles = d.get('profiles', [])
+            self._state.control.calibration_profiles = {
+                'profiles': dict(d['profiles']),
+                'active': str(d['active']),
+            }
 
     def _h_arm_presets(self, payload: bytes):
         try:
