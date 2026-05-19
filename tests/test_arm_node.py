@@ -160,9 +160,10 @@ def test_interpolate_tick_handles_negative_direction(arm_node_factory):
     assert node._current_angles[0] == pytest.approx(47.6, abs=1e-6)
 
 
-def test_interpolate_tick_skips_frozen_joints(arm_node_factory):
-    """Если servo.frozen=True — interpolate_tick НЕ двигает current и НЕ
-    шлёт set_angle. Это эквивалентно «freeze ставит current=target и стоп».
+def test_interpolate_tick_moves_frozen_joint_to_target(arm_node_factory):
+    """Frozen-сустав теперь интерполируется к target с set_angle(force=True).
+    Это позволяет UI-слайдеру двигать frozen-сустав, оставляя его под PWM.
+    Set_angle вызывается с force=True, иначе ServoDriver проигнорирует.
     """
     node = arm_node_factory(max_speed=120.0)
     node._target_angles[0] = 90.0
@@ -170,8 +171,25 @@ def test_interpolate_tick_skips_frozen_joints(arm_node_factory):
 
     node._interpolate_tick()
 
-    assert node._current_angles[0] == 0.0   # не двигались
-    node._mock_servos[0].set_angle.assert_not_called()
+    # Шаг 120°/с * 0.02с = 2.4°
+    assert node._current_angles[0] == pytest.approx(2.4, abs=1e-6)
+    node._mock_servos[0].set_angle.assert_called_once()
+    # force=True для frozen — обходит фильтр в драйвере
+    _args, kwargs = node._mock_servos[0].set_angle.call_args
+    assert kwargs.get('force') is True
+
+
+def test_interpolate_tick_uses_force_false_for_unfrozen(arm_node_factory):
+    """Незамороженный сустав получает set_angle(force=False) — обычный путь."""
+    node = arm_node_factory(max_speed=120.0)
+    node._target_angles[0] = 90.0
+    node._mock_servos[0].frozen = False
+
+    node._interpolate_tick()
+
+    node._mock_servos[0].set_angle.assert_called_once()
+    _args, kwargs = node._mock_servos[0].set_angle.call_args
+    assert kwargs.get('force') is False
 
 
 def test_publish_state_uses_current(arm_node_factory):

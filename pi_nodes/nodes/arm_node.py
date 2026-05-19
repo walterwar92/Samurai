@@ -71,6 +71,11 @@ class ArmNode(MqttNode):
         # Locked = arm doesn't move on startup, stays in physical position.
         # Unlock via arm/command: {"command": "unlock"} or "unlock"
         self._locked = cfg('servos.arm.locked', True)
+        # Если True — при locked=true клешня (последний канал, обычно CH3)
+        # автоматически принимает home-положение при запуске. Остальные
+        # суставы остаются physically untouched до первой команды.
+        self._claw_init_on_startup = bool(
+            cfg('servos.arm.claw_init_on_startup', True))
 
         # Create servo drivers — start_disabled=True so no PWM on boot.
         # init_angle для ServoDriver принимает физический угол, поэтому
@@ -85,9 +90,25 @@ class ArmNode(MqttNode):
         self._target_angles: list[float] = list(map(float, self._home_angles))
         self._current_angles: list[float] = list(map(float, self._home_angles))
         # Максимальная угловая скорость для интерполяции (°/сек).
-        # Защита: max_speed=0 «зависил» бы руку — clamp до 1.0.
-        self._max_speed: float = max(
-            1.0, float(cfg('servos.arm.max_speed_deg_per_sec', 120.0)))
+        # Поддерживаются два формата config:
+        #   • скаляр (legacy) — одна скорость на все суставы;
+        #   • список из N значений — per-joint скорость по индексам channels[].
+        # Защита: значение=0 «зависил» бы руку — clamp до 1.0.
+        # Для большой скорости (например 9999°/с у клешни) max_step за тик
+        # @ 50Гц = 200° > любой дельты 0..180 → snap к target за 1 тик
+        # (де-факто instant).
+        raw_speed = cfg('servos.arm.max_speed_deg_per_sec', 120.0)
+        if isinstance(raw_speed, (list, tuple)):
+            speeds = [max(1.0, float(v)) for v in raw_speed]
+            if not speeds:
+                speeds = [120.0]
+            # Если задано меньше значений, чем суставов — последний
+            # тиражируется на хвост (грамотный fallback при misconfig).
+            while len(speeds) < self._num_joints:
+                speeds.append(speeds[-1])
+            self._max_speeds: list[float] = speeds[:self._num_joints]
+        else:
+            self._max_speeds = [max(1.0, float(raw_speed))] * self._num_joints
         # Lock for _target_angles / _current_angles / interpolator step.
         # Защищает от race-условий между MQTT callback thread (команды
         # ставят target, вызывают freeze) и timer thread @ 50Гц
@@ -107,6 +128,13 @@ class ArmNode(MqttNode):
         # If not locked, immediately initialize servos to home
         if not self._locked:
             self._unlock()
+        elif self._claw_init_on_startup and self._num_joints >= 1:
+            # Локально включаем PWM на клешне (последний канал) и доводим
+            # её до home-положения. Остальные суставы остаются без PWM
+            # (start_disabled=True у ServoDriver). _servo_initialized
+            # оставляем False — первая полноценная arm/command всё равно
+            # вызовет _unlock() и разбудит остальные суставы.
+            self._init_claw_only()
 
         # Preset manager
         self._presets = ServoPresets()
@@ -117,7 +145,7 @@ class ArmNode(MqttNode):
         # sequence-design.md) получает готовые grab_ready и grab_hold без
         # ручных кликов в UI.
         _DEFAULT_ARM_PRESETS = {
-            'grab_ready': [160.0, 100.0, 180.0, 0.0],
+            'grab_ready': [110.0, 100.0, 180.0, 0.0],
             'grab_hold':  [10.0,  30.0,  180.0, 180.0],
         }
         for _name, _angles in _DEFAULT_ARM_PRESETS.items():
@@ -158,6 +186,26 @@ class ArmNode(MqttNode):
                     self._target_angles[i] = self._current_angles[i] = float(self._home_angles[i])
             self._servo_initialized = True
 
+    def _init_claw_only(self):
+        """Force-init только клешня в home даже когда arm locked.
+
+        Используется на старте при `servos.arm.claw_init_on_startup: true`.
+        Остальные суставы пропускаются — у их ServoDriver PWM не активен
+        (start_disabled=True), серво остаются в физическом положении.
+        _servo_initialized НЕ выставляется в True: первая arm/command
+        дёрнет _unlock_if_needed() → _unlock() → инициализация всех.
+        """
+        idx = self._num_joints - 1
+        home = float(self._home_angles[idx])
+        phys = self._to_physical(idx, home)
+        with self._state_lock:
+            self._servos[idx].set_angle(phys, force=True)
+            self._target_angles[idx] = home
+            self._current_angles[idx] = home
+        self.log_info(
+            'Claw (CH%d) auto-init at home=%.1f° (logical), %.1f° (physical)',
+            self._channels[idx], home, phys)
+
     def _set_joint(self, idx: int, angle: float):
         """Set joint TARGET angle (логический) с лимитами.
 
@@ -173,30 +221,27 @@ class ArmNode(MqttNode):
             self._target_angles[idx] = angle
 
     def _interpolate_tick(self):
-        """Шаг интерполяции: current → target со скоростью _max_speed.
+        """Шаг интерполяции: current → target с per-joint скоростью.
 
-        Вызывается таймером @ 50Гц. Для каждого сустава:
-        - если frozen → пропускаем (PWM-удержание уже у драйвера);
-        - если |delta| <= max_step → snap current к target (без overshoot);
-        - иначе current += sign(delta) * max_step.
-        Реальный PWM выставляется через ServoDriver.set_angle (с учётом
-        инверсии — _to_physical).
+        Frozen-сустав интерполируется так же, как обычный — отличие только
+        в том, что set_angle вызывается с force=True, чтобы ServoDriver не
+        проигнорировал команду из-за внутреннего frozen-фильтра. После
+        достижения target current==target → continue, и _freeze_refresh
+        в драйвере продолжает держать PWM на новой позиции.
         """
         dt = self._TICK_DT
-        max_step = self._max_speed * dt
         with self._state_lock:
             for i in range(self._num_joints):
-                if self._servos[i].frozen:
-                    continue
                 delta = self._target_angles[i] - self._current_angles[i]
                 if delta == 0.0:
                     continue
+                max_step = self._max_speeds[i] * dt
                 if abs(delta) <= max_step:
                     self._current_angles[i] = self._target_angles[i]
                 else:
                     self._current_angles[i] += math.copysign(max_step, delta)
                 phys = self._to_physical(i, self._current_angles[i])
-                self._servos[i].set_angle(phys)
+                self._servos[i].set_angle(phys, force=self._servos[i].frozen)
 
     def _cmd_cb(self, topic, data):
         if isinstance(data, str):
