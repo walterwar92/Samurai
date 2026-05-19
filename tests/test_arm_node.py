@@ -342,8 +342,13 @@ def test_cmd_cb_home_overrides_frozen_and_refreezes(arm_node_factory):
     node._mock_servos[3].freeze.assert_not_called()
 
 
-def test_cmd_cb_load_preset_skips_frozen(arm_node_factory):
-    """load_preset обновляет target только для unfrozen суставов."""
+def test_cmd_cb_load_preset_overrides_frozen_and_refreezes(arm_node_factory):
+    """load_preset переопределяет frozen и морозит CH0/1/2 заново.
+
+    Это критично для FSM grab: load_preset grab_hold вызывается ПОСЛЕ
+    load_preset grab_ready (который уже заморозил суставы), и без
+    allow_frozen=True hot-target никогда бы не обновился.
+    """
     node = arm_node_factory(presets_seed={'arm': {'foo': [10.0, 20.0, 30.0, 40.0]}})
     node._mock_servos[0].frozen = True
     node._target_angles[0] = 100.0
@@ -351,8 +356,12 @@ def test_cmd_cb_load_preset_skips_frozen(arm_node_factory):
 
     node._cmd_cb('arm/command', {'command': 'load_preset', 'name': 'foo'})
 
-    assert node._target_angles[0] == 100.0  # frozen не изменился
-    assert node._target_angles[1] == 20.0   # unfrozen загрузил из preset
+    # Все суставы взяли значения из preset, включая frozen CH0
+    assert node._target_angles == [10.0, 20.0, 30.0, 40.0]
+    # И сразу заморожены CH0/1/2 снова
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()
 
 
 def test_cmd_cb_joints_array_skips_frozen(arm_node_factory):

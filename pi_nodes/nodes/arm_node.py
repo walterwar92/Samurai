@@ -354,8 +354,10 @@ class ArmNode(MqttNode):
                 return
             self._unlock_if_needed()
             for i, a in enumerate(angles[:self._num_joints]):
-                self._set_joint(i, float(a))
-            self.log_info('Preset loaded: arm/%s → %s', name, self._target_angles)
+                self._set_joint(i, float(a), allow_frozen=True)
+            self._freeze_all_except_claw()
+            self.log_info('Preset loaded: arm/%s → %s (CH0/1/2 re-frozen)',
+                          name, self._target_angles)
             return
 
         if cmd == 'delete_preset':
