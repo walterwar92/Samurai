@@ -49,6 +49,7 @@ interface ServoSliderProps {
   disabled?: boolean
   frozen?: boolean
   onToggleFreeze?: () => void
+  allowFrozenDrag?: boolean
 }
 
 function ServoSlider({
@@ -60,6 +61,7 @@ function ServoSlider({
   disabled = false,
   frozen = false,
   onToggleFreeze,
+  allowFrozenDrag = false,
 }: ServoSliderProps) {
   const [local, setLocal] = useState(remoteValue)
   const dragging = useRef(false)
@@ -68,8 +70,13 @@ function ServoSlider({
     if (!dragging.current) setLocal(remoteValue)
   }, [remoteValue])
 
+  // frozen блокирует ввод ТОЛЬКО если allowFrozenDrag=false.
+  // С allowFrozenDrag=true слайдер активен, шлёт onCommit, а сустав
+  // плавно едет к новой позиции, оставаясь frozen (PWM держит).
+  const inputDisabled = disabled || (frozen && !allowFrozenDrag)
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (disabled || frozen) return
+    if (inputDisabled) return
     const v = Number(e.target.value)
     setLocal(v)
     onCommit(v)
@@ -110,7 +117,7 @@ function ServoSlider({
         min={min}
         max={max}
         value={Math.round(local)}
-        disabled={disabled || frozen}
+        disabled={inputDisabled}
         onPointerDown={() => { dragging.current = true }}
         onPointerUp={() => { dragging.current = false }}
         onLostPointerCapture={() => { dragging.current = false }}
