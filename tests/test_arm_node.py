@@ -364,8 +364,10 @@ def test_cmd_cb_load_preset_overrides_frozen_and_refreezes(arm_node_factory):
     node._mock_servos[3].freeze.assert_not_called()
 
 
-def test_cmd_cb_joints_array_skips_frozen(arm_node_factory):
-    """{joints:[...]} обновляет target только для unfrozen суставов."""
+def test_cmd_cb_joints_array_overrides_frozen_and_refreezes(arm_node_factory):
+    """{joints:[...]} тоже переопределяет frozen и морозит CH0/1/2 снова.
+    Симметрично с home/load_preset — все mass-команды ведут себя одинаково.
+    """
     node = arm_node_factory()
     node._mock_servos[0].frozen = True
     node._target_angles[0] = 100.0
@@ -373,8 +375,10 @@ def test_cmd_cb_joints_array_skips_frozen(arm_node_factory):
 
     node._cmd_cb('arm/command', {'joints': [10.0, 20.0, 30.0, 40.0]})
 
-    assert node._target_angles[0] == 100.0  # frozen не изменился
-    assert node._target_angles[1] == 20.0   # unfrozen загрузил
+    assert node._target_angles == [10.0, 20.0, 30.0, 40.0]
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()
 
 
 def test_cmd_cb_string_home_overrides_frozen_and_refreezes(arm_node_factory):

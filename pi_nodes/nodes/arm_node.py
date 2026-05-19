@@ -398,8 +398,10 @@ class ArmNode(MqttNode):
             self._unlock_if_needed()
             angles = d['joints']
             for i, a in enumerate(angles[:self._num_joints]):
-                self._set_joint(i, float(a))
-            self.log_info('Arm all joints → %s', self._target_angles)
+                self._set_joint(i, float(a), allow_frozen=True)
+            self._freeze_all_except_claw()
+            self.log_info('Arm all joints → %s (CH0/1/2 re-frozen)',
+                          self._target_angles)
             return
 
         self.log_warn('Unknown arm command format: %s', d)
