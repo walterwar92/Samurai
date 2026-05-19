@@ -262,8 +262,9 @@ class ArmNode(MqttNode):
             if cmd_lower == 'home':
                 self._unlock_if_needed()
                 for i in range(self._num_joints):
-                    self._set_joint(i, self._home_angles[i])
-                self.log_info('Arm → HOME')
+                    self._set_joint(i, self._home_angles[i], allow_frozen=True)
+                self._freeze_all_except_claw()
+                self.log_info('Arm → HOME (CH0/1/2 re-frozen)')
                 return
             if cmd_lower == 'unlock':
                 self._unlock_if_needed()
@@ -295,8 +296,9 @@ class ArmNode(MqttNode):
         if cmd == 'home':
             self._unlock_if_needed()
             for i in range(self._num_joints):
-                self._set_joint(i, self._home_angles[i])
-            self.log_info('Arm → HOME')
+                self._set_joint(i, self._home_angles[i], allow_frozen=True)
+            self._freeze_all_except_claw()
+            self.log_info('Arm → HOME (CH0/1/2 re-frozen)')
             return
 
         if cmd == 'unlock':
