@@ -316,3 +316,48 @@ export interface SlamMapData {
     detected_objects: number
   }
 }
+
+// ── /ws/robot/live_state ──────────────────────────────────────────────
+// Постоянный поток текущего состояния робота (pose + velocity + IMU) для
+// панели на DashboardPage. Контракт: docs/superpowers/specs/
+// 2026-05-19-robot-live-state-vector-design.md §2.
+export const ROBOT_LIVE_STATE_SCHEMA = '1.0' as const
+
+export interface RobotLiveStatePoint {
+  /** Pi-clock unix-секунды */
+  ts: number
+  pose: {
+    /** м, world frame */
+    x: number
+    y: number
+    /** радианы */
+    yaw_rad: number
+    /** градусы (для удобства UI) */
+    yaw_deg: number
+  }
+  vel: {
+    /** м/с */
+    linear: number
+    /** рад/с */
+    angular: number
+  }
+  imu: {
+    /** [yaw, pitch, roll] в °, активный (EKF или raw-fallback) */
+    ypr_deg: [number, number, number]
+    /** [x, y, z] рад/с */
+    gyro: [number, number, number]
+    /** [x, y, z] м/с² */
+    accel: [number, number, number]
+    /** [x, y, z] °/с; null если has_ekf=false */
+    ekf_bias_deg: [number, number, number] | null
+    has_ekf: boolean
+  }
+  /** ZUPT (IMU-based stationary detector) */
+  stationary: boolean
+  schema_version: string
+}
+
+export interface RobotLiveStateWsFrame {
+  type: 'live_state'
+  point: RobotLiveStatePoint
+}
