@@ -285,8 +285,8 @@ class ArmNode(MqttNode):
                 self._freeze_all_except_claw()
                 return
             if cmd_lower == 'unfreeze':
-                for s in self._servos:
-                    s.unfreeze()
+                for i in range(self._num_joints):
+                    self._unfreeze_joint(i)
                 self.log_info('Arm ALL joints UNFROZEN')
                 return
             try:
@@ -319,14 +319,13 @@ class ArmNode(MqttNode):
         if cmd == 'freeze':
             self._unlock_if_needed()
             joint = d.get('joint')
+            duration = d.get('duration')
             if joint is not None:
                 idx = int(joint) - 1
                 if 0 <= idx < self._num_joints:
-                    self._servos[idx].freeze()
-                    self.log_info('Arm joint %d FROZEN at %.1f°',
-                                  idx + 1, self._target_angles[idx])
+                    self._freeze_joint(idx, duration)
             else:
-                self._freeze_all_except_claw()
+                self._freeze_all_except_claw(duration)
             return
 
         if cmd == 'unfreeze':
@@ -334,11 +333,11 @@ class ArmNode(MqttNode):
             if joint is not None:
                 idx = int(joint) - 1
                 if 0 <= idx < self._num_joints:
-                    self._servos[idx].unfreeze()
+                    self._unfreeze_joint(idx)
                     self.log_info('Arm joint %d UNFROZEN', idx + 1)
             else:
-                for s in self._servos:
-                    s.unfreeze()
+                for i in range(self._num_joints):
+                    self._unfreeze_joint(i)
                 self.log_info('Arm ALL joints UNFROZEN')
             return
 
@@ -487,6 +486,30 @@ class ArmNode(MqttNode):
             self._freeze_timers[idx] = None
         self._servos[idx].unfreeze()
         self.log_info('Arm joint %d AUTO-UNFROZEN (timer expired)', idx + 1)
+
+    def _unfreeze_joint(self, idx: int):
+        """Разморозить сустав idx. Отменяет активный auto-unfreeze таймер
+        если был. Не падает на out-of-range.
+
+        Thread-safe: использует _freeze_timer_lock для безопасной очистки
+        slot'а (compare-by-identity в _auto_unfreeze гарантирует что
+        late-firing stale callback не клобберит unfreeze).
+
+        После cancel() делаем join() с коротким таймаутом: cancel()
+        выставляет finished event, поэтому Timer.run() сразу выходит из
+        wait() и thread завершается за микросекунды. Join гарантирует,
+        что is_alive()==False сразу после возврата — без этого OS
+        scheduler может ещё не успеть размотать стек thread'а.
+        """
+        if idx < 0 or idx >= self._num_joints:
+            return
+        with self._freeze_timer_lock:
+            prev = self._freeze_timers[idx]
+            self._freeze_timers[idx] = None
+        if prev is not None:
+            prev.cancel()
+            prev.join(timeout=1.0)
+        self._servos[idx].unfreeze()
 
     def _freeze_all_except_claw(self):
         """Freeze всех суставов руки, КРОМЕ клешни (последний канал).

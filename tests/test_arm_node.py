@@ -706,3 +706,83 @@ def test_freeze_joint_auto_unfreeze_proceeds_when_slot_matches(arm_node_factory)
 
     node._mock_servos[3].unfreeze.assert_called_once()
     assert node._freeze_timers[3] is None
+
+
+def test_unfreeze_joint_cancels_active_timer(arm_node_factory):
+    """_unfreeze_joint(idx) отменяет активный таймер и вызывает unfreeze.
+
+    Регрессия: если таймер не отменить, через duration сек он
+    дёрнет unfreeze ещё раз (no-op на size серво, но lognoise).
+    """
+    node = arm_node_factory()
+    node._freeze_joint(3, duration=10.0)
+    timer = node._freeze_timers[3]
+    assert timer.is_alive()
+
+    node._unfreeze_joint(3)
+
+    assert not timer.is_alive()    # cancelled
+    assert node._freeze_timers[3] is None
+    node._mock_servos[3].unfreeze.assert_called_once()
+
+
+def test_cmd_cb_freeze_with_duration(arm_node_factory):
+    """{command:freeze, joint:4, duration:0.05} вызывает _freeze_joint(3, 0.05)
+    — freeze + Timer стартует.
+    """
+    import time
+    node = arm_node_factory()
+
+    node._cmd_cb('arm/command',
+                 {'command': 'freeze', 'joint': 4, 'duration': 0.05})
+
+    node._mock_servos[3].freeze.assert_called_once()
+    assert node._freeze_timers[3] is not None
+
+    time.sleep(0.15)
+    node._mock_servos[3].unfreeze.assert_called_once()
+
+
+def test_cmd_cb_freeze_without_duration_no_timer(arm_node_factory):
+    """{command:freeze, joint:4} без duration — таймера нет (current behavior)."""
+    node = arm_node_factory()
+
+    node._cmd_cb('arm/command', {'command': 'freeze', 'joint': 4})
+
+    node._mock_servos[3].freeze.assert_called_once()
+    assert node._freeze_timers[3] is None
+
+
+def test_cmd_cb_unfreeze_joint_cancels_timer(arm_node_factory):
+    """{command:unfreeze, joint:4} отменяет активный 20s таймер на клешне.
+    Кейс: пользователь жмёт «открой клешню» в UI пока FSM grab держит её.
+    """
+    import time
+    node = arm_node_factory()
+    node._cmd_cb('arm/command',
+                 {'command': 'freeze', 'joint': 4, 'duration': 10.0})
+    assert node._freeze_timers[3] is not None
+
+    node._cmd_cb('arm/command', {'command': 'unfreeze', 'joint': 4})
+
+    assert node._freeze_timers[3] is None
+    node._mock_servos[3].unfreeze.assert_called_once()
+
+    # Через короткое время unfreeze НЕ вызывается повторно (таймер отменён)
+    time.sleep(0.05)
+    assert node._mock_servos[3].unfreeze.call_count == 1
+
+
+def test_cmd_cb_unfreeze_all_cancels_all_timers(arm_node_factory):
+    """{command:unfreeze} без joint отменяет все активные таймеры
+    и размораживает все серво.
+    """
+    node = arm_node_factory()
+    node._cmd_cb('arm/command',
+                 {'command': 'freeze', 'joint': 4, 'duration': 10.0})
+
+    node._cmd_cb('arm/command', {'command': 'unfreeze'})
+
+    for i in range(4):
+        assert node._freeze_timers[i] is None
+        node._mock_servos[i].unfreeze.assert_called_once()
