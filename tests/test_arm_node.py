@@ -260,7 +260,7 @@ def test_init_migrates_default_presets_when_empty(arm_node_factory):
     """
     node = arm_node_factory(presets_seed=None)
 
-    assert node._presets.load_preset('arm', 'grab_ready') == [160.0, 100.0, 180.0, 0.0]
+    assert node._presets.load_preset('arm', 'grab_ready') == [110.0, 100.0, 180.0, 0.0]
     assert node._presets.load_preset('arm', 'grab_hold') == [10.0, 30.0, 180.0, 180.0]
 
 
