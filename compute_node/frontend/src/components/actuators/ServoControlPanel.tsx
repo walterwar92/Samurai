@@ -114,6 +114,7 @@ function ServoSlider({
       </div>
       <input
         type="range"
+        aria-label={label}
         min={min}
         max={max}
         value={Math.round(local)}
@@ -521,6 +522,7 @@ export function ServoControlPanel({ head, arm, armPresets = [], headPresets = []
               onCommit={(v) => sendArm(i + 1, v)}
               disabled={armLocked}
               frozen={armFrozen[i] ?? false}
+              allowFrozenDrag
               onToggleFreeze={() => {
                 if (armFrozen[i]) {
                   api.armUnfreezeJoint(i + 1)

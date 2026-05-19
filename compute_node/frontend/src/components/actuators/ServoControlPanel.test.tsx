@@ -46,20 +46,16 @@ describe('ServoControlPanel — frozen slider drag', () => {
 
   it('frozen arm slider triggers setArmJoint on change', () => {
     render(<ServoControlPanel head={head} arm={armFirstFrozen} />)
-    // 5 sliders: head + 4 arm. arm joint 1 — индекс 1 в querySelectorAll.
-    const sliders = document.querySelectorAll('input[type="range"]')
-    expect(sliders.length).toBe(5)
-    const firstArmSlider = sliders[1] as HTMLInputElement
-    expect(firstArmSlider.disabled).toBe(false)
+    const armSlider = screen.getByRole('slider', { name: /ch0: Основание/i }) as HTMLInputElement
+    expect(armSlider.disabled).toBe(false)
 
-    fireEvent.change(firstArmSlider, { target: { value: '75' } })
+    fireEvent.change(armSlider, { target: { value: '75' } })
     expect(api.setArmJoint).toHaveBeenCalledWith(1, 75)
   })
 
   it('frozen head slider stays disabled', () => {
     render(<ServoControlPanel head={headFrozen} arm={armUnlocked} />)
-    const sliders = document.querySelectorAll('input[type="range"]')
-    const headSlider = sliders[0] as HTMLInputElement
+    const headSlider = screen.getByRole('slider', { name: /Угол поворота/i }) as HTMLInputElement
     expect(headSlider.disabled).toBe(true)
 
     fireEvent.change(headSlider, { target: { value: '120' } })
@@ -68,17 +64,15 @@ describe('ServoControlPanel — frozen slider drag', () => {
 
   it('HOLD badge stays visible on frozen arm slider during interaction', () => {
     render(<ServoControlPanel head={head} arm={armFirstFrozen} />)
-    // HOLD badges: для каждого frozen-сустава — отдельный <span>.
-    // Текст 'HOLD' появляется в ServoSlider, когда frozen=true.
+    // armFirstFrozen имеет ровно 1 frozen-сустав (ch0).
     const badges = screen.getAllByText('HOLD')
-    expect(badges.length).toBeGreaterThanOrEqual(1)
+    expect(badges).toHaveLength(1)
   })
 
   it('non-frozen arm slider still triggers setArmJoint (regression)', () => {
     render(<ServoControlPanel head={head} arm={armUnlocked} />)
-    const sliders = document.querySelectorAll('input[type="range"]')
-    const firstArmSlider = sliders[1] as HTMLInputElement
-    fireEvent.change(firstArmSlider, { target: { value: '40' } })
+    const armSlider = screen.getByRole('slider', { name: /ch0: Основание/i }) as HTMLInputElement
+    fireEvent.change(armSlider, { target: { value: '40' } })
     expect(api.setArmJoint).toHaveBeenCalledWith(1, 40)
   })
 })
