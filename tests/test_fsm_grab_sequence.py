@@ -221,3 +221,26 @@ def test_grab_during_settle_does_not_freeze_yet(fsm_node_factory):
     assert len(preset_pubs) == 1
     assert len(freeze_pubs) == 0
     assert node._state == State.GRABBING    # ещё не перешли
+
+
+def test_grab_state_flags_initial_false(fsm_node_factory):
+    """Новые поля _grab_open_sent и _grab_hold_sent инициализируются False."""
+    node = fsm_node_factory()
+    assert node._grab_open_sent is False
+    assert node._grab_hold_sent is False
+
+
+def test_grab_state_flags_reset_on_transition(fsm_node_factory):
+    """После _transition в любой state флаги сбрасываются в False.
+    Это гарантирует что повторный заход в GRABBING запустит все фазы заново.
+    """
+    from pi_nodes.nodes.fsm_node import State
+    node = fsm_node_factory()
+
+    node._grab_open_sent = True
+    node._grab_hold_sent = True
+
+    node._transition(State.IDLE)
+
+    assert node._grab_open_sent is False
+    assert node._grab_hold_sent is False

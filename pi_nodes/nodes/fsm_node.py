@@ -112,6 +112,10 @@ class FSMNode(MqttNode):
         self._approach_arm_sent = False
         # Локальный таймер фазы GRABBING (см. _do_grab).
         self._grab_t = 0.0
+        # Флаги «фаза отстрелила» для 5-фазного _do_grab v2.
+        # Сбрасываются в _transition при любой смене state.
+        self._grab_open_sent = False    # Phase 1 (open claw + freeze 20s) done
+        self._grab_hold_sent = False    # Phase 3 (load grab_hold) done
 
         # Subscribers
         self.subscribe('voice_command', self._voice_cb, qos=1)
@@ -351,6 +355,8 @@ class FSMNode(MqttNode):
         self._lost_frames = 0
         self._approach_arm_sent = False
         self._grab_t = 0.0
+        self._grab_open_sent = False
+        self._grab_hold_sent = False
         self.log_info('FSM: %s → %s', old, new_state)
 
         # Exit actions
