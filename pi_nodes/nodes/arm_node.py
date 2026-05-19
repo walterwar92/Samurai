@@ -118,7 +118,14 @@ class ArmNode(MqttNode):
         self._state_lock = threading.Lock()
         # Per-joint таймеры auto-unfreeze для freeze c duration. None если
         # таймера нет. См. _freeze_joint / _auto_unfreeze.
+        # Lock защищает race между Timer-thread (_auto_unfreeze) и
+        # MQTT-callback (_freeze_joint при re-arm): без него callback,
+        # запущенный в момент re-arm, мог бы клобберить новый timer
+        # и вызвать spurious unfreeze.
+        # Отдельный lock (не _state_lock) чтобы избежать lock-order
+        # coupling с 50Hz _interpolate_tick.
         self._freeze_timers: list[threading.Timer | None] = [None] * self._num_joints
+        self._freeze_timer_lock = threading.Lock()
         for i in range(self._num_joints):
             init_phys = self._to_physical(i, float(self._home_angles[i]))
             s = ServoDriver(channel=self._channels[i],
@@ -417,16 +424,27 @@ class ArmNode(MqttNode):
     def _freeze_joint(self, idx: int, duration: float | None = None):
         """Заморозить сустав idx. Если duration > 0 — schedule auto-unfreeze.
 
+        duration=None или duration<=0 → без таймера (frozen indefinite).
+        duration > 0 → schedule auto-unfreeze через duration секунд.
+
         Идемпотентно по таймерам: повторный freeze с duration на том же
         суставе отменяет предыдущий Timer и стартует новый. Это нужно
         FSM grab v2 — каждый новый цикл захвата перезапускает 20с timer.
+
+        Thread-safe: использует _freeze_timer_lock чтобы избежать race
+        с _auto_unfreeze (Timer-thread).
         """
         if idx < 0 or idx >= self._num_joints:
             return
-        # Cancel previous timer (если был)
-        if self._freeze_timers[idx] is not None:
-            self._freeze_timers[idx].cancel()
+        # Cancel previous timer ПОД lock'ом, чтобы _auto_unfreeze не мог
+        # параллельно клобберить slot. Сам cancel() безопасен — он только
+        # ставит флаг отмены; функция-callback может уже выполняться, но
+        # compare-and-clear в _auto_unfreeze отбросит её эффект.
+        with self._freeze_timer_lock:
+            prev = self._freeze_timers[idx]
             self._freeze_timers[idx] = None
+        if prev is not None:
+            prev.cancel()
 
         self._servos[idx].freeze()
 
@@ -434,8 +452,9 @@ class ArmNode(MqttNode):
             t = threading.Timer(float(duration),
                                 self._auto_unfreeze, args=(idx,))
             t.daemon = True
+            with self._freeze_timer_lock:
+                self._freeze_timers[idx] = t
             t.start()
-            self._freeze_timers[idx] = t
             self.log_info('Arm joint %d FROZEN at %.1f° (auto-unfreeze in %.1fs)',
                           idx + 1, self._target_angles[idx], duration)
         else:
@@ -444,10 +463,16 @@ class ArmNode(MqttNode):
 
     def _auto_unfreeze(self, idx: int):
         """Колбэк threading.Timer: разморозить сустав idx по истечении
-        duration. Очищает _freeze_timers[idx] чтобы commands могли
-        отличать «таймер ещё активен» от «таймер отработал».
+        duration. Использует compare-and-clear: если slot уже был очищен
+        re-arm'ом из _freeze_joint, callback не вызывает unfreeze
+        (новый timer активен — undoing его было бы багом).
         """
-        self._freeze_timers[idx] = None
+        with self._freeze_timer_lock:
+            # Если slot пустой (re-arm или unfreeze уже отработал) —
+            # skip spurious unfreeze.
+            if self._freeze_timers[idx] is None:
+                return
+            self._freeze_timers[idx] = None
         self._servos[idx].unfreeze()
         self.log_info('Arm joint %d AUTO-UNFROZEN (timer expired)', idx + 1)
 

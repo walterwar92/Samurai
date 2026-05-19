@@ -655,3 +655,26 @@ def test_freeze_joint_timer_calls_auto_unfreeze(arm_node_factory):
 
     node._mock_servos[3].unfreeze.assert_called_once()
     assert node._freeze_timers[3] is None    # очищен в _auto_unfreeze
+
+
+def test_freeze_joint_auto_unfreeze_skipped_if_rearmed(arm_node_factory):
+    """Race-safety: если slot был re-arm'нут после timer fired but before
+    callback acquired lock, _auto_unfreeze должен skip unfreeze.
+
+    Эмулируем race: вызываем _auto_unfreeze напрямую с idx, slot которого
+    уже nil'ed (что эмулирует re-arm clearing the slot first).
+    """
+    node = arm_node_factory()
+    node._freeze_joint(3, duration=10.0)
+    timer = node._freeze_timers[3]
+
+    # Эмулируем re-arm: slot обнулили
+    with node._freeze_timer_lock:
+        node._freeze_timers[3] = None
+
+    # Callback вызывается, slot None — должен skip
+    node._auto_unfreeze(3)
+
+    # Critical: unfreeze НЕ должна была быть вызвана
+    node._mock_servos[3].unfreeze.assert_not_called()
+    timer.cancel()    # cleanup
