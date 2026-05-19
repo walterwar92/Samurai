@@ -498,55 +498,80 @@ class FSMNode(MqttNode):
         self._pub_cmd_vel(linear, angular)
 
     def _do_grab(self):
-        """Захват объекта новой 3-фазной логикой (заменяет старую с
-        claw/command). См. spec 2026-05-17-arm-grab-sequence.
+        """Захват объекта 5-фазной логикой v2 (spec 2026-05-19-arm-grab-sequence-v2).
 
-        Phase 1 (t<=0.1c): один раз публикуем arm/command load_preset grab_hold.
-        Phase 2 (0.1c < t < settle): ждём пока _interpolate_tick доедет до позы.
-        Phase 3 (t >= settle): freeze всех суставов → RETURNING.
+        Phase 1 (one-shot, ~t=0.1с):
+            publish arm/command {joint:4, angle:0}                    # open claw
+            publish arm/command {command:freeze, joint:4, duration:20.0}
+                                                                       # freeze + 20s timer
+        Phase 2 (wait): t < 1.1с — задержка 1с после открытия клешни.
+        Phase 3 (one-shot, ~t=1.1с):
+            publish arm/command {command:load_preset, name:grab_hold}  # closes claw, moves arm
+        Phase 4 (wait): t < 1.1 + settle + 1.0 — settle интерполятора + 1с задержка.
+        Phase 5 (one-shot, finally):
+            publish arm/command {command:load_preset, name:grab_return}
+                                                                       # CH0/1/2 → grab_ready,
+                                                                       # claw stays 180 (closed)
+            _transition(State.RETURNING)
 
-        Settle выводится из max_speed_deg_per_sec: самая длинная дельта при
-        переходе grab_ready (110,100,180,0) → grab_hold (10,30,180,180) —
-        это CH0 (100°). settle = 100° / min(max_speeds) + 0.25с jitter.
-        При scalar 120°/с это ~1.08с; при текущем списке [45,45,9999,9999]
-        — ~2.47с (лимитирует медленный сустав). При изменении конфига
-        пересчитывается автоматически.
+        Через ~20с от Phase 1 arm_node auto-unfreeze клешню → PWM release
+        через HOLD_TIME → объект освобождается.
+
+        Settle: max_delta=100° (консервативный upper bound; реальные
+        дефолтные пресеты дают max=40° для CH1, но пользователь может
+        отредактировать пресеты) / min(max_speeds).
         """
         self._grab_t += 0.1
 
-        if self._grab_t <= 0.1:
-            # Phase 1 — единичная команда
+        # Phase 1: open claw + freeze duration=20
+        if not self._grab_open_sent:
+            self.publish('arm/command', {'joint': 4, 'angle': 0.0}, qos=1)
+            self.publish('arm/command',
+                         {'command': 'freeze', 'joint': 4, 'duration': 20.0},
+                         qos=1)
+            self._grab_open_sent = True
+            self.log_info('Grab Phase 1: open claw + freeze claw 20s')
+            return
+
+        # Phase 2: wait 1s after opening claw.
+        # Epsilon (1e-6) защищает от накопительной погрешности `+= 0.1`:
+        # после 11 тиков CPython даёт _grab_t = 1.0999999999999999 — без
+        # допуска фаза 3 пропустила бы целый тик (вошла бы только на 12-м,
+        # когда _grab_t = 1.2). Все тесты v2 синхронизированы с этим
+        # допуском (tick 11 = Phase 3 fires).
+        if self._grab_t + 1e-6 < 1.1:
+            return
+
+        # Phase 3: load grab_hold (closes claw on object, moves CH0/1/2)
+        if not self._grab_hold_sent:
             self.publish('arm/command',
                          {'command': 'load_preset', 'name': 'grab_hold'},
                          qos=1)
-            self.log_info('Arm → grab_hold (closing claw)')
+            self._grab_hold_sent = True
+            self.log_info('Grab Phase 3: → grab_hold (closing claw on object)')
             return
 
-        _GRAB_DELTA_DEG = 100.0   # CH0: grab_ready[0]=110 → grab_hold[0]=10
-        # max_speed_deg_per_sec может быть скаляром или списком per-joint.
-        # Settle ограничивается самым медленным суставом, т.к. CH0 (100°)
-        # — самая длинная дельта; берём min() по списку. Клешня (CH3)
-        # обычно instant (9999°/с), но min отбросит её и оставит реалистичную
-        # скорость основания/суставов 1-2 (~45°/с).
+        # Phase 4: wait for grab_hold settle + 1s
+        # max_speed_deg_per_sec может быть скаляром или списком per-joint;
+        # min() выбирает самый медленный CH0/1/2 (клешня обычно 9999°/с
+        # — instant — но среди CH0/1/2 берётся реальная скорость).
+        _GRAB_DELTA_DEG = 100.0
         _raw_speed = cfg('servos.arm.max_speed_deg_per_sec', 120.0)
         if isinstance(_raw_speed, (list, tuple)) and _raw_speed:
             _max_speed = max(1.0, min(float(v) for v in _raw_speed))
         else:
             _max_speed = max(1.0, float(_raw_speed))
-        grab_settle_s = _GRAB_DELTA_DEG / _max_speed + 0.25
-        if self._grab_t < grab_settle_s:
+        grab_settle_s = _GRAB_DELTA_DEG / _max_speed
+        phase_5_t = 1.1 + grab_settle_s + 1.0
+        if self._grab_t + 1e-6 < phase_5_t:
             return
 
-        # Phase 3 — freeze + переход.
-        # arm_node freeze-all исключает клешню (CH3) из общей заморозки
-        # (только личная ❄ кнопка слайдера её морозит), поэтому FSM шлёт
-        # ДВА freeze: общий для CH0..CH2 и явный joint=4 для клешни —
-        # иначе после grab_hold PWM на CH3 отключится через HOLD_TIME
-        # и захваченный мяч выпадет.
-        self.publish('arm/command', {'command': 'freeze'}, qos=1)
+        # Phase 5: return to grab_return pose + transition
         self.publish('arm/command',
-                     {'command': 'freeze', 'joint': 4}, qos=1)
-        self.log_info('Arm FROZEN — holding object (incl. claw)')
+                     {'command': 'load_preset', 'name': 'grab_return'},
+                     qos=1)
+        self.log_info('Grab Phase 5: → grab_return (initial pose, claw stays closed)'
+                      ' → RETURNING')
         self._transition(State.RETURNING)
 
     def _do_call(self):
