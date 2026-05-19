@@ -690,8 +690,8 @@ def test_fsm_grab_sequence_end_to_end_with_default_frozen(arm_node_factory):
 
     # FSM шаг 1: grab_ready
     node._cmd_cb('arm/command', {'command': 'load_preset', 'name': 'grab_ready'})
-    # grab_ready preset из миграции: [110, 100, 180, 0]
-    assert node._target_angles == [110.0, 100.0, 180.0, 0.0]
+    # grab_ready preset из миграции: [30, 60, 0, 0]
+    assert node._target_angles == [30.0, 60.0, 0.0, 0.0]
     # CH0/1/2 заморожены снова
     for i in range(3):
         node._mock_servos[i].freeze.assert_called_once()
@@ -701,8 +701,8 @@ def test_fsm_grab_sequence_end_to_end_with_default_frozen(arm_node_factory):
 
     # FSM шаг 2: grab_hold
     node._cmd_cb('arm/command', {'command': 'load_preset', 'name': 'grab_hold'})
-    # grab_hold preset: [10, 30, 180, 180]
-    assert node._target_angles == [10.0, 30.0, 180.0, 180.0]
+    # grab_hold preset: [0, 100, 0, 180]
+    assert node._target_angles == [0.0, 100.0, 0.0, 180.0]
     for i in range(3):
         node._mock_servos[i].freeze.assert_called_once()
 
