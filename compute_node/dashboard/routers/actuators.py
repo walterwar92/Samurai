@@ -79,10 +79,9 @@ async def set_claw(cmd: ClawCommand, mqtt: MQTTDep) -> CommandAck:
     """Клешня = arm joint 4 (1-indexed). open=0°, close=180°.
 
     При открытии клешни (state=open или angle<90) дополнительно публикуем
-    arm/command unfreeze — снимаем заморозку, поставленную FSM в _do_grab.
-    Прокси «объект в руке» = «клешня закрыта»; открытие → объект отпущен,
-    рука может двигаться. Unfreeze идемпотентен на arm_node (no-op если уже
-    разморожен).
+    arm/command unfreeze joint=4 — снимаем заморозку ТОЛЬКО клешни (CH0/1/2
+    остаются под FSM-контролем). Если был активен 20s auto-unfreeze таймер
+    из FSM grab v2 — он отменяется (пользовательский override).
     """
     if cmd.angle is not None:
         angle = max(0.0, min(180.0, float(cmd.angle)))
@@ -94,7 +93,13 @@ async def set_claw(cmd: ClawCommand, mqtt: MQTTDep) -> CommandAck:
         raise HTTPException(400, 'state ("open"/"close") or angle required')
     mqtt.publish('arm/command', {'joint': 4, 'angle': angle}, qos=1)
     if angle < 90.0:
-        mqtt.publish('arm/command', {'command': 'unfreeze'}, qos=1)
+        # Размораживаем ТОЛЬКО клешню. Раньше bare {command:unfreeze}
+        # размораживал все CH0/1/2 — баг: «открой клешню» в UI ломал
+        # удержание руки в позе захвата. Также эта команда отменяет
+        # активный 20s auto-unfreeze таймер из FSM grab v2 — пользователь
+        # явно требует «отпусти мяч сейчас» вместо ожидания таймера.
+        mqtt.publish('arm/command',
+                     {'command': 'unfreeze', 'joint': 4}, qos=1)
     return CommandAck()
 
 
