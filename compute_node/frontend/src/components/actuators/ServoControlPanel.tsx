@@ -13,8 +13,8 @@ import type { HeadState, ArmState } from '@/types/robot'
  *   CH3 — Клешня      home=0   [0; 180]  (0=открыта, 180=закрыта)
  *   CH4 — Голова       home=90  [0; 180]
  *
- * Pre-grab поза grab_ready=[160, 100, 180, 0] требует CH0=160°,
- * поэтому верхняя граница слайдера расширена с 120° до 160°.
+ * Pre-grab поза grab_ready=[110, 100, 180, 0]. Слайдер CH0 имеет запас
+ * до 160° на случай ручной коррекции / будущих пресетов.
  */
 
 const ARM_JOINTS = [
@@ -27,10 +27,13 @@ const ARM_JOINTS = [
 const THROTTLE_MS = 80
 
 // Пауза между фазами теста захвата. Соответствует spec
-// 2026-05-17-arm-grab-sequence §3.4: settle = 150°/max_speed + 0.25c.
-// При servos.arm.max_speed_deg_per_sec=45 (config.yaml) это
-// 3.33с + 0.25с jitter ≈ 3.6с. Если max_speed в конфиге изменится —
-// этот литерал тоже надо обновить (нет авто-синхронизации с Pi).
+// 2026-05-17-arm-grab-sequence §3.4: settle = ΔCH0°/min(speeds) + 0.25c.
+// servos.arm.max_speed_deg_per_sec в config.yaml может быть скаляром
+// или списком per-joint. Сейчас список [45, 45, 45, 9999] — клешня
+// (CH3) instant, остальные 45°/с. grab_ready[0]=110 → grab_hold[0]=10
+// даёт ΔCH0=100°: 100°/45 + 0.25с jitter ≈ 2.47с. Литерал оставлен с
+// запасом до 3.6с на MQTT latency и непредвиденные торможения.
+// При изменении пресетов/скоростей — пересмотри значение.
 const GRAB_TEST_SETTLE_MS = 3600
 
 type GrabTestPhase = null | 'unfreezing' | 'grab_ready' | 'grab_hold' | 'freezing'

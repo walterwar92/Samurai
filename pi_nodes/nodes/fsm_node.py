@@ -499,9 +499,9 @@ class FSMNode(MqttNode):
         Phase 3 (t >= settle): freeze всех суставов → RETURNING.
 
         Settle выводится из max_speed_deg_per_sec: самая длинная дельта при
-        переходе grab_ready (160,100,180,0) → grab_hold (10,30,180,180) —
-        это CH0 (150°). settle = 150°/max_speed + 0.25с jitter.
-        При max_speed=120°/с это 1.5с; при изменении конфига — пересчитается.
+        переходе grab_ready (110,100,180,0) → grab_hold (10,30,180,180) —
+        это CH0 (100°). settle = 100°/max_speed + 0.25с jitter.
+        При max_speed=120°/с это ~1.08с; при изменении конфига — пересчитается.
         """
         self._grab_t += 0.1
 
@@ -513,8 +513,17 @@ class FSMNode(MqttNode):
             self.log_info('Arm → grab_hold (closing claw)')
             return
 
-        _GRAB_DELTA_DEG = 150.0   # CH0: grab_ready[0]=160 → grab_hold[0]=10
-        _max_speed = max(1.0, float(cfg('servos.arm.max_speed_deg_per_sec', 120.0)))
+        _GRAB_DELTA_DEG = 100.0   # CH0: grab_ready[0]=110 → grab_hold[0]=10
+        # max_speed_deg_per_sec может быть скаляром или списком per-joint.
+        # Settle ограничивается самым медленным суставом, т.к. CH0 (100°)
+        # — самая длинная дельта; берём min() по списку. Клешня (CH3)
+        # обычно instant (9999°/с), но min отбросит её и оставит реалистичную
+        # скорость основания/суставов 1-2 (~45°/с).
+        _raw_speed = cfg('servos.arm.max_speed_deg_per_sec', 120.0)
+        if isinstance(_raw_speed, (list, tuple)) and _raw_speed:
+            _max_speed = max(1.0, min(float(v) for v in _raw_speed))
+        else:
+            _max_speed = max(1.0, float(_raw_speed))
         grab_settle_s = _GRAB_DELTA_DEG / _max_speed + 0.25
         if self._grab_t < grab_settle_s:
             return
