@@ -378,3 +378,27 @@ def test_cmd_cb_single_joint_invalid_index_no_crash(arm_node_factory):
     node._cmd_cb('arm/command', {'joint': 99, 'angle': 50.0})
     # Состояние не изменилось
     assert node._target_angles == [0.0, 120.0, 0.0, 0.0]
+
+
+def test_frozen_flag_not_mutated_by_single_joint_drag(arm_node_factory):
+    """Single-joint drag (slider) ставит новый target и двигает _current,
+    но НЕ снимает freeze: _servos[i].frozen остаётся True.
+
+    Гарантия для UI-сценария «двигать frozen сустав без потери HOLD»:
+    разморозка не происходит ни напрямую (никто не дёргает unfreeze()),
+    ни косвенно (_set_joint и _interpolate_tick не трогают .frozen).
+    """
+    node = arm_node_factory(max_speed=120.0)
+    node._mock_servos[0].frozen = True
+
+    # Slider commit: single-joint {joint:1, angle:50}
+    node._cmd_cb('arm/command', {'joint': 1, 'angle': 50.0})
+    for _ in range(30):                  # доедем до target (delta=50, step=2.4)
+        node._interpolate_tick()
+
+    assert node._target_angles[0] == 50.0
+    assert node._current_angles[0] == pytest.approx(50.0, abs=1e-6)
+    # ключевое: freeze не снят
+    assert node._mock_servos[0].frozen is True
+    # ServoDriver.unfreeze() не вызывался — никто не размораживал
+    node._mock_servos[0].unfreeze.assert_not_called()

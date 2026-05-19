@@ -176,6 +176,7 @@ class FSMNode(MqttNode):
             return
 
         if _P_HOME.search(text):
+            self.log_info('[HOME-DEBUG] _P_HOME matched text=%r, current_state=%s', text, self._state)
             self._transition(State.RETURNING)
             return
 
@@ -500,8 +501,10 @@ class FSMNode(MqttNode):
 
         Settle выводится из max_speed_deg_per_sec: самая длинная дельта при
         переходе grab_ready (110,100,180,0) → grab_hold (10,30,180,180) —
-        это CH0 (100°). settle = 100°/max_speed + 0.25с jitter.
-        При max_speed=120°/с это ~1.08с; при изменении конфига — пересчитается.
+        это CH0 (100°). settle = 100° / min(max_speeds) + 0.25с jitter.
+        При scalar 120°/с это ~1.08с; при текущем списке [45,45,9999,9999]
+        — ~2.47с (лимитирует медленный сустав). При изменении конфига
+        пересчитывается автоматически.
         """
         self._grab_t += 0.1
 
@@ -545,6 +548,7 @@ class FSMNode(MqttNode):
         self._transition(State.IDLE)
 
     def _do_return(self):
+        self.log_info('[HOME-DEBUG] _do_return tick: publishing path_recorder/command=replay + goal_pose, will _transition(PATH_REPLAY)')
         # Use path_recorder to replay path in reverse (same path home)
         self.publish('path_recorder/command', 'replay', qos=1)
         # Also publish goal_pose for Nav2 fallback (if laptop is connected)
