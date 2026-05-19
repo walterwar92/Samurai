@@ -431,15 +431,13 @@ class ArmNode(MqttNode):
         суставе отменяет предыдущий Timer и стартует новый. Это нужно
         FSM grab v2 — каждый новый цикл захвата перезапускает 20с timer.
 
-        Thread-safe: использует _freeze_timer_lock чтобы избежать race
-        с _auto_unfreeze (Timer-thread).
+        Thread-safe: callback closure binds the timer's own instance.
+        Late-firing callback compares slot-by-identity и skip'ает если
+        re-arm уже подменил timer (см. _auto_unfreeze).
         """
         if idx < 0 or idx >= self._num_joints:
             return
-        # Cancel previous timer ПОД lock'ом, чтобы _auto_unfreeze не мог
-        # параллельно клобберить slot. Сам cancel() безопасен — он только
-        # ставит флаг отмены; функция-callback может уже выполняться, но
-        # compare-and-clear в _auto_unfreeze отбросит её эффект.
+        # Cancel previous timer под lock'ом (atomic slot read+clear).
         with self._freeze_timer_lock:
             prev = self._freeze_timers[idx]
             self._freeze_timers[idx] = None
@@ -449,28 +447,42 @@ class ArmNode(MqttNode):
         self._servos[idx].freeze()
 
         if duration is not None and duration > 0:
-            t = threading.Timer(float(duration),
-                                self._auto_unfreeze, args=(idx,))
-            t.daemon = True
+            # Closure-bind: callback захватывает self timer instance.
+            # _auto_unfreeze сравнит его с тем что в slot'е сейчас — если
+            # re-arm уже подменил, late callback skip'ает unfreeze.
+            new_timer = None  # placeholder, переписываем ниже
+
+            def _cb():
+                self._auto_unfreeze(idx, expected=new_timer)
+
+            new_timer = threading.Timer(float(duration), _cb)
+            new_timer.daemon = True
             with self._freeze_timer_lock:
-                self._freeze_timers[idx] = t
-            t.start()
+                self._freeze_timers[idx] = new_timer
+            new_timer.start()
             self.log_info('Arm joint %d FROZEN at %.1f° (auto-unfreeze in %.1fs)',
                           idx + 1, self._target_angles[idx], duration)
         else:
             self.log_info('Arm joint %d FROZEN at %.1f°',
                           idx + 1, self._target_angles[idx])
 
-    def _auto_unfreeze(self, idx: int):
+    def _auto_unfreeze(self, idx: int, expected: threading.Timer | None = None):
         """Колбэк threading.Timer: разморозить сустав idx по истечении
-        duration. Использует compare-and-clear: если slot уже был очищен
-        re-arm'ом из _freeze_joint, callback не вызывает unfreeze
-        (новый timer активен — undoing его было бы багом).
+        duration.
+
+        expected: Timer instance, к которому привязан этот callback.
+        Если slot[idx] is not expected — значит re-arm подменил timer'у;
+        мы — stale callback и должны skip'нуть unfreeze (новый timer
+        активен; отменять его было бы багом).
+
+        Default expected=None используется только в тестах или для
+        ручных вызовов; production path всегда биндит через closure
+        в _freeze_joint.
         """
         with self._freeze_timer_lock:
-            # Если slot пустой (re-arm или unfreeze уже отработал) —
-            # skip spurious unfreeze.
-            if self._freeze_timers[idx] is None:
+            if self._freeze_timers[idx] is not expected:
+                # Stale callback (re-arm подменил timer) или slot пустой —
+                # skip spurious unfreeze.
                 return
             self._freeze_timers[idx] = None
         self._servos[idx].unfreeze()
