@@ -283,3 +283,76 @@ def test_init_does_not_overwrite_user_presets(arm_node_factory):
     assert node._presets.load_preset('arm', 'grab_ready') == [150.0, 95.0, 175.0, 5.0]
     # Отсутствующий — создаётся из дефолта
     assert node._presets.load_preset('arm', 'grab_hold') == [10.0, 30.0, 180.0, 180.0]
+
+
+def test_set_joint_allow_frozen_true_updates_target(arm_node_factory):
+    """_set_joint(idx, X, allow_frozen=True) обновляет target даже для frozen."""
+    node = arm_node_factory()
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 30.0
+
+    node._set_joint(0, 75.0, allow_frozen=True)
+
+    assert node._target_angles[0] == 75.0
+
+
+def test_set_joint_default_skips_frozen_target(arm_node_factory):
+    """_set_joint(idx, X) без allow_frozen НЕ обновляет target для frozen."""
+    node = arm_node_factory()
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 30.0
+
+    node._set_joint(0, 75.0)
+
+    assert node._target_angles[0] == 30.0   # не изменился
+
+
+def test_cmd_cb_single_joint_moves_frozen(arm_node_factory):
+    """arm/command {joint:1, angle:50} двигает frozen-сустав (target обновлён)."""
+    node = arm_node_factory()
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 0.0
+
+    node._cmd_cb('arm/command', {'joint': 1, 'angle': 50.0})
+
+    assert node._target_angles[0] == 50.0
+
+
+def test_cmd_cb_home_skips_frozen(arm_node_factory):
+    """home команда обновляет target только для unfrozen суставов."""
+    node = arm_node_factory()
+    # home_angles = [0, 120, 0, 0], текущие targets такие же после _unlock()
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 30.0   # frozen-сустав в нестандартной позе
+    node._target_angles[1] = 60.0   # unfrozen — должен уехать в home=120
+
+    node._cmd_cb('arm/command', {'command': 'home'})
+
+    assert node._target_angles[0] == 30.0   # frozen не изменился
+    assert node._target_angles[1] == 120.0  # unfrozen уехал в home
+
+
+def test_cmd_cb_load_preset_skips_frozen(arm_node_factory):
+    """load_preset обновляет target только для unfrozen суставов."""
+    node = arm_node_factory(presets_seed={'arm': {'foo': [10.0, 20.0, 30.0, 40.0]}})
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 100.0
+    node._target_angles[1] = 100.0
+
+    node._cmd_cb('arm/command', {'command': 'load_preset', 'name': 'foo'})
+
+    assert node._target_angles[0] == 100.0  # frozen не изменился
+    assert node._target_angles[1] == 20.0   # unfrozen загрузил из preset
+
+
+def test_cmd_cb_joints_array_skips_frozen(arm_node_factory):
+    """{joints:[...]} обновляет target только для unfrozen суставов."""
+    node = arm_node_factory()
+    node._mock_servos[0].frozen = True
+    node._target_angles[0] = 100.0
+    node._target_angles[1] = 100.0
+
+    node._cmd_cb('arm/command', {'joints': [10.0, 20.0, 30.0, 40.0]})
+
+    assert node._target_angles[0] == 100.0  # frozen не изменился
+    assert node._target_angles[1] == 20.0   # unfrozen загрузил

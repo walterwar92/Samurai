@@ -206,15 +206,22 @@ class ArmNode(MqttNode):
             'Claw (CH%d) auto-init at home=%.1f° (logical), %.1f° (physical)',
             self._channels[idx], home, phys)
 
-    def _set_joint(self, idx: int, angle: float):
+    def _set_joint(self, idx: int, angle: float, allow_frozen: bool = False):
         """Set joint TARGET angle (логический) с лимитами.
 
         Реальный PWM шлёт _interpolate_tick @ 50Гц, плавно шагая current
-        к target с max_speed_deg_per_sec. Если сустав frozen — target всё
-        равно обновляется (чтобы после unfreeze сразу поехать к нему).
+        к target с max_speed_deg_per_sec.
+
+        Если сустав frozen и allow_frozen=False — target НЕ обновляется
+        (mass-команды home/preset/joints-array не двигают замороженный
+        сустав, чтобы случайно не сорвать захват мяча после FSM grab).
+        Single-joint команды от UI слайдера передают allow_frozen=True —
+        пользователь явно целится в конкретный сустав, разрешаем.
         """
         if idx < 0 or idx >= self._num_joints:
             self.log_warn('Invalid joint index: %d', idx)
+            return
+        if not allow_frozen and self._servos[idx].frozen:
             return
         angle = max(self._min_angles[idx], min(self._max_angles[idx], angle))
         with self._state_lock:
@@ -367,11 +374,13 @@ class ArmNode(MqttNode):
         # --- Direct angle commands ---
 
         # Single joint: {"joint": 1, "angle": 90} (1-indexed)
+        # allow_frozen=True: single-joint команды от UI могут двигать
+        # frozen-сустав (новая позиция удерживается ServoDriver._freeze_refresh).
         if 'joint' in d and 'angle' in d:
             self._unlock_if_needed()
             idx = int(d['joint']) - 1
             angle = float(d['angle'])
-            self._set_joint(idx, angle)
+            self._set_joint(idx, angle, allow_frozen=True)
             self.log_info('Arm joint %d → %.1f°', idx + 1, self._target_angles[idx])
             return
 
