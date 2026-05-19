@@ -233,3 +233,46 @@ def test_robot_live_state_ws_no_last_no_replay(client):
             assert msg2['point']['ts'] == pytest.approx(2.0)
     finally:
         robot_live_state_broker.set_last(None)
+
+
+# ── _robot_live_state_loop integration ────────────────────────────────
+@pytest.mark.asyncio
+async def test_robot_live_state_loop_broadcasts_when_subscriber():
+    """Loop @ 10 Hz должен публиковать в broker когда есть подписчики."""
+    import asyncio
+    from compute_node.dashboard.app import _run_robot_live_state_tick
+    from compute_node.dashboard.routers.robot import robot_live_state_broker
+
+    s = DashboardState()
+    with s.lock:
+        s.sensors.imu = ImuData(
+            yaw=15.0, pitch=2.0, roll=0.0,
+            gyro=Vec3(), accel=Vec3(z=9.8), ekf=ImuYpr(yaw=15.0),
+        )
+        s.robot.mqtt_odom_ts = 1747574400.0
+
+    # Регистрируем подписчика — иначе tick пропустит работу.
+    q: asyncio.Queue[dict] = asyncio.Queue()
+    robot_live_state_broker.add(q)
+    try:
+        await _run_robot_live_state_tick(s)
+        frame = q.get_nowait()
+        assert frame['type'] == 'live_state'
+        assert frame['point']['pose']['x'] == pytest.approx(0.0)
+        assert frame['point']['imu']['ypr_deg'][0] == pytest.approx(15.0)
+    finally:
+        robot_live_state_broker.remove(q)
+        robot_live_state_broker.set_last(None)
+
+
+@pytest.mark.asyncio
+async def test_robot_live_state_loop_skips_when_no_subscribers():
+    """Без подписчиков — tick не должен дёргать broker.broadcast()."""
+    from unittest.mock import patch
+    from compute_node.dashboard.app import _run_robot_live_state_tick
+    from compute_node.dashboard.routers.robot import robot_live_state_broker
+    s = DashboardState()
+    robot_live_state_broker.set_last(None)
+    with patch.object(robot_live_state_broker, 'broadcast') as mock:
+        await _run_robot_live_state_tick(s)
+        mock.assert_not_called()

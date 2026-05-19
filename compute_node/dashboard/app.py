@@ -84,6 +84,28 @@ log = logging.getLogger(__name__)
 DEPRECATION_SUNSET = '2026-12-31'
 
 
+async def _run_robot_live_state_tick(_state) -> None:
+    """Один тик aggregator-loop'а. Вынесено на уровень модуля для
+    юнит-тестируемости.
+
+    Если нет подписчиков на /ws/robot/live_state — НЕ строим point и
+    не зовём broadcast (избавляемся от лишнего lock + сериализации).
+    """
+    from .routers.robot import (
+        build_live_state_point,
+        robot_live_state_broker,
+    )
+    if not robot_live_state_broker.has_subscribers():
+        return
+    try:
+        point = build_live_state_point(_state).model_dump()
+    except Exception as exc:
+        logging.getLogger('dashboard').exception(
+            'robot live_state aggregator failed: %s', exc)
+        return
+    robot_live_state_broker.broadcast({'type': 'live_state', 'point': point})
+
+
 def _maybe_init_sentry() -> None:
     """Wire up Sentry error reporting if SENTRY_DSN is set (#73).
 
@@ -608,6 +630,23 @@ def create_app(
     @app.on_event('startup')
     async def _start_push_loop():
         asyncio.create_task(_push_loop())
+
+    async def _robot_live_state_loop():
+        """10 Hz aggregator → /ws/robot/live_state.
+
+        Отдельный loop от _push_loop потому что:
+          - всегда тикает (нет dirty-skip);
+          - изоляция: если SocketIO-broadcast тормозит, WS-канал не страдает.
+        """
+        while True:
+            await asyncio.sleep(0.1)               # 10 Hz
+            await _run_robot_live_state_tick(state)
+
+    @app.on_event('startup')
+    async def _start_robot_live_state_loop():
+        from .routers.robot import robot_live_state_broker
+        robot_live_state_broker.attach_loop(asyncio.get_running_loop())
+        asyncio.create_task(_robot_live_state_loop())
 
     return socketio.ASGIApp(sio, other_asgi_app=app)
 
