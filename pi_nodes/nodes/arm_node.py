@@ -116,6 +116,9 @@ class ArmNode(MqttNode):
         # Без lock'а freeze в момент tick'а может оставить
         # _current_angles[i] на 2.4° впереди реального PWM до unfreeze.
         self._state_lock = threading.Lock()
+        # Per-joint таймеры auto-unfreeze для freeze c duration. None если
+        # таймера нет. См. _freeze_joint / _auto_unfreeze.
+        self._freeze_timers: list[threading.Timer | None] = [None] * self._num_joints
         for i in range(self._num_joints):
             init_phys = self._to_physical(i, float(self._home_angles[i]))
             s = ServoDriver(channel=self._channels[i],
@@ -410,6 +413,43 @@ class ArmNode(MqttNode):
         """Unlock arm if locked."""
         if self._locked:
             self._unlock()
+
+    def _freeze_joint(self, idx: int, duration: float | None = None):
+        """Заморозить сустав idx. Если duration > 0 — schedule auto-unfreeze.
+
+        Идемпотентно по таймерам: повторный freeze с duration на том же
+        суставе отменяет предыдущий Timer и стартует новый. Это нужно
+        FSM grab v2 — каждый новый цикл захвата перезапускает 20с timer.
+        """
+        if idx < 0 or idx >= self._num_joints:
+            return
+        # Cancel previous timer (если был)
+        if self._freeze_timers[idx] is not None:
+            self._freeze_timers[idx].cancel()
+            self._freeze_timers[idx] = None
+
+        self._servos[idx].freeze()
+
+        if duration is not None and duration > 0:
+            t = threading.Timer(float(duration),
+                                self._auto_unfreeze, args=(idx,))
+            t.daemon = True
+            t.start()
+            self._freeze_timers[idx] = t
+            self.log_info('Arm joint %d FROZEN at %.1f° (auto-unfreeze in %.1fs)',
+                          idx + 1, self._target_angles[idx], duration)
+        else:
+            self.log_info('Arm joint %d FROZEN at %.1f°',
+                          idx + 1, self._target_angles[idx])
+
+    def _auto_unfreeze(self, idx: int):
+        """Колбэк threading.Timer: разморозить сустав idx по истечении
+        duration. Очищает _freeze_timers[idx] чтобы commands могли
+        отличать «таймер ещё активен» от «таймер отработал».
+        """
+        self._freeze_timers[idx] = None
+        self._servos[idx].unfreeze()
+        self.log_info('Arm joint %d AUTO-UNFROZEN (timer expired)', idx + 1)
 
     def _freeze_all_except_claw(self):
         """Freeze всех суставов руки, КРОМЕ клешни (последний канал).

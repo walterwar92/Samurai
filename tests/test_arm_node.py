@@ -588,3 +588,70 @@ def test_fsm_grab_sequence_end_to_end_with_default_frozen(arm_node_factory):
     for i in range(3):
         node._mock_servos[i].freeze.assert_called_once()
     node._mock_servos[3].freeze.assert_not_called()
+
+
+def test_freeze_joint_with_duration_starts_timer(arm_node_factory):
+    """_freeze_joint(idx, duration) вызывает _servos[idx].freeze() и
+    создаёт активный threading.Timer в _freeze_timers[idx].
+    """
+    import threading
+    node = arm_node_factory()
+    assert node._freeze_timers == [None, None, None, None]
+
+    node._freeze_joint(3, duration=10.0)
+
+    node._mock_servos[3].freeze.assert_called_once()
+    assert node._freeze_timers[3] is not None
+    assert isinstance(node._freeze_timers[3], threading.Timer)
+    # Cleanup: cancel timer (real Timer, иначе процесс ждёт 10с)
+    node._freeze_timers[3].cancel()
+
+
+def test_freeze_joint_without_duration_no_timer(arm_node_factory):
+    """_freeze_joint(idx) без duration вызывает freeze, но не создаёт таймер."""
+    node = arm_node_factory()
+    node._freeze_joint(3, duration=None)
+
+    node._mock_servos[3].freeze.assert_called_once()
+    assert node._freeze_timers[3] is None
+
+
+def test_freeze_joint_duration_zero_no_timer(arm_node_factory):
+    """duration=0 — не создаём таймер (degenerate case)."""
+    node = arm_node_factory()
+    node._freeze_joint(3, duration=0.0)
+
+    node._mock_servos[3].freeze.assert_called_once()
+    assert node._freeze_timers[3] is None
+
+
+def test_freeze_joint_restarts_timer(arm_node_factory):
+    """Повторный freeze с duration отменяет предыдущий таймер и стартует новый."""
+    import threading
+    node = arm_node_factory()
+    node._freeze_joint(3, duration=10.0)
+    first_timer = node._freeze_timers[3]
+    assert first_timer.is_alive()
+
+    node._freeze_joint(3, duration=10.0)
+    second_timer = node._freeze_timers[3]
+
+    assert first_timer is not second_timer
+    assert not first_timer.is_alive()    # cancelled
+    assert isinstance(second_timer, threading.Timer)
+    second_timer.cancel()
+
+
+def test_freeze_joint_timer_calls_auto_unfreeze(arm_node_factory):
+    """После duration секунд таймер вызывает _servos[idx].unfreeze().
+
+    Используем маленький duration (50ms) + sleep чтобы реально дождаться.
+    """
+    import time
+    node = arm_node_factory()
+    node._freeze_joint(3, duration=0.05)
+
+    time.sleep(0.15)    # запас на jitter timer-thread
+
+    node._mock_servos[3].unfreeze.assert_called_once()
+    assert node._freeze_timers[3] is None    # очищен в _auto_unfreeze
