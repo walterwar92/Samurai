@@ -30,7 +30,7 @@ jobs:
           python -m pip install --upgrade pip
           # Only deps the pure-Python unit tests actually need. Avoids
           # RPi.GPIO / picamera2 / smbus2 etc. which are arm64 / Pi-only.
-          pip install pytest pytest-cov orjson python-statemachine paho-mqtt pydantic
+          pip install pytest pytest-cov pytest-asyncio orjson python-statemachine paho-mqtt pydantic
       - name: Run pure-Python unit tests
         run: |
           pytest \
@@ -39,6 +39,7 @@ jobs:
             tests/test_drive_state.py \
             tests/test_ekf_imu.py \
             tests/test_velocity_ekf.py \
+            tests/test_robot_live_state.py \
             tests/test_schemas.py \
             tests/test_pathfinding.py \
             tests/test_sim_arena.py \
