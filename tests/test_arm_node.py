@@ -461,3 +461,15 @@ def test_cmd_cb_unfreeze_all_still_covers_claw(arm_node_factory):
 
     for i in range(4):
         node._mock_servos[i].unfreeze.assert_called_once()
+
+
+def test_unlock_auto_freezes_ch0_ch1_ch2(arm_node_factory):
+    """`_unlock()` в __init__ морозит CH0/1/2 (default frozen-state).
+    Клешня (CH3) остаётся свободной — общая freeze-семантика
+    «всё кроме клешни», уже зашитая в `_freeze_all_except_claw`.
+    """
+    node = arm_node_factory(reset_after_init=False)
+
+    for i in range(3):
+        node._mock_servos[i].freeze.assert_called_once()
+    node._mock_servos[3].freeze.assert_not_called()

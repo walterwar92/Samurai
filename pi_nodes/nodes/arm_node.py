@@ -176,7 +176,12 @@ class ArmNode(MqttNode):
         return float(logical)
 
     def _unlock(self):
-        """Unlock arm and initialize servos to home angles."""
+        """Unlock arm and initialize servos to home angles.
+
+        На выходе CH0/1/2 заморожены (default-state «руки висят»),
+        CH3 свободна. Пользователь может разморозить через UI; следующий
+        home/load_preset/{joints:[…]} снова их заморозит.
+        """
         self._locked = False
         if not self._servo_initialized:
             with self._state_lock:
@@ -185,6 +190,7 @@ class ArmNode(MqttNode):
                     self._servos[i].set_angle(phys, force=True)
                     self._target_angles[i] = self._current_angles[i] = float(self._home_angles[i])
             self._servo_initialized = True
+            self._freeze_all_except_claw()
 
     def _init_claw_only(self):
         """Force-init только клешня в home даже когда arm locked.
