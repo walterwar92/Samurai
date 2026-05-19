@@ -110,3 +110,37 @@ def test_build_live_state_point_ts_fallback_when_no_odom():
     # mqtt_odom_ts по умолчанию 0.0
     point = build_live_state_point(s)
     assert point.ts > 1_700_000_000  # ≥ 2023-11-15, т.е. time.time()
+
+
+# ── _RobotLiveStateBroker ──────────────────────────────────────────────
+def test_broker_add_remove_subscriber():
+    from compute_node.dashboard.routers.robot import _RobotLiveStateBroker
+    import asyncio
+    b = _RobotLiveStateBroker()
+    q1: asyncio.Queue = asyncio.Queue()
+    q2: asyncio.Queue = asyncio.Queue()
+    b.add(q1)
+    b.add(q2)
+    b.remove(q1)
+    # broadcast должен попасть только в q2
+    b.broadcast({'type': 'live_state', 'point': {'ts': 1.0}})
+    assert q2.qsize() == 1
+    assert q1.qsize() == 0
+
+
+def test_broker_set_get_last():
+    from compute_node.dashboard.routers.robot import _RobotLiveStateBroker
+    b = _RobotLiveStateBroker()
+    assert b.get_last() is None
+    frame = {'type': 'live_state', 'point': {'ts': 2.0}}
+    b.set_last(frame)
+    assert b.get_last() == frame
+
+
+def test_broker_broadcast_persists_last():
+    """broadcast() должен также обновлять _last для replay новых клиентов."""
+    from compute_node.dashboard.routers.robot import _RobotLiveStateBroker
+    b = _RobotLiveStateBroker()
+    frame = {'type': 'live_state', 'point': {'ts': 3.0}}
+    b.broadcast(frame)
+    assert b.get_last() == frame

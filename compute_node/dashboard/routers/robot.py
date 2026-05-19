@@ -189,12 +189,83 @@ async def emergency_stop(state: StateDep, mqtt: MQTTDep) -> CommandAck:
 # Постоянный канал текущего состояния робота для DashboardPage.
 # Контракт: docs/superpowers/specs/2026-05-19-robot-live-state-vector-design.md §2.
 import math as _math
+import asyncio
+from threading import Lock as _Lock
+from typing import Optional
 from ..schemas.robot_live_state import (
     RobotLiveStatePoint,
     RobotLiveStatePose,
     RobotLiveStateVel,
     RobotLiveStateImu,
 )
+
+
+def _safe_put_nowait(queue: asyncio.Queue, frame: dict) -> None:
+    """Не падать при переполнении очереди — лучше потерять frame чем убить WS."""
+    try:
+        queue.put_nowait(frame)
+    except asyncio.QueueFull:
+        pass
+
+
+class _RobotLiveStateBroker:
+    """Fan-out + буфер последнего фрейма для replay новым подписчикам.
+
+    Зеркало _MpsLiveStateBroker (routers/mps.py:571). Отделено от MPS,
+    т.к. это другой канал данных (текущее состояние робота, а не МПС).
+    """
+
+    def __init__(self) -> None:
+        self._subs: list[asyncio.Queue] = []
+        self._lock = _Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._last: Optional[dict] = None
+
+    def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def ensure_loop(self) -> None:
+        """Idempotent: запомнить running loop, если ещё не сохранён."""
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+
+    def add(self, queue: asyncio.Queue) -> None:
+        with self._lock:
+            self._subs.append(queue)
+
+    def remove(self, queue: asyncio.Queue) -> None:
+        with self._lock:
+            self._subs = [q for q in self._subs if q is not queue]
+
+    def has_subscribers(self) -> bool:
+        """True если хотя бы один WS-клиент подключён (для skip в idle loop)."""
+        with self._lock:
+            return bool(self._subs)
+
+    def set_last(self, frame: Optional[dict]) -> None:
+        with self._lock:
+            self._last = frame
+
+    def get_last(self) -> Optional[dict]:
+        with self._lock:
+            return self._last
+
+    def broadcast(self, frame: dict) -> None:
+        """Called from aggregator-task or test. Persists last + fan-out."""
+        loop = self._loop
+        with self._lock:
+            self._last = frame
+            targets = list(self._subs)
+        if not targets:
+            return
+        for q in targets:
+            if loop is None or loop.is_closed():
+                _safe_put_nowait(q, frame)
+            else:
+                loop.call_soon_threadsafe(_safe_put_nowait, q, frame)
+
+
+robot_live_state_broker = _RobotLiveStateBroker()
 
 
 def build_live_state_point(state) -> RobotLiveStatePoint:
