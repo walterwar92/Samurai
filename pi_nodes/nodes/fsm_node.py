@@ -534,11 +534,10 @@ class FSMNode(MqttNode):
             return
 
         # Phase 2: wait 1s after opening claw.
-        # Epsilon (1e-6) защищает от накопительной погрешности `+= 0.1`:
-        # после 11 тиков CPython даёт _grab_t = 1.0999999999999999 — без
-        # допуска фаза 3 пропустила бы целый тик (вошла бы только на 12-м,
-        # когда _grab_t = 1.2). Все тесты v2 синхронизированы с этим
-        # допуском (tick 11 = Phase 3 fires).
+        # Epsilon защищает от float accumulation: _grab_t += 0.1 × 11 раз
+        # даёт 1.0999999999999999 в CPython (не 1.1 exact). Без эпсилона
+        # Phase 3 проскочила бы tick 11 и сработала на tick 12 (≈100ms
+        # позже). 1µs допуск даёт детерминированный firing на nominal 1.1с.
         if self._grab_t + 1e-6 < 1.1:
             return
 
@@ -552,9 +551,12 @@ class FSMNode(MqttNode):
             return
 
         # Phase 4: wait for grab_hold settle + 1s
-        # max_speed_deg_per_sec может быть скаляром или списком per-joint;
-        # min() выбирает самый медленный CH0/1/2 (клешня обычно 9999°/с
-        # — instant — но среди CH0/1/2 берётся реальная скорость).
+        # max_speed_deg_per_sec может быть скаляром или списком per-joint.
+        # min() итерирует ВСЕ элементы списка (не только CH0/1/2). Для
+        # текущего default config [45, 45, 9999, 9999] это даёт 45°/с —
+        # самый медленный сустав определяет settle. Если пользователь
+        # перестановит порядок (например клешня медленнее arm), min()
+        # всё равно возьмёт реально медленный.
         _GRAB_DELTA_DEG = 100.0
         _raw_speed = cfg('servos.arm.max_speed_deg_per_sec', 120.0)
         if isinstance(_raw_speed, (list, tuple)) and _raw_speed:
@@ -563,7 +565,7 @@ class FSMNode(MqttNode):
             _max_speed = max(1.0, float(_raw_speed))
         grab_settle_s = _GRAB_DELTA_DEG / _max_speed
         phase_5_t = 1.1 + grab_settle_s + 1.0
-        if self._grab_t + 1e-6 < phase_5_t:
+        if self._grab_t < phase_5_t:
             return
 
         # Phase 5: return to grab_return pose + transition
