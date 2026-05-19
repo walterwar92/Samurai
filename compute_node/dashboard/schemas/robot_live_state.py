@@ -40,7 +40,12 @@ class RobotLiveStateImu(BaseModel):
 
 class RobotLiveStatePoint(BaseModel):
     """Полный snapshot состояния робота для UI-панели."""
-    ts: float = Field(description='Pi-clock unix-секунды')
+    ts: float = Field(
+        description='compute-node clock unix-секунды (state.robot.mqtt_odom_ts '
+                    'или time.time() при холодном старте). Используется на '
+                    'фронте для расчёта stale-возраста, абсолютная точность '
+                    'не требуется.',
+    )
     pose: RobotLiveStatePose
     vel: RobotLiveStateVel
     imu: RobotLiveStateImu

@@ -556,6 +556,26 @@ def create_app(
             app.mount('/models', StaticFiles(directory=models_dir), name='models')
         app.mount('/static', StaticFiles(directory=static_dir), name='static')
 
+    # ── /ws/robot/live_state aggregator ──────────────────────────────
+    # Регистрируем ДО early-return для enable_socketio=False, чтобы
+    # run_standalone и любые embedding-сценарии тоже получали поток.
+    async def _robot_live_state_loop():
+        """10 Hz aggregator → /ws/robot/live_state.
+
+        Отдельный loop от _push_loop потому что:
+          - всегда тикает (нет dirty-skip);
+          - изоляция: если SocketIO-broadcast тормозит, WS-канал не страдает.
+        """
+        while True:
+            await asyncio.sleep(0.1)               # 10 Hz
+            await _run_robot_live_state_tick(state)
+
+    @app.on_event('startup')
+    async def _start_robot_live_state_loop():
+        from .routers.robot import robot_live_state_broker
+        robot_live_state_broker.attach_loop(asyncio.get_running_loop())
+        asyncio.create_task(_robot_live_state_loop())
+
     # ── Socket.IO + state push loop (legacy фронт) ────────────────────
     if not enable_socketio:
         return app
@@ -629,23 +649,6 @@ def create_app(
     @app.on_event('startup')
     async def _start_push_loop():
         asyncio.create_task(_push_loop())
-
-    async def _robot_live_state_loop():
-        """10 Hz aggregator → /ws/robot/live_state.
-
-        Отдельный loop от _push_loop потому что:
-          - всегда тикает (нет dirty-skip);
-          - изоляция: если SocketIO-broadcast тормозит, WS-канал не страдает.
-        """
-        while True:
-            await asyncio.sleep(0.1)               # 10 Hz
-            await _run_robot_live_state_tick(state)
-
-    @app.on_event('startup')
-    async def _start_robot_live_state_loop():
-        from .routers.robot import robot_live_state_broker
-        robot_live_state_broker.attach_loop(asyncio.get_running_loop())
-        asyncio.create_task(_robot_live_state_loop())
 
     return socketio.ASGIApp(sio, other_asgi_app=app)
 
