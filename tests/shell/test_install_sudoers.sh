@@ -28,10 +28,12 @@ assert_eq "true" "$([[ -f "$sudoers_file" ]] && echo true || echo false)" "file 
 content=$(cat "$sudoers_file")
 assert_contains "$content" "myuser ALL=(root) NOPASSWD" "user prefix"
 assert_contains "$content" "/bin/systemctl restart samurai-robot" "restart cmd"
+assert_contains "$content" "/bin/systemctl stop samurai-robot" "stop cmd"
 assert_contains "$content" "/bin/systemctl is-active samurai-robot" "is-active cmd"
 assert_contains "$content" "/bin/systemctl status samurai-robot" "status cmd"
 assert_contains "$content" "/bin/journalctl -u samurai-robot" "journalctl cmd"
 assert_contains "$content" "/usr/bin/systemctl restart samurai-robot" "restart cmd (/usr/bin)"
+assert_contains "$content" "/usr/bin/systemctl stop samurai-robot" "stop cmd (/usr/bin)"
 assert_contains "$content" "/usr/bin/systemctl is-active samurai-robot" "is-active cmd (/usr/bin)"
 assert_contains "$content" "/usr/bin/systemctl status samurai-robot" "status cmd (/usr/bin)"
 assert_contains "$content" "/usr/bin/journalctl -u samurai-robot" "journalctl cmd (/usr/bin)"

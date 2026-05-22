@@ -8,6 +8,7 @@ drives the robot back along the same path in reverse order.
 Subscribes:
     samurai/{robot_id}/odom                 — {x, y, theta, vx, vz, ...}
     samurai/{robot_id}/path_recorder/command — "record" / "stop" / "replay" / "clear"
+    samurai/{robot_id}/reset_position       — синхронизирует home с новым (0,0,0)
 Publishes:
     samurai/{robot_id}/cmd_vel              — drive commands during replay
     samurai/{robot_id}/path_recorder/status — {state, waypoints_count, ...}
@@ -101,6 +102,7 @@ class PathRecorderNode(MqttNode):
         self.subscribe('path_recorder/command', self._command_cb, qos=1)
         self.subscribe('range', self._range_cb)
         self.subscribe('obstacle_avoidance/enable', self._obstacle_avoidance_cb)
+        self.subscribe('reset_position', self._reset_position_cb, qos=1)
 
         # Control loop for replay
         self.create_timer(1.0 / CONTROL_HZ, self._control_loop)
@@ -126,6 +128,35 @@ class PathRecorderNode(MqttNode):
         self._obstacle_avoidance = cmd in ('on', 'true', '1', 'enable')
         self.log_info('Obstacle avoidance: %s', 'ON' if self._obstacle_avoidance else 'OFF')
 
+    def _reset_position_cb(self, topic, data):
+        """Sync internal home with motor_node's reset_position.
+
+        После reset_position у motor_node новая (0,0,0) — это физическое
+        место робота сейчас. Если оставить старые waypoint'ы — replay
+        («Домой») поедет к координатам прежней системы, которые в новой
+        ничего не значат, и робот укатит в случайную сторону.
+
+        Жёстко перепривязываем home: обнуляем внутреннюю позу, чистим
+        путь, останавливаем replay (если шёл) и стартуем recording так,
+        чтобы первая точка path = новый (0,0,0).
+        """
+        # Force-sync internal pose до того как придёт следующий odom (0,0,0):
+        # _start_recording ниже append'ит current (x,y,theta) как home,
+        # поэтому stale-значения тут привели бы к waypoint'у в старой раме.
+        self._x = 0.0
+        self._y = 0.0
+        self._theta = 0.0
+        self._pose_valid = True
+
+        # Bug0-state ссылается на _circumvent_start_{x,y,theta} в старой
+        # раме — после reset эти якоря невалидны.
+        self._circumvent_state = 'none'
+        self._circumvent_attempts = 0
+        self._replay_index = 0
+
+        self._start_recording()
+        self.log_info('reset_position — home re-anchored at (0,0,0), path cleared')
+
     def _odom_cb(self, topic, data):
         if not isinstance(data, dict):
             return
@@ -149,6 +180,8 @@ class PathRecorderNode(MqttNode):
             cmd = data.get('command', '').lower().strip()
         else:
             cmd = str(data).lower().strip()
+        self.log_info('[HOME-DEBUG] _command_cb: cmd=%r state=%s waypoints=%d pose_valid=%s',
+                      cmd, self._state, len(self._path), self._pose_valid)
 
         if cmd in ('record', 'start'):
             name = data.get('name', '') if isinstance(data, dict) else ''
@@ -176,6 +209,8 @@ class PathRecorderNode(MqttNode):
     def _start_recording(self):
         if self._state == 'replaying':
             self._stop_driving()
+        if self._path:
+            self.log_info('[HOME-DEBUG] _start_recording WIPES %d existing waypoints', len(self._path))
         self._state = 'recording'
         self._path = []
         if self._pose_valid:
@@ -203,8 +238,11 @@ class PathRecorderNode(MqttNode):
 
     # ── Replay (reverse path following) ────────────────────────
     def _start_replay(self):
+        self.log_info('[HOME-DEBUG] _start_replay called: waypoints=%d, pose_valid=%s, current_state=%s, x=%.3f y=%.3f theta=%.3f, range_m=%.3f',
+                      len(self._path), self._pose_valid, self._state,
+                      self._x, self._y, self._theta, self._range_m)
         if not self._path:
-            self.log_warn('No path recorded — cannot replay')
+            self.log_warn('[HOME-DEBUG] No path recorded — cannot replay (silently no-op until path is recorded)')
             return
         if self._state == 'recording':
             # Add final waypoint
@@ -219,8 +257,8 @@ class PathRecorderNode(MqttNode):
         self._circumvent_attempts = 0
         # Reverse the path for return-home
         self._replay_index = len(self._path) - 1
-        self.log_info('Path replay started (%d waypoints, reversed, obstacle_avoidance=ON)',
-                      len(self._path))
+        self.log_info('[HOME-DEBUG] Path replay started (%d waypoints, replay_index=%d, obstacle_avoidance=ON, range_m=%.3f)',
+                      len(self._path), self._replay_index, self._range_m)
 
     def _control_loop(self):
         if self._state == 'aligning':

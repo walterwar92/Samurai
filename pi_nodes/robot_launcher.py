@@ -10,6 +10,8 @@ Usage:
 """
 
 import argparse
+import ctypes
+import ctypes.util
 import importlib
 import logging
 import multiprocessing
@@ -17,6 +19,25 @@ import os
 import signal
 import sys
 import time
+
+
+def _set_pdeathsig_linux(sig: int = signal.SIGTERM) -> None:
+    """Linux PR_SET_PDEATHSIG: получить sig когда умрёт parent.
+
+    Без этого при SIGKILL launcher'а (stop.sh после таймаута, OOM, kill -9)
+    дочерние multiprocessing.Process становятся сиротами с PPID=1 и
+    продолжают крутить MQTT/I2C. Это держит занятыми bus/PCA9685 и при
+    рестарте samurai-robot.service ноды конфликтуют со старыми.
+
+    No-op на не-Linux (Windows тесты, macOS dev).
+    """
+    PR_SET_PDEATHSIG = 1
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library('c') or 'libc.so.6',
+                           use_errno=True)
+        libc.prctl(PR_SET_PDEATHSIG, sig, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
@@ -95,6 +116,8 @@ DEFAULT_NODES = [
 def _run_node(class_path: str, broker: str, port: int, robot_id: str,
               mqtt_user=None, mqtt_pwd=None):
     """Entry point for each child process."""
+    # Получить SIGTERM если launcher умрёт (защита от сирот при SIGKILL parent)
+    _set_pdeathsig_linux(signal.SIGTERM)
     module_path, class_name = class_path.rsplit('.', 1)
     module = importlib.import_module(module_path)
     node_class = getattr(module, class_name)
@@ -158,17 +181,29 @@ def main():
         log.info('  [+] %s (pid=%d)', name, p.pid)
         time.sleep(0.3)  # stagger: avoid I2C contention + MQTT connection storm
 
-    # Graceful shutdown on SIGINT/SIGTERM
+    # Graceful shutdown on SIGINT/SIGTERM.
+    # Параллельный: SIGTERM всем сразу → общий дедлайн ~4с → SIGKILL остатки.
+    # Раньше был seq. p.join(timeout=5.0) для каждой ноды → в худшем случае
+    # 14×5=70с. Stop.sh ждал 5с и слал SIGKILL родителю → дети-сироты.
+    SHUTDOWN_TIMEOUT = 4.0
+
     def _shutdown(signum, frame):
         log.info('Shutdown signal — stopping all nodes...')
         for name, p in processes:
             if p.is_alive():
                 p.terminate()
+        deadline = time.monotonic() + SHUTDOWN_TIMEOUT
         for name, p in processes:
-            p.join(timeout=5.0)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            p.join(timeout=remaining)
+        for name, p in processes:
             if p.is_alive():
                 log.warning('Force killing %s', name)
                 p.kill()
+        for name, p in processes:
+            p.join(timeout=1.0)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)

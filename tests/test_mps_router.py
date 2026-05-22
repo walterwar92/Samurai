@@ -170,6 +170,29 @@ def test_validate_canonical_plant_marginal_not_unstable(client, matrices_payload
     assert 'неустойчива' not in joined
 
 
+def test_validate_mpc_not_converged_emits_specific_warning(client, matrices_payload):
+    """Регрессия: при неуправляемой паре (A, B) — B=0 — MPC падает, и
+    closed_loop_eigenvalues возвращает [nan]×N. Раньше API выдавал
+    misleading-warning 'Замкнутая система НЕ устойчива' (сравнение abs(nan)<1
+    всегда False). Теперь должен:
+      • очистить eigenvalues_closed (frontend показывает «нет данных»);
+      • выдать конкретный warning «MPC не сошёлся — увеличьте R/Q»;
+      • НЕ выдавать misleading-warning «Замкнутая система НЕ устойчива».
+    """
+    payload = {**matrices_payload, 'B': [[0.0, 0.0] for _ in range(5)]}
+    r = client.post('/api/v1/mps/validate', json=payload)
+    assert r.status_code == 200
+    body = r.json()
+    # Closed-loop eigenvalues должны быть очищены (а не [{re:null, im:0}]×5).
+    assert body['eigenvalues_closed'] == []
+    assert body['is_closed_loop_stable'] is False
+    joined = ' '.join(body['warnings'])
+    assert 'MPC не сошёлся' in joined
+    assert 'увеличить' in joined and ('R' in joined or 'Q' in joined)
+    # Misleading-warning про неустойчивость не должен сработать в этом сценарии.
+    assert 'Замкнутая система НЕ устойчива' not in joined
+
+
 # ── /scenario/run (sim) ────────────────────────────────────────────────
 def test_scenario_run_sim_returns_result(client):
     r = client.post('/api/v1/mps/scenario/run', json={

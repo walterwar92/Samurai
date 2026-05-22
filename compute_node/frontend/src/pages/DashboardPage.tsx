@@ -20,6 +20,7 @@ import { GamepadController } from '@/components/controls/GamepadController'
 import { PathRecorderPanel } from '@/components/controls/PathRecorderPanel'
 import { ActuatorToggles } from '@/components/actuators/ActuatorToggles'
 import { LedPanel } from '@/components/controls/LedPanel'
+import { DetectionTogglePanel } from '@/components/controls/DetectionTogglePanel'
 import { SensorCharts } from '@/components/charts/SensorCharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -172,6 +173,12 @@ export function DashboardPage() {
 
               {/* ── LED ── */}
               <LedPanel />
+
+              {/* ── Детекция и обход ── */}
+              <DetectionTogglePanel
+                detectionEnabled={state?.detection_enabled ?? false}
+                obstacleAvoidanceEnabled={state?.obstacle_avoidance_enabled ?? false}
+              />
 
               {/* ── Обнаружение ── */}
               <DetectionBanner detection={state?.detection ?? null} />

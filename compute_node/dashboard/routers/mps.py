@@ -23,6 +23,7 @@ Endpoints (см. api.md §3):
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -229,6 +230,22 @@ async def validate(
         warnings.append(f'eigenvalue compute failed: {exc}')
         eig_open, eig_closed = [], []
 
+    # MPC failure mode: closed_loop_eigenvalues возвращает [complex('nan')] × N
+    # когда MPCController падает (пара (A, B) неуправляема, Riccati DARE
+    # вырожден из-за слишком малых R/Q и т.п.). Без этой проверки ниже
+    # сработает sравнение `abs(nan) < 1` (всегда False) → is_closed_stable=False
+    # → выдаётся misleading-warning «Замкнутая система НЕ устойчива».
+    mpc_failed = bool(eig_closed) and not all(
+        math.isfinite(z.real) and math.isfinite(z.imag) for z in eig_closed
+    )
+    plant_non_finite = bool(eig_open) and not all(
+        math.isfinite(z.real) and math.isfinite(z.imag) for z in eig_open
+    )
+    if mpc_failed:
+        eig_closed = []
+    if plant_non_finite:
+        eig_open = []
+
     _STAB_TOL = 1e-6
     is_plant_stable = bool(eig_open) and all(abs(z) < 1.0 - _STAB_TOL for z in eig_open)
     is_closed_stable = bool(eig_closed) and all(
@@ -244,14 +261,24 @@ async def validate(
         warnings.append(f'step response failed: {exc}')
         step_resp = []
 
-    if plant_has_unstable:
+    if plant_non_finite:
+        warnings.append(
+            'Собственные значения объекта не вычислены — '
+            'матрицы A/B вырождены (NaN/Inf после ZOH-дискретизации)'
+        )
+    elif plant_has_unstable:
         warnings.append('Открытая система неустойчива — есть |λ(Ad)| > 1')
     elif not is_plant_stable:
         warnings.append(
             'Открытая система маргинально устойчива: полюса-интеграторы '
             'на |λ|=1 (s, θ, e_int) — норма для канонической модели'
         )
-    if not is_closed_stable:
+    if mpc_failed:
+        warnings.append(
+            'MPC не сошёлся — попробуйте увеличить элементы R или Q '
+            '(пара (A, B) может быть неуправляема, или Riccati плохо обусловлен)'
+        )
+    elif not is_closed_stable:
         warnings.append('Замкнутая система НЕ устойчива (|λ(Ad−Bd·K)| ≥ 1)')
 
     return MpsValidateResult(

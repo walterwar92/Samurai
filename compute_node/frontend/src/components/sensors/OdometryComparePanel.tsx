@@ -127,7 +127,7 @@ export const OdometryComparePanel = memo(function OdometryComparePanel({
         )}
 
         {/* Per-source readings */}
-        <div className="grid grid-cols-3 gap-2 text-[11px] font-mono">
+        <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2 text-[11px] font-mono">
           <SourceCol label="WHEEL" x={xW} y={yW} accent="text-amber-300" />
           <SourceCol label="IMU" x={xI} y={yI} accent="text-cyan-300" />
           <SourceCol label="FUSED" x={xF} y={yF} accent="text-emerald-300" />

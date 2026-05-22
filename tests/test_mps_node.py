@@ -432,6 +432,86 @@ def test_tick_heading_is_scenario_relative(mps_node):
     )
 
 
+def test_tick_unwraps_theta_across_pi_boundary(mps_node):
+    """θ_meas из odom приходит обёрнутым в [−π, π); при пересечении ±π
+    x[_THETA], отдаваемый MPC, обязан остаться непрерывным.
+
+    Регрессия (diagnostics 2026-05-18 192604): сценарий target_heading≈π,
+    робот доехал до 1 м и крутится по часовой. На стыке t=11.26→11.28
+    θ_meas прыгнул +3.08 → −3.02 (−2π за тик). MPC увидел dx[_THETA]≈−6.1,
+    Q[2]=80 → u[1] мгновенно ушёл с −0.65 в +2.0 (насыщение), и робот
+    вместо доезда до угла стал крутиться вечно (timeout_settle).
+
+    После фикса unwrap-аккумулятор накапливает signed-shortest delta —
+    x[_THETA] монотонно растёт через π без скачка.
+    """
+    # Старт сценария: робот смотрит на 3.0 рад (≈ +172°). Сразу после
+    # старта IMU обернётся через +π в отрицательную полуплоскость.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 3.0, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-pi-cross',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot',
+                    'target_heading': math.pi},
+    })
+    assert mps_node.is_running
+
+    # Тик 1: робот всё ещё на 3.0 → relative-θ ≈ 0.
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 3.0, 'vz': 0.0})
+    mps_node._published.clear()
+    mps_node._tick()
+    p1 = next(p[1] for p in mps_node._published if p[0] == 'mps/telemetry')
+    theta_t1 = p1['point']['x'][2]
+    assert abs(theta_t1) < 1e-6, f'tick 1 θ_rel ≈ 0, got {theta_t1}'
+
+    # Тик 2: робот повернулся на +0.2 рад → пересёк π. IMU теперь
+    # сообщает 3.0 + 0.2 − 2π ≈ −3.0832 (обёртка).
+    wrapped = 3.0 + 0.2 - 2.0 * math.pi
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': wrapped, 'vz': 0.0})
+    mps_node._tick()
+    p2 = [p[1] for p in mps_node._published if p[0] == 'mps/telemetry'][-1]
+    theta_t2 = p2['point']['x'][2]
+    # Должно быть ≈ +0.2 (непрерывный unwrap), НЕ ≈ −6.08 (сырая обёртка).
+    assert abs(theta_t2 - 0.2) < 1e-6, (
+        f'pi-crossing tick θ_rel должен быть ≈ +0.2 (unwrap), got {theta_t2}'
+    )
+
+    # Тик 3: робот докрутил ещё на +0.3 рад → IMU −2.7832.
+    wrapped2 = 3.0 + 0.5 - 2.0 * math.pi
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': wrapped2, 'vz': 0.0})
+    mps_node._tick()
+    p3 = [p[1] for p in mps_node._published if p[0] == 'mps/telemetry'][-1]
+    theta_t3 = p3['point']['x'][2]
+    assert abs(theta_t3 - 0.5) < 1e-6, (
+        f'continued rotation θ_rel должен быть ≈ +0.5, got {theta_t3}'
+    )
+
+    # Принципиальная регрессия: между p2 и p3 разрыва быть не должно.
+    assert abs(theta_t3 - theta_t2) < 0.5, (
+        f'unwrap broken — Δθ between consecutive ticks = {theta_t3 - theta_t2}'
+    )
+
+
+def test_finished_payload_echoes_target_heading(mps_node):
+    """mps/scenario/finished.request обязан содержать target_heading.
+
+    Регрессия (diagnostics 2026-05-18 192604): _finish_run писал в
+    request только distance/v_target/source, и при экспорте диагностики
+    target_heading везде показывал 0 — независимо от того, какой курс
+    реально просили. Это маскировало баг с unwrap (см. соседний тест).
+    """
+    mps_node._on_odom('odom', {'x': 0.0, 'vx': 0.0, 'theta': 0.0, 'vz': 0.0})
+    mps_node._on_scenario_run('mps/scenario/run', {
+        'run_id': 'r-echo',
+        'request': {'distance': 1.0, 'v_target': 0.10, 'source': 'robot',
+                    'target_heading': 1.57},
+    })
+    mps_node._published.clear()
+    mps_node._on_scenario_abort('mps/scenario/abort', {'run_id': 'r-echo'})
+    finished = next(p[1] for p in mps_node._published
+                    if p[0] == 'mps/scenario/finished')
+    assert finished['request'].get('target_heading') == pytest.approx(1.57)
+
+
 def test_scenario_run_rejected_when_no_odom_received(mps_node):
     """Если odom не приходил вовсе (_x_meas_ts == 0) — реджект.
 

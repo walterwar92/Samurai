@@ -39,7 +39,7 @@ export function AdminPage() {
       />
       <SamuraiStatusBanner state={state} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_340px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_280px] gap-2.5 p-2.5 max-w-[1920px] mx-auto min-h-[calc(100vh-48px)]">
         {/* Col 1, Row 1: Camera */}
         <CameraFeed />
 

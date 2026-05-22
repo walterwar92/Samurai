@@ -92,6 +92,8 @@ install_sudoers_remote_deploy() {
 # so ./samurai.sh compute --pi can ssh-restart the service over LAN.
 $user ALL=(root) NOPASSWD: /bin/systemctl restart samurai-robot, \\
                           /usr/bin/systemctl restart samurai-robot, \\
+                          /bin/systemctl stop samurai-robot, \\
+                          /usr/bin/systemctl stop samurai-robot, \\
                           /bin/systemctl is-active samurai-robot, \\
                           /usr/bin/systemctl is-active samurai-robot, \\
                           /bin/systemctl status samurai-robot, \\

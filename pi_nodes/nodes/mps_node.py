@@ -88,6 +88,11 @@ class _RunState:
         'x_start_abs', 'y_start_abs', 'lateral_lqr',
         # Опорная траектория r(t) = [s_ref, v_ref, θ_ref, ω_ref, e_int_ref].
         'traj',
+        # Кумулятивный unwrap курса. odom публикует θ ∈ [−π, π); при
+        # пересечении ±π значение прыгает на ±2π, и x[_THETA] становится
+        # разрывным → MPC видит огромный dx, банит u[1] в насыщение → робот
+        # крутится вечно (см. _tick_run и diagnostics 2026-05-18 192604).
+        'prev_theta_meas', 'theta_unwrapped',
     )
 
     def __init__(self, run_id: str, distance: float, v_target: float,
@@ -124,6 +129,12 @@ class _RunState:
         self.lateral_lqr = lateral_lqr
         # Pre-built reference trajectory (drive + turn-after-arrival profile).
         self.traj = traj
+        # Unwrap-аккумулятор курса. На старте offset = 0; каждый тик берём
+        # signed-shortest delta от последнего сырого θ_meas и наращиваем —
+        # x[_THETA], отдаваемый в MPC, становится непрерывным даже при
+        # пересечении ±π. См. mps_node._tick_run.
+        self.prev_theta_meas = theta_start
+        self.theta_unwrapped = 0.0
 
 
 class MpsNode(MqttNode):
@@ -594,16 +605,23 @@ class MpsNode(MqttNode):
             y_abs = self._y_abs
 
         # Позиция и курс — относительно старта сценария (s_ref, θ_ref с 0).
-        # θ НЕ оборачиваем в [−π, π] — MPC проектируется на линеаризованной
-        # модели и ожидает «гладкое» x[θ] без дискретного скачка ±π. При
-        # сценариях с target_heading=±π референс θ_ref(t) тоже ramps до
-        # ±π без wrap, и контур остаётся в режиме малой ошибки. Обёртка
-        # вызывала overshoot: как только робот пересекал ±π, x[θ] прыгал
-        # в противоположный знак, MPC видел огромную ошибку и продолжал
-        # вращение в ту же сторону (см. test_mps_node_pose_arrival).
+        # θ_meas от одометрии приходит обёрнутым в [−π, π); при сценарии
+        # с target_heading=±π робот физически пересекает ±π, и сырое
+        # значение прыгает на ±2π. Если отдать такое в MPC — он видит
+        # огромный dx[_THETA], банит u[1] в насыщение, и робот крутится
+        # вечно (diagnostics 2026-05-18 192604: x[θ] прыгнул +3.08→−3.02
+        # на стыке t=11.26→11.28, u_w мгновенно ушёл с −0.65 в +2.0).
+        # Накопительный unwrap по signed-shortest delta делает x[_THETA]
+        # непрерывным независимо от того, как часто θ_meas заворачивается.
+        delta_theta = _normalize_angle(
+            float(x_meas[_THETA]) - run.prev_theta_meas
+        )
+        run.theta_unwrapped += delta_theta
+        run.prev_theta_meas = float(x_meas[_THETA])
+
         x = x_meas.copy()
         x[_S] = x_meas[_S] - run.s_start
-        x[_THETA] = x_meas[_THETA] - run.theta_start
+        x[_THETA] = run.theta_unwrapped
 
         r_ref = run.traj.r(run.t)
 
@@ -822,6 +840,7 @@ class MpsNode(MqttNode):
             'request': {
                 'distance': run.distance,
                 'v_target': run.v_target,
+                'target_heading': run.target_heading,
                 'source': 'robot',
             },
             'metrics': metrics,

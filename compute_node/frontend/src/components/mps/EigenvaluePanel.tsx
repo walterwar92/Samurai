@@ -14,15 +14,25 @@ const SIZE = 240
 const RADIUS = 95
 const CENTER = SIZE / 2
 
-function projectToSvg(z: ComplexNumber) {
+function isFiniteComplex(z: ComplexNumber): boolean {
+  // Pydantic v2 в режиме JSON эмитит NaN/Inf как null (см. mps_runner →
+  // closed_loop_eigenvalues: при падении MPCController возвращает
+  // [complex('nan')] × N). Без этой проверки z.re.toFixed падает.
+  return Number.isFinite(z.re) && Number.isFinite(z.im)
+}
+
+function projectToSvg(z: ComplexNumber): { x: number; y: number } | null {
+  if (!isFiniteComplex(z)) return null
   return { x: CENTER + z.re * RADIUS, y: CENTER - z.im * RADIUS }
 }
 
 function isStablePoint(z: ComplexNumber): boolean {
+  if (!isFiniteComplex(z)) return false
   return Math.hypot(z.re, z.im) < 1
 }
 
 function formatComplex(z: ComplexNumber): string {
+  if (!isFiniteComplex(z)) return 'не вычислено (NaN)'
   const sign = z.im >= 0 ? '+' : '−'
   return `${z.re.toFixed(3)} ${sign} ${Math.abs(z.im).toFixed(3)}i`
 }
@@ -70,12 +80,13 @@ export function EigenvaluePanel({
               strokeDasharray="4 4"
             />
             {open.map((z, i) => {
-              const { x, y } = projectToSvg(z)
+              const p = projectToSvg(z)
+              if (p === null) return null
               return (
                 <circle
                   key={`o-${i}`}
-                  cx={x}
-                  cy={y}
+                  cx={p.x}
+                  cy={p.y}
                   r={5}
                   fill={isStablePoint(z) ? '#16a34a' : '#dc2626'}
                   stroke="#0f172a"
@@ -84,12 +95,13 @@ export function EigenvaluePanel({
               )
             })}
             {closed.map((z, i) => {
-              const { x, y } = projectToSvg(z)
+              const p = projectToSvg(z)
+              if (p === null) return null
               return (
                 <rect
                   key={`c-${i}`}
-                  x={x - 4}
-                  y={y - 4}
+                  x={p.x - 4}
+                  y={p.y - 4}
                   width={8}
                   height={8}
                   fill={isStablePoint(z) ? '#0ea5e9' : '#f97316'}

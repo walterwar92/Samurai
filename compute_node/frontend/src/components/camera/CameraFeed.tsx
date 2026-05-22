@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardSubtitle } from '@/components/ui/card'
 import { FsmBadge } from '@/components/fsm/FsmBadge'
 import { TargetIcon } from '@/components/icons'
-import { useFsmState, useTargetColour, useConnected } from '@/stores/selectors'
+import { useFsmState, useTargetColour, useConnected, useAllDetections } from '@/stores/selectors'
+import { COLOUR_CSS, COLOUR_RU } from '@/lib/constants'
+import type { Detection } from '@/types/robot'
 import { cn } from '@/lib/utils'
 
 /**
@@ -63,6 +65,52 @@ function parseSpsCodec(nalWithStart: Uint8Array): string | null {
   return `avc1.${hex(profile)}${hex(constraint)}${hex(level)}`
 }
 
+/**
+ * Рисует bbox YOLO-детекций поверх кадра. Координаты bbox (x, y, w, h)
+ * — пиксели исходного кадра, совпадают с координатами canvas'а 1:1.
+ *
+ * Цветовая логика:
+ *   - Если HSV-классификатор вернул сатурированный цвет (красный/синий/...)
+ *     — рисуем этим цветом, label: «красный мяч 65%»
+ *   - Иначе (unknown/black/white или YOLO-класс типа person/chair)
+ *     — рисуем ярким emerald, label: «person 87%» (YOLO class).
+ *     Чёрный COLOUR_CSS делал bbox невидимым в плохом освещении.
+ */
+function drawDetectionOverlay(ctx: CanvasRenderingContext2D, dets: Detection[]): void {
+  if (dets.length === 0) return
+  const SATURATED = new Set(['red', 'blue', 'green', 'yellow', 'orange'])
+  const FALLBACK = '#10b981'  // emerald-500: яркий, виден на любом фоне
+
+  ctx.lineWidth = 3
+  ctx.font = '600 14px ui-monospace, "JetBrains Mono", monospace'
+  ctx.textBaseline = 'top'
+  for (const d of dets) {
+    const saturated = SATURATED.has(d.colour)
+    const colour = saturated ? COLOUR_CSS[d.colour] : FALLBACK
+    ctx.strokeStyle = colour
+    ctx.strokeRect(d.x, d.y, d.w, d.h)
+
+    const conf = Math.round(d.conf * 100)
+    const cls = d.class
+    let label: string
+    if (saturated && cls && cls !== 'object') {
+      label = `${COLOUR_RU[d.colour] || d.colour} ${cls} ${conf}%`
+    } else if (saturated) {
+      label = `${COLOUR_RU[d.colour] || d.colour} ${conf}%`
+    } else {
+      label = `${cls || 'object'} ${conf}%`
+    }
+    const metrics = ctx.measureText(label)
+    const labelH = 18
+    const labelW = Math.ceil(metrics.width) + 8
+    const labelY = d.y >= labelH ? d.y - labelH : d.y
+    ctx.fillStyle = colour
+    ctx.fillRect(d.x, labelY, labelW, labelH)
+    ctx.fillStyle = '#000'
+    ctx.fillText(label, d.x + 4, labelY + 2)
+  }
+}
+
 export function CameraFeed() {
   const [hasError, setHasError] = useState(false)
   const [errorText, setErrorText] = useState<string>('')
@@ -72,6 +120,13 @@ export function CameraFeed() {
   const wsRef = useRef<WebSocket | null>(null)
   const decoderRef = useRef<VideoDecoder | null>(null)
   const frameCountRef = useRef(0)
+
+  // YOLO bbox overlay: детекции из стора зеркалим в ref, чтобы output-callback
+  // VideoDecoder'а (он сидит в замыкании useEffect'а) читал свежие данные без
+  // пересоздания декодера на каждый detection update.
+  const allDetections = useAllDetections()
+  const detectionsRef = useRef<Detection[]>([])
+  useEffect(() => { detectionsRef.current = allDetections }, [allDetections])
 
   // Проверка доступности WebCodecs API (Safari iOS — нет)
   const webCodecsSupported = typeof window !== 'undefined' && 'VideoDecoder' in window
@@ -132,6 +187,7 @@ export function CameraFeed() {
           setResolution({ w: frame.displayWidth, h: frame.displayHeight })
         }
         ctx.drawImage(frame, 0, 0)
+        drawDetectionOverlay(ctx, detectionsRef.current)
         frame.close()
         frameCountRef.current++
       },

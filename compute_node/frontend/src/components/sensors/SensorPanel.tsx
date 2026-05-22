@@ -46,14 +46,14 @@ export function SensorPanel({ expanded }: SensorPanelProps) {
           <RangeBar value={range} />
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-2">
           <SensorValue label="Yaw" value={`${imu[0].toFixed(1)}°`} />
           <SensorValue label="Pitch" value={`${imu[1].toFixed(1)}°`} />
           <SensorValue label="Roll" value={`${imu[2].toFixed(1)}°`} />
         </div>
 
         {expanded && (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2">
             <SensorValue label="Gyro Z" value={gyro[2].toFixed(2)} />
             <SensorValue label="Accel X" value={accel[0].toFixed(2)} />
             <SensorValue
