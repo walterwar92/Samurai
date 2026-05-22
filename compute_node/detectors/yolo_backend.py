@@ -26,6 +26,32 @@ from .base import Detection, DetectorBackend, FrameContext
 log = logging.getLogger(__name__)
 
 
+# Маппинг имён классов модели на (Detection.cls, Detection.colour).
+# Срабатывает для моделей обученных через tools/train_balls.py
+# (классы ball_red/green/blue). Для COCO-моделей (yolo11n.pt с
+# 80 классами) ни одно имя не совпадёт — пройдёт по else-ветке,
+# colour=='unknown' дозаполнится HSV-классификатором в DetectionPipeline.
+_BALL_CLASS_MAP: dict[str, tuple[str, str]] = {
+    'ball_red':    ('ball', 'red'),
+    'ball_green':  ('ball', 'green'),
+    'ball_blue':   ('ball', 'blue'),
+    'ball_yellow': ('ball', 'yellow'),
+    'ball_orange': ('ball', 'orange'),
+}
+
+
+def _map_cls_to_cls_colour(cls_name: str) -> tuple[str, str]:
+    """Маппинг class name из YOLO на (Detection.cls, Detection.colour).
+
+    FSM на Pi ждёт `colour=red/green/blue` в `ball_detection` MQTT-топике
+    и `class='ball'`. Если модель выдаёт `ball_<colour>` напрямую — мы
+    раскладываем это здесь, и FSM работает без правок.
+    """
+    if cls_name in _BALL_CLASS_MAP:
+        return _BALL_CLASS_MAP[cls_name]
+    return cls_name, 'unknown'
+
+
 class YoloBackend(DetectorBackend):
     """YOLO детектор (PyTorch или ONNX). Auto-выбор по доступности .onnx файла."""
 
@@ -110,14 +136,18 @@ class YoloBackend(DetectorBackend):
         """Export .pt → .onnx if needed, then load via onnxruntime."""
         onnx_path = model_path.replace('.pt', '.onnx') if model_path.endswith('.pt') else model_path
 
-        # Export if .pt но .onnx нет
+        # Export if .pt но .onnx нет.
+        # opset=17 — самый новый, который гарантированно поддерживается
+        # текущим onnxruntime (ORT 1.x). Без него ultralytics экспортирует
+        # с opset 22 (под-development), ORT валится с "Opset 22 not supported".
         if model_path.endswith('.pt') and not os.path.exists(onnx_path):
             try:
                 from ultralytics import YOLO
-                log.info('Exporting %s → ONNX (imgsz=%d) ...',
+                log.info('Exporting %s → ONNX (imgsz=%d, opset=17) ...',
                          os.path.basename(model_path), self._imgsz)
                 tmp = YOLO(model_path)
-                tmp.export(format='onnx', imgsz=self._imgsz, optimize=True, simplify=True)
+                tmp.export(format='onnx', imgsz=self._imgsz, opset=17,
+                           optimize=True, simplify=True)
                 log.info('ONNX export complete')
             except Exception as e:
                 log.warning('ONNX export failed (%s) — fallback to PyTorch', e)
@@ -196,8 +226,11 @@ class YoloBackend(DetectorBackend):
             w = x2 - x1; h = y2 - y1
             if w < 5 or h < 5:
                 continue
+            cls_name = self._names.get(cls_id, 'object')
+            mapped_cls, mapped_colour = _map_cls_to_cls_colour(cls_name)
             detections.append(Detection(
-                cls=self._names.get(cls_id, 'object'),
+                cls=mapped_cls,
+                colour=mapped_colour,
                 x=int(x1), y=int(y1), w=int(w), h=int(h),
                 conf=round(float(conf), 3),
             ))

@@ -1,0 +1,12 @@
+# Не пушим фото в git — датасет локальный, иначе репо распухнет.
+# samurai_balls.yaml коммитим как конфиг.
+raw/
+images/
+labels/
+*.cache
+*.jpg
+*.jpeg
+*.png
+
+# train_balls.py может писать сюда runtime yaml с абсолютным путём
+samurai_balls.runtime.yaml

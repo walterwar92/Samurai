@@ -156,12 +156,31 @@ EOF
         print_banner "O B J E C T   D E T E C T O R" "MQTT  -  ${backend} on ${device}"
     fi
 
+    # Workarounds для Windows + Git Bash с кириллицей в пути юзера.
+    # Должны быть ДО import-проверок!
+    #
+    # 1) ultralytics: Path.home() ломается с "Could not determine home
+    #    directory" если HOME содержит non-ASCII. Указываем ASCII-only
+    #    YOLO_CONFIG_DIR — ultralytics использует его вместо ~/.config.
+    if [[ -z "${YOLO_CONFIG_DIR:-}" ]]; then
+        export YOLO_CONFIG_DIR="C:/yolo_cache"
+        mkdir -p "$YOLO_CONFIG_DIR" 2>/dev/null || true
+    fi
+    # 2) torch._inductor.cache_dir_utils зовёт getpass.getuser(), та
+    #    смотрит USERNAME/USER/LOGNAME/LNAME env-vars. В Git Bash они
+    #    бывают не выставлены, на Windows нет модуля pwd → OSError
+    #    "No username set in the environment". Ставим ASCII-юзера.
+    if [[ -z "${USERNAME:-}${USER:-}${LOGNAME:-}${LNAME:-}" ]]; then
+        export USERNAME="samurai"
+    fi
+
     check_python 9
     check_pip_packages \
         "paho.mqtt.client:paho-mqtt" \
         "cv2:opencv-python" \
         "numpy:numpy" \
-        "yaml:PyYAML"
+        "yaml:PyYAML" \
+        "av:av"
     if [[ "$backend" == "yolo" ]]; then
         check_pip_optional ultralytics "ultralytics (YOLO)"
     fi
@@ -188,9 +207,12 @@ EOF
     echo -e "${YELLOW}  ── Ctrl+C для остановки ──${NC}"
     echo ""
 
-    # Собираем аргументы для detector.py
+    # Собираем аргументы для detector.py.
+    # --source h264: с 2026-04 (#9) Pi camera_node шлёт H.264 по TCP,
+    # JPEG в MQTT больше не публикует. Detector через H264TCPFrameSource
+    # подключается к MQTT discovery → TCP H.264 → PyAV → numpy кадры.
     local args=(
-        --source mqtt
+        --source h264
         --backend "$backend"
         --device "$device"
         --model "$model"

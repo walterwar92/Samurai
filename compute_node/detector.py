@@ -8,11 +8,14 @@ detector.py — единый CLI для всех вариантов детекц
   - object_detector_node.py (CPU + HSV fallback через MQTT)
 
 Использование:
-  # CPU + HSV fallback через MQTT (как старый object_detector_node)
-  python compute_node/detector.py --source mqtt --broker raspberrypi.local
+  # H.264 TCP с Pi (default с 2026-04) + HSV fallback
+  python compute_node/detector.py --broker 192.168.4.1
 
-  # GPU YOLO через MQTT (как старый yolo_detector_mqtt)
-  python compute_node/detector.py --source mqtt --device cuda --model yolo11n.pt
+  # H.264 TCP с Pi + GPU YOLO
+  python compute_node/detector.py --device cuda --model yolo11n.pt --broker 192.168.4.1
+
+  # Legacy MQTT JPEG (только для Pi на старой архитектуре)
+  python compute_node/detector.py --source mqtt --broker raspberrypi.local
 
   # ROS2 YOLO (как старый yolo_detector_node)
   python compute_node/detector.py --source ros --backend yolo
@@ -32,6 +35,24 @@ import signal
 import sys
 import time
 from typing import Optional
+
+# Workarounds для Windows + Git Bash с кириллицей. Должны быть ДО любого
+# импорта, который тянет ultralytics/torch (env-vars читаются один раз
+# при первом import).
+if os.name == 'nt':
+    # 1) ultralytics: Path.home() ломается на non-ASCII → задаём YOLO_CONFIG_DIR
+    if 'YOLO_CONFIG_DIR' not in os.environ:
+        try:
+            os.path.expanduser('~').encode('ascii')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            _cache = 'C:/yolo_cache'
+            os.makedirs(_cache, exist_ok=True)
+            os.environ['YOLO_CONFIG_DIR'] = _cache
+    # 2) torch._inductor.cache_dir_utils зовёт getpass.getuser() — та смотрит
+    # USERNAME/USER/LOGNAME/LNAME env. В Git Bash они бывают пустые, на
+    # Windows нет pwd → OSError "No username set in the environment".
+    if not any(os.environ.get(v) for v in ('USERNAME', 'USER', 'LOGNAME', 'LNAME')):
+        os.environ['USERNAME'] = 'samurai'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,6 +198,102 @@ def _run_mqtt_mode(args):
         log.info('Detector stopped')
 
 
+def _run_h264_mode(args):
+    """H.264 TCP source (с MQTT discovery) + MQTT publisher.
+
+    Default режим с 2026-04: Pi camera_node шлёт H.264 по TCP, а JPEG в
+    MQTT больше не публикует. Discovery (host/port TCP-сервера) приходит
+    через retained MQTT-топик samurai/{id}/camera/endpoint. Тот же MQTT
+    клиент используется для подписки на range/odom/detection-enable и
+    для публикации детекций — поэтому publisher работает поверх
+    source.client как в mqtt-режиме.
+    """
+    try:
+        from compute_node.detectors.frame_sources import H264TCPFrameSource
+    except (ImportError, RuntimeError) as e:
+        log.error('H.264 mode недоступен (нужен PyAV: `pip install av`): %s', e)
+        return 1
+
+    backend = _build_backend(args.backend, args.model, args.device, args.conf, args.frame_drop)
+    pipeline = _build_pipeline(backend, args.focal_px, args.fov_deg)
+
+    source = H264TCPFrameSource(
+        broker=args.broker, port=args.port,
+        robot_id=args.robot_id,
+        client_id=f'samurai_detector_{os.getpid()}',
+        mqtt_user=args.mqtt_user, mqtt_pwd=args.mqtt_pass,
+    )
+    publisher = MQTTPublisher(
+        mqtt_client=source.client,
+        robot_id=args.robot_id,
+        publish_annotated=not args.no_annotated,
+        source='detector',
+    )
+
+    # Detection enable/disable subscription
+    enabled = {'value': True}
+
+    def _on_enable(client, userdata, msg):
+        cmd = msg.payload.decode('utf-8', errors='ignore').strip().lower()
+        enabled['value'] = cmd in ('on', 'true', '1', 'enable')
+        log.info('Detection %s', 'ENABLED' if enabled['value'] else 'DISABLED')
+
+    source.client.message_callback_add(
+        f'samurai/{args.robot_id}/detection/enable', _on_enable)
+
+    def _on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            client.subscribe(f'samurai/{args.robot_id}/detection/enable', qos=1)
+            publisher.publish_status(online=True)
+    _orig_on_connect = source.client.on_connect
+
+    def _combined_on_connect(c, u, f, rc):
+        if _orig_on_connect:
+            _orig_on_connect(c, u, f, rc)
+        _on_connect(c, u, f, rc)
+    source.client.on_connect = _combined_on_connect
+
+    def _on_frame(ctx: FrameContext):
+        if not enabled['value']:
+            publisher.publish_summary([])
+            jpeg = encode_jpeg(ctx.bgr, quality=args.quality)
+            if jpeg is not None:
+                publisher.publish_annotated(jpeg)
+            return
+        detections = pipeline.process(ctx)
+        publisher.publish_best_ball(detections)
+        publisher.publish_summary(detections)
+        if not args.no_annotated:
+            annotated = draw_annotations(ctx.bgr, detections)
+            jpeg = encode_jpeg(annotated, quality=args.quality)
+            if jpeg is not None:
+                publisher.publish_annotated(jpeg)
+
+    source.on_frame(_on_frame)
+    source.start()
+
+    log.info('Detector running (source=h264, backend=%s, broker=%s:%d)',
+             backend.name, args.broker, args.port)
+    log.info('Awaiting MQTT discovery on samurai/%s/camera/endpoint → TCP H.264. Ctrl+C to stop.',
+             args.robot_id)
+
+    _stop = {'flag': False}
+    def _shutdown(signum, frame):
+        _stop['flag'] = True
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    try:
+        while not _stop['flag']:
+            time.sleep(1.0)
+    finally:
+        publisher.publish_status(online=False)
+        source.stop()
+        log.info('Detector stopped')
+
+    return 0
+
+
 def _run_ros2_mode(args):
     """ROS2 source + ROS2 publisher (внутри Docker compute)."""
     try:
@@ -269,11 +386,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  # CPU + HSV fallback через MQTT (как object_detector_node)
-  detector.py --source mqtt --backend hsv --broker raspberrypi.local
+  # H.264 TCP с Pi (default с 2026-04) + HSV
+  detector.py --backend hsv --broker 192.168.4.1
 
-  # GPU YOLO через MQTT (как yolo_detector_mqtt)
-  detector.py --source mqtt --backend yolo --device cuda --model yolo11n.pt
+  # H.264 TCP с Pi + GPU YOLO
+  detector.py --backend yolo --device cuda --model yolo11n.pt --broker 192.168.4.1
+
+  # Legacy MQTT JPEG (только если Pi на старой архитектуре)
+  detector.py --source mqtt --backend hsv --broker raspberrypi.local
 
   # ROS2 YOLO (как yolo_detector_node, для внутри Docker)
   detector.py --source ros --backend yolo
@@ -284,8 +404,10 @@ def main():
 """)
 
     # ── Mode ──────────────────────────────────────────────────
-    parser.add_argument('--source', choices=('mqtt', 'ros'), default='mqtt',
-                        help='Источник кадров (default: mqtt)')
+    parser.add_argument('--source', choices=('mqtt', 'h264', 'ros'), default='h264',
+                        help='Источник кадров: h264 (TCP с Pi, default с 2026-04), '
+                             'mqtt (legacy JPEG, требует Pi на старой архитектуре), '
+                             'ros (ROS2 /camera/image_raw/compressed)')
     parser.add_argument('--backend', choices=('yolo', 'hsv'), default='yolo',
                         help='Модель детекции (default: yolo, fallback hsv)')
     parser.add_argument('--calibrate', nargs='?', const='red', default=None,
@@ -333,7 +455,9 @@ def main():
     if args.calibrate is not None:
         return _run_calibrator(args) or 0
 
-    if args.source == 'mqtt':
+    if args.source == 'h264':
+        return _run_h264_mode(args) or 0
+    elif args.source == 'mqtt':
         _run_mqtt_mode(args)
     elif args.source == 'ros':
         return _run_ros2_mode(args) or 0

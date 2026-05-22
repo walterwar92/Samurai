@@ -1,0 +1,20 @@
+# Ultralytics dataset config для обучения детектора мячей.
+#
+# Структура (создаётся автоматически через tools/train_balls.py):
+#   dataset/raw/{red,green,blue,background}/*.jpg   ← сырые кадры (collect_frames.py)
+#   dataset/labels/raw/*.txt                          ← разметка из Roboflow/LabelImg
+#   dataset/images/{train,val}/*.jpg                  ← train_balls.py split 80/20
+#   dataset/labels/{train,val}/*.txt                  ← парные labels
+#
+# `path:` — относительный путь от CWD (а не от расположения yaml).
+# tools/train_balls.py всегда запускает ultralytics с CWD = корень проекта.
+
+path: dataset
+train: images/train
+val: images/val
+
+nc: 3
+names:
+  0: ball_red
+  1: ball_green
+  2: ball_blue
